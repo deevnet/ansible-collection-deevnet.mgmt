@@ -1,0 +1,4 @@
+# Build artifacts
+ansible_collections/
+*.tar.gz
+.deps.stamp

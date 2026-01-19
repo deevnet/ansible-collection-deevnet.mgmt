@@ -1,0 +1,35 @@
+---
+# Main playbook for deevnet.mgmt collection
+#
+# This playbook applies management plane roles to appropriate host groups.
+# Roles will be added as they are developed.
+#
+# Expected inventory groups:
+#   - logging_servers      # Centralized log aggregation
+#   - monitoring_servers   # Grafana, Prometheus, etc.
+#   - mgmt_plane          # General management plane hosts
+#
+# Usage:
+#   ansible-playbook playbooks/site.yml
+#   ansible-playbook playbooks/site.yml --limit logging_servers
+#   ansible-playbook playbooks/site.yml --limit monitoring_servers
+
+# Placeholder plays - uncomment and configure as roles are added
+#
+# - name: Configure logging servers
+#   hosts: logging_servers
+#   become: true
+#   roles:
+#     - logging
+#
+# - name: Configure monitoring servers
+#   hosts: monitoring_servers
+#   become: true
+#   roles:
+#     - grafana
+#
+# - name: Configure management plane hosts
+#   hosts: mgmt_plane
+#   become: true
+#   roles:
+#     - base

@@ -1,0 +1,20 @@
+namespace: deevnet
+name: mgmt
+version: 1.0.0
+readme: README.md
+authors:
+  - Chris Deever
+license: MIT
+tags:
+  - ansible
+  - infrastructure
+  - monitoring
+  - logging
+  - grafana
+  - observability
+description: >
+  Roles for management plane services including centralized logging,
+  monitoring, and observability. Provides Grafana dashboards, log
+  aggregation, and related management infrastructure.
+dependencies:
+  ansible.posix: ">=1.5.0"
