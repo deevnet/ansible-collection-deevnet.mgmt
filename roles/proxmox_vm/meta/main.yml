@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: proxmox_vm
+  description: Clone a management-plane VM from a Packer-built Proxmox template
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

@@ -1,0 +1,62 @@
+---
+# PowerDNS will not create its own schema. Seed it once from the schema file
+# shipped in the image; subsequent runs find the database and leave it alone.
+#
+# The schema is copied out and applied with the HOST's sqlite3 rather than run
+# inside the container: the PowerDNS image is not guaranteed to carry a sqlite
+# client, and depending on one would make this step fail on an image bump for a
+# reason that has nothing to do with DNS.
+
+- name: Check whether the PowerDNS database already exists
+  ansible.builtin.stat:
+    path: "{{ powerdns_db_dir }}/{{ powerdns_db_file }}"
+  register: powerdns_db
+  become: true
+
+- name: Locate the sqlite schema inside the image
+  ansible.builtin.shell:
+    cmd: >
+      podman run --rm --entrypoint /bin/sh
+      {{ powerdns_image_name }}:{{ powerdns_image_tag }}
+      -c 'find /usr/share -name "schema.sqlite3.sql" 2>/dev/null | head -1'
+  register: powerdns_schema_path
+  changed_when: false
+  when: not powerdns_db.stat.exists
+  become: true
+
+- name: Fail clearly if the schema cannot be found in the image
+  ansible.builtin.assert:
+    that:
+      - powerdns_schema_path.stdout | trim | length > 0
+    fail_msg: >-
+      No schema.sqlite3.sql under /usr/share in
+      {{ powerdns_image_name }}:{{ powerdns_image_tag }}. PowerDNS does not
+      create its own schema, so the database cannot be seeded. Find it with:
+        podman run --rm --entrypoint /bin/sh {{ powerdns_image_name }}:{{ powerdns_image_tag }} -c 'find / -name schema.sqlite3.sql'
+    success_msg: "Seeding schema from {{ powerdns_schema_path.stdout | trim }}."
+  when: not powerdns_db.stat.exists
+
+- name: Copy the schema out of the image
+  ansible.builtin.shell:
+    cmd: >
+      podman run --rm --entrypoint /bin/cat
+      {{ powerdns_image_name }}:{{ powerdns_image_tag }}
+      {{ powerdns_schema_path.stdout | trim }}
+      > {{ powerdns_data_root }}/schema.sqlite3.sql
+  when: not powerdns_db.stat.exists
+  become: true
+
+- name: Create the PowerDNS database from the schema
+  ansible.builtin.shell:
+    cmd: >
+      sqlite3 {{ powerdns_db_dir }}/{{ powerdns_db_file }}
+      < {{ powerdns_data_root }}/schema.sqlite3.sql
+  when: not powerdns_db.stat.exists
+  become: true
+
+- name: Remove the extracted schema
+  ansible.builtin.file:
+    path: "{{ powerdns_data_root }}/schema.sqlite3.sql"
+    state: absent
+  when: not powerdns_db.stat.exists
+  become: true

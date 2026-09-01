@@ -1,0 +1,33 @@
+---
+# Zone names are derived from the tenant registry, never listed. For tenant `t`
+# with index `n` (ADR-0002 numbering, ADR-0004 naming):
+#
+#   forward   t.<substrate>.<root>            tdemo.dvntm.deevnet.net
+#   reverse   {128+n}.<site_octet>.10.in-addr.arpa   129.20.10.in-addr.arpa
+#
+# Rendered as JSON so the arithmetic on `index` is done once, here, rather than
+# repeated inline at every use.
+powerdns_tenant_zones: >-
+  [
+  {% for t in powerdns_tenants %}
+  {
+    "tenant": "{{ t.name }}",
+    "forward": "{{ t.name }}.{{ deevnet_substrate }}.{{ deevnet_root_domain }}",
+    "reverse": "{{ 128 + (t.index | int) }}.{{ deevnet_site_octet }}.10.in-addr.arpa"
+  }{{ "," if not loop.last else "" }}
+  {% endfor %}
+  ]
+
+# Flat list of every zone the server should hold.
+powerdns_tenant_zone_names: >-
+  {{ (powerdns_tenant_zones | map(attribute='forward') | list)
+     + (powerdns_tenant_zones | map(attribute='reverse') | list) }}
+
+# Which key may write which zone. This pairing IS the namespace boundary.
+powerdns_tenant_zone_bindings: >-
+  [
+  {% for z in powerdns_tenant_zones %}
+  {"zone": "{{ z.forward }}", "key": "{{ z.tenant }}"},
+  {"zone": "{{ z.reverse }}", "key": "{{ z.tenant }}"}{{ "," if not loop.last else "" }}
+  {% endfor %}
+  ]

@@ -1,0 +1,20 @@
+---
+# Authoritative DNS is reached by the core router's Unbound (delegation) and by
+# tenant Terraform (dynamic update), both over port 53.
+
+- name: Gather service facts (for firewalld detection)
+  ansible.builtin.service_facts:
+
+- name: Open DNS in firewalld
+  ansible.posix.firewalld:
+    port: "{{ powerdns_listen_port }}/{{ item }}"
+    permanent: true
+    state: enabled
+    immediate: true
+  loop:
+    - tcp
+    - udp
+  when:
+    - "'firewalld.service' in ansible_facts.services"
+    - ansible_facts.services['firewalld.service'].state == 'running'
+  become: true

@@ -1,0 +1,22 @@
+---
+- name: Create temporary directory for the image tarball
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: pdns
+  register: powerdns_temp_dir
+  become: true
+
+- name: Download the PowerDNS image tarball from the artifact server
+  ansible.builtin.get_url:
+    url: "{{ powerdns_tarball_url }}"
+    dest: "{{ powerdns_temp_dir.path }}/{{ powerdns_tarball_filename }}"
+    mode: '0644'
+    timeout: 300
+  register: powerdns_download
+  become: true
+  failed_when: powerdns_download.failed
+  notify: cleanup powerdns temp dir
+
+- name: Store tarball path for loading
+  ansible.builtin.set_fact:
+    powerdns_tarball_path: "{{ powerdns_temp_dir.path }}/{{ powerdns_tarball_filename }}"

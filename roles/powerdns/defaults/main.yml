@@ -1,0 +1,49 @@
+---
+# PowerDNS Authoritative - tenant DNS authority (ADR-0004).
+#
+# Holds one delegated zone pair per tenant. The substrate owns the server; the
+# records inside the zones are tenant content, written by the tenant's own
+# Terraform over RFC 2136. Nothing in this role creates a record.
+
+powerdns_image_name: "docker.io/powerdns/pdns-auth-49"
+powerdns_image_tag: "4.9.17"
+powerdns_tarball_filename: "pdns-auth-latest.tar"
+powerdns_tarball_url: "{{ bootstrap_artifact_server }}/container-images/pdns-auth/{{ powerdns_tarball_filename }}"
+
+powerdns_container_name: "pdns-auth"
+
+powerdns_data_root: /srv/pdns
+powerdns_config_dir: "{{ powerdns_data_root }}/etc"
+powerdns_db_dir: "{{ powerdns_data_root }}/data"
+powerdns_db_file: pdns.sqlite3
+powerdns_selinux_context: container_file_t
+
+powerdns_systemd_unit_path: /etc/systemd/system/pdns-auth.service
+powerdns_systemd_enabled: true
+powerdns_systemd_state: started
+
+# Authoritative only - it never recurses. Substrate clients reach it through
+# the core router's Unbound, which delegates the tenant zones to it.
+powerdns_listen_address: "0.0.0.0"
+powerdns_listen_port: 53
+
+# Dynamic update is the publication mechanism. Per-zone metadata decides who
+# may write: TSIG-ALLOW-DNSUPDATE names the key, ALLOW-DNSUPDATE-FROM the
+# network. A tenant's key is accepted for that tenant's zones and nothing else.
+powerdns_dnsupdate_enabled: true
+powerdns_tsig_algorithm: hmac-sha256
+
+# Which networks may attempt a dynamic update at all. Signature still decides
+# the outcome; this is defence in depth, not the control.
+powerdns_dnsupdate_from: "{{ deevnet_vlans.management.subnet }}"
+
+# Tenant zones are derived from the site registry, never listed here.
+# For tenant `t` index `n` (ADR-0002 / ADR-0004):
+#   forward  t.<substrate>.<root>
+#   reverse  {128+n}.<site_octet>.10.in-addr.arpa
+powerdns_tenants: "{{ deevnet_tenants | default([]) }}"
+
+# Per-tenant TSIG secrets, keyed by tenant name. Supplied from the vault so the
+# server is reproducible: rebuilding it re-imports the same keys and every
+# tenant's Terraform keeps working without re-issuing credentials.
+powerdns_tsig_secrets: "{{ vault_tenant_tsig_keys | default({}) }}"

@@ -1,20 +1,31 @@
 ---
-# Main playbook for deevnet.mgmt collection
+# Main playbook for the deevnet.mgmt collection.
 #
-# This playbook applies management plane roles to appropriate host groups.
-# Roles will be added as they are developed.
-#
-# Expected inventory groups:
-#   - logging_servers      # Centralized log aggregation
-#   - monitoring_servers   # Grafana, Prometheus, etc.
-#   - mgmt_plane          # General management plane hosts
+# Management-plane services are Ansible-only by design: they carry no Terraform
+# state (architecture/substrate/management-plane/extended-services.md section 5).
 #
 # Usage:
 #   ansible-playbook playbooks/site.yml
-#   ansible-playbook playbooks/site.yml --limit logging_servers
-#   ansible-playbook playbooks/site.yml --limit monitoring_servers
+#   ansible-playbook playbooks/site.yml --limit tenant_dns
+#   ansible-playbook playbooks/site.yml --tags tenant-dns   # zones/keys only
 
-# Placeholder plays - uncomment and configure as roles are added
+- name: Create management-plane VMs
+  hosts: management_plane
+  gather_facts: false
+  # The guest does not exist on the first run, so the PVE calls are delegated to
+  # the control node; the role gathers facts itself once the VM answers on SSH.
+  roles:
+    - proxmox_vm
+
+- name: Configure tenant authoritative DNS
+  hosts: tenant_dns
+  become: true
+  roles:
+    - powerdns
+
+# Placeholder plays for substrate-facing management services. These land on
+# their own host, not beside tenant DNS: their change cadence is much higher and
+# a restart there must not take tenant name resolution with it (ADR-0004).
 #
 # - name: Configure logging servers
 #   hosts: logging_servers
@@ -27,9 +38,3 @@
 #   become: true
 #   roles:
 #     - grafana
-#
-# - name: Configure management plane hosts
-#   hosts: mgmt_plane
-#   become: true
-#   roles:
-#     - base

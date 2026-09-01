@@ -14,13 +14,33 @@ repo-root/                 # Collection root = git repo root (Galaxy-compatible 
 ├── meta/runtime.yml       # Ansible version requirement
 ├── ansible.cfg            # Development config (uses external inventory)
 ├── Makefile               # Build/install automation
-├── playbooks/site.yml     # Main playbook (placeholder for future roles)
-├── roles/                 # Collection roles (empty - to be developed)
+├── playbooks/site.yml     # Main playbook
+├── roles/
+│   ├── proxmox_vm/        # Clone a mgmt-plane VM from a Packer template
+│   ├── powerdns/          # Tenant authoritative DNS (ADR-0004)
 │   ├── logging/           # (planned) Centralized log aggregation
 │   ├── grafana/           # (planned) Grafana dashboards and monitoring
 │   └── ...
 └── plugins/               # Custom plugins (if needed)
 ```
+
+## Rules that are easy to get wrong
+
+- **No Terraform here.** Management-plane workloads are Ansible-only
+  (`extended-services.md` §5). That is not an oversight to be corrected.
+- **Management VMs are addressed by DHCP reservation, not static cloud-init.**
+  The MAC is declared in inventory, the core router's Kea reservation pins the
+  address to it, and the A record follows. Static `ipconfig` is the *tenant*
+  pattern, correct there only because EVPN zones have no DHCP at all.
+- **Never pin a template VMID.** Proxmox reassigns it on every image-factory
+  rebuild. `proxmox_vm` matches the template by name prefix and takes the newest.
+- **`powerdns` creates zones and keys, never records.** Records are tenant
+  content, written by the tenant's own Terraform over RFC 2136 (ADR-0004). A
+  TSIG key is bound to one tenant's zones, which is what makes the namespace
+  boundary a control rather than a convention.
+- **TSIG secrets are imported from the vault, not generated on the server.**
+  A generated key would not survive a rebuild, and every tenant's Terraform
+  would need re-issuing.
 
 ## Common Commands
 

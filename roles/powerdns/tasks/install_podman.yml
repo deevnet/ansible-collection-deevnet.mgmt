@@ -1,0 +1,8 @@
+---
+- name: Install podman and the sqlite client used to seed the schema
+  ansible.builtin.package:
+    name:
+      - podman
+      - sqlite
+    state: present
+  become: true

@@ -1,0 +1,28 @@
+---
+- name: Deploy the pdns-auth systemd unit
+  ansible.builtin.template:
+    src: pdns-auth.service.j2
+    dest: "{{ powerdns_systemd_unit_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart pdns-auth
+  become: true
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: Enable and start pdns-auth
+  ansible.builtin.service:
+    name: pdns-auth
+    enabled: "{{ powerdns_systemd_enabled }}"
+    state: "{{ powerdns_systemd_state }}"
+  become: true
+
+- name: Wait for PowerDNS to answer on port {{ powerdns_listen_port }}
+  ansible.builtin.wait_for:
+    port: "{{ powerdns_listen_port }}"
+    host: 127.0.0.1
+    timeout: 60

@@ -1,0 +1,38 @@
+---
+- name: Ensure semanage is installed (for SELinux fcontext management)
+  ansible.builtin.package:
+    name: policycoreutils-python-utils
+    state: present
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+  become: true
+
+- name: Check if SELinux context rule for the PowerDNS data root exists
+  ansible.builtin.shell: |
+    semanage fcontext -l | grep -F '{{ powerdns_data_root }}(/.*)?'
+  register: powerdns_fcontext_check
+  changed_when: false
+  failed_when: false
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+  become: true
+
+- name: Add SELinux context rule for PowerDNS data directories if missing
+  ansible.builtin.command: >
+    semanage fcontext -a -t {{ powerdns_selinux_context }} '{{ powerdns_data_root }}(/.*)?'
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+    - powerdns_fcontext_check.rc != 0
+  become: true
+
+- name: Apply SELinux context to PowerDNS data directories
+  ansible.builtin.command: "restorecon -Rv {{ powerdns_data_root }}"
+  register: powerdns_restorecon
+  changed_when: powerdns_restorecon.stdout != ""
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+  become: true
