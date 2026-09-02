@@ -1,4 +1,5 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
+        vm-identity vm-identity-assign \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -42,6 +43,12 @@ help:
 "" \
 "  apply" \
 "      install-dev + run playbooks/site.yml using local collections first" \
+"" \
+"  vm-identity" \
+"      Audit management-plane VM identity and report the next free VMID" \
+"" \
+"  vm-identity-assign" \
+"      vm-identity + allocate identity for management VMs that have none" \
 "" \
 "  list" \
 "      Show installed collections in project and user paths" \
@@ -94,6 +101,19 @@ publish: deps install-user
 apply: install-dev
 	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
 	  ansible-playbook playbooks/site.yml
+
+# Audit management-plane VM identity and report the next free VMID. Read-only:
+# it surveys every hypervisor and every MAC in inventory, and writes nothing.
+vm-identity: install-dev
+	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook playbooks/vm-identity.yml
+
+# Same, then allocate identity for any management VM that has none, writing a
+# generated identity.yml into the inventory repo. Run the opnsense_dhcp role
+# against the core router before building a newly allocated VM.
+vm-identity-assign: install-dev
+	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook playbooks/vm-identity.yml -e vm_identity_assign=true
 
 # ---------- Inspection ----------
 list:

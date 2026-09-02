@@ -1,0 +1,31 @@
+---
+# Runs once on the control node. Every fact it needs is reachable through
+# `hostvars` and `groups`, so it never connects to a managed host.
+
+- name: Assert the substrate declares hypervisors to survey
+  ansible.builtin.assert:
+    that:
+      - _hypervisors | length > 0
+    fail_msg: >-
+      Inventory group '{{ vm_identity_hypervisor_group }}' is empty or absent.
+      VMIDs in use can only be learned from the PVE API - inventory records a
+      VMID for only the VMs we build - so with no hypervisors to ask, any answer
+      this role gave would be a guess.
+    success_msg: "Surveying {{ _hypervisors | length }} hypervisor(s)."
+  vars:
+    # Both messages are templated before the assertion is evaluated, so the
+    # group lookup needs its default here rather than only in `that`.
+    _hypervisors: "{{ groups[vm_identity_hypervisor_group] | default([]) }}"
+
+- name: Survey every hypervisor for VMIDs in use
+  ansible.builtin.include_tasks: survey.yml
+
+- name: Collect identities declared in inventory
+  ansible.builtin.include_tasks: inventory.yml
+
+- name: Audit identity for collisions and drift
+  ansible.builtin.include_tasks: audit.yml
+
+- name: Assign identity to management VMs that have none
+  ansible.builtin.include_tasks: assign.yml
+  when: vm_identity_assign | bool

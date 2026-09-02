@@ -1,0 +1,65 @@
+---
+# The PVE API is the only place that knows which VMIDs are really taken:
+# inventory records a VMID for exactly one of the VMs that exist. Credentials
+# come from each hypervisor's own inventory entry, the same way proxmox_vm
+# reads them.
+
+- name: Query every hypervisor for VMIDs in use
+  community.general.proxmox_vm_info:
+    api_host: "{{ hostvars[item].ansible_host }}"
+    api_user: "{{ hostvars[item].proxmox_token_id.split('!')[0] }}"
+    api_token_id: "{{ hostvars[item].proxmox_token_id.split('!')[1] }}"
+    api_token_secret: "{{ hostvars[item].proxmox_token_secret }}"
+    validate_certs: false
+    # qemu AND lxc: a container holds a VMID just as hard as a VM does, and so
+    # does a template. Deliberately no `node:` filter - if these nodes are ever
+    # clustered, the survey widens by itself instead of going quietly stale.
+    type: all
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  # The API token is in the task args. Registered results survive this intact.
+  no_log: true
+  # Collect every answer, then assert about the whole set below, so an
+  # unreachable hypervisor produces the explanation rather than a stack trace.
+  ignore_errors: true
+  loop: "{{ groups[vm_identity_hypervisor_group] }}"
+  register: vm_identity_survey
+
+# THE safety property of this role. Allocating from a partial view of the
+# substrate is how you hand out a VMID that is already taken - and because the
+# nodes are not clustered, nothing downstream would catch it. The two VMs would
+# simply share a MAC, and their Kea reservation would flip on every run.
+- name: Assert every hypervisor answered
+  ansible.builtin.assert:
+    that:
+      - _unanswered | length == 0
+    fail_msg: >-
+      {{ _unanswered | join(', ') }} did not answer
+      ({{ _answered | length }}/{{ groups[vm_identity_hypervisor_group] | length }}
+      hypervisors reachable). Refusing to allocate or audit from a partial
+      survey: a VMID free on the hypervisors that did answer may already be
+      taken on one that did not, and the two VMs would end up sharing a MAC.
+      Fix reachability or the API token, then re-run.
+    success_msg: "All {{ _answered | length }} hypervisor(s) answered."
+  vars:
+    # `proxmox_vms` is present only on a successful call, which makes it a
+    # sounder success signal than `failed` under ignore_errors.
+    _answered: >-
+      {{ groups[vm_identity_hypervisor_group] | zip(vm_identity_survey.results)
+         | selectattr('1.proxmox_vms', 'defined') | map(attribute='0') | list }}
+    _unanswered: >-
+      {{ groups[vm_identity_hypervisor_group] | difference(_answered) }}
+
+- name: Build the substrate-wide VMID map
+  ansible.builtin.set_fact:
+    vm_identity_in_use: >-
+      {{ vm_identity_survey.results
+         | map(attribute='proxmox_vms') | flatten
+         | selectattr('vmid', 'defined')
+         | list }}
+
+- name: Extract the VMIDs in use
+  ansible.builtin.set_fact:
+    vm_identity_used_vmids: >-
+      {{ vm_identity_in_use | map(attribute='vmid') | map('int') | sort | list }}

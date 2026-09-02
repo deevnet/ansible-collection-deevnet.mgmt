@@ -1,0 +1,36 @@
+---
+# Allocate and audit management-plane VM identity.
+#
+# A management VM's MAC is derived from its Proxmox VMID rather than invented,
+# so adding a management VM is "allocate a VMID" and the MAC, the DHCP
+# reservation and the address all follow. See docs/standards/mac-naming.
+
+# The inventory group whose VMs we ASSIGN identity for.
+vm_identity_group: management_plane
+
+# The group surveyed for VMIDs already in use - every hypervisor in the
+# substrate, not just the one a given VM lands on. The nodes are not clustered,
+# so Proxmox enforces VMID uniqueness only WITHIN a node, and the MAC derives
+# from the VMID: a VMID unique per-node would put two VMs on one MAC.
+vm_identity_hypervisor_group: hypervisors
+
+# The interface whose MAC is derived. Management VMs have exactly one NIC.
+vm_identity_interface: eth0
+
+vm_identity_namespace: "{{ deevnet_mac_namespace }}"
+vm_identity_range: "{{ deevnet_mgmt_vmid_range }}"
+
+# Where generated identity files are written. `inventory_dir` is undefined for
+# the implicit localhost this role runs on, so the inventory source is used.
+vm_identity_inventory_dir: "{{ ansible_inventory_sources | first }}"
+
+# Values meaning "no MAC recorded" rather than a real address. Matches the
+# filter in deevnet.net opnsense_dhcp gather_hosts.yml, so the two agree about
+# what counts as a MAC.
+vm_identity_null_macs:
+  - UNKNOWN
+  - unknown
+  - ""
+
+# Read-only by default; writing inventory is opt-in.
+vm_identity_assign: false

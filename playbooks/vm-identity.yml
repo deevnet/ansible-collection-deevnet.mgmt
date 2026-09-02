@@ -1,0 +1,28 @@
+---
+# Allocate and audit management-plane VM identity (VMID -> MAC).
+#
+# A management VM's inventory entry exists before its MAC does, so the MAC is
+# derived from the VMID rather than invented. This surveys every hypervisor in
+# the substrate before answering: the nodes are NOT clustered, so Proxmox
+# enforces VMID uniqueness only within a node, and a VMID unique per-node would
+# put two VMs on one MAC.
+#
+# Usage:
+#   ansible-playbook playbooks/vm-identity.yml                        # audit + what is next
+#   ansible-playbook playbooks/vm-identity.yml -e vm_identity_assign=true
+#
+# Allocation writes a generated identity.yml into the inventory repo. Run the
+# opnsense_dhcp role against the core router BEFORE building a newly allocated
+# VM, or it boots on a pool lease instead of its reservation.
+
+- name: Allocate and audit VM identity
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # group_vars/all derives ansible_host from env.interfaces, which the
+    # control node has no entry for. Both are overridden here so the play can
+    # still read the substrate-wide vars it needs from group_vars/all.
+    ansible_host: 127.0.0.1
+    ansible_connection: local
+  roles:
+    - vm_identity

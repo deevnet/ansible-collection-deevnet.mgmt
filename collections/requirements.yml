@@ -2,3 +2,8 @@
 collections:
   - name: ansible.posix
     version: ">=1.5.0"
+  # proxmox_kvm / proxmox_vm_info, used by the proxmox_vm and vm_identity
+  # roles. Declared in galaxy.yml but previously not installed here, so both
+  # roles worked only by accident of the system-wide package.
+  - name: community.general
+    version: ">=8.0.0"
