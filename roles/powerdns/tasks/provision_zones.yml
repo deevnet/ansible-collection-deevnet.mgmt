@@ -1,0 +1,81 @@
+---
+# ADR-0004's onboarding act: one forward zone, one reverse zone and one TSIG
+# key per tenant, all derived from the site registry. This creates zones and
+# credentials; it never creates a record. Records are tenant content, written
+# by the tenant's own Terraform over RFC 2136.
+#
+# TSIG secrets come from the vault and are IMPORTED rather than generated, so
+# the server is reproducible: rebuilding it re-imports the same keys and every
+# tenant's Terraform keeps working without re-issuing credentials.
+
+- name: Fail if a tenant has no TSIG secret in the vault
+  ansible.builtin.assert:
+    that:
+      - powerdns_tsig_secrets[item.name] is defined
+      - powerdns_tsig_secrets[item.name] | length > 0
+    fail_msg: >-
+      Tenant '{{ item.name }}' has no TSIG secret. Without one it cannot publish
+      any name, and a generated-on-the-server key would not survive a rebuild.
+      Generate one and add it to the vault under
+      vault_tenant_tsig_keys['{{ item.name }}']:
+
+        openssl rand -base64 32
+
+      Then give the same value to the tenant's Terraform as tsig_key_secret.
+    success_msg: "TSIG secret present for {{ item.name }}."
+  loop: "{{ powerdns_tenants }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: List zones PowerDNS already holds
+  ansible.builtin.command:
+    cmd: "podman exec {{ powerdns_container_name }} pdnsutil list-all-zones"
+  register: powerdns_existing_zones
+  changed_when: false
+  become: true
+
+- name: Create tenant zones
+  ansible.builtin.command:
+    cmd: "podman exec {{ powerdns_container_name }} pdnsutil create-zone {{ item }}"
+  loop: "{{ powerdns_tenant_zone_names }}"
+  when: item not in powerdns_existing_zones.stdout_lines
+  become: true
+
+- name: Import each tenant's TSIG key
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ powerdns_container_name }}
+      pdnsutil import-tsig-key {{ item.name }} {{ powerdns_tsig_algorithm }}
+      {{ powerdns_tsig_secrets[item.name] }}
+  loop: "{{ powerdns_tenants }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: powerdns_tsig_import
+  changed_when: "'Imported' in powerdns_tsig_import.stdout | default('')"
+  failed_when:
+    - powerdns_tsig_import.rc != 0
+    - "'already exists' not in (powerdns_tsig_import.stderr | default(''))"
+  no_log: true
+  become: true
+
+# This is the control that makes ADR-0004's "namespaced" constraint real. The
+# key is bound to this tenant's zones only, so an update signed with tenant A's
+# key is REFUSED for tenant B's zone by the server, not by convention.
+- name: Bind each tenant's key to its own zones
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ powerdns_container_name }}
+      pdnsutil set-meta {{ item.zone }} TSIG-ALLOW-DNSUPDATE {{ item.key }}
+  loop: "{{ powerdns_tenant_zone_bindings }}"
+  loop_control:
+    label: "{{ item.zone }} <- key {{ item.key }}"
+  become: true
+
+- name: Restrict which networks may attempt an update
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ powerdns_container_name }}
+      pdnsutil set-meta {{ item }} ALLOW-DNSUPDATE-FROM {{ powerdns_dnsupdate_from }}
+  loop: "{{ powerdns_tenant_zone_names }}"
+  become: true

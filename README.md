@@ -4,16 +4,40 @@ Ansible collection for management plane services including centralized logging, 
 
 ## Overview
 
-This collection provides roles for deploying and configuring management services in the deevnet virtual control plane:
+This collection provides roles for deploying and configuring management services in the deevnet virtual control plane.
+
+Management-plane workloads are **Ansible-only by design** — they carry no Terraform state. See
+`architecture/substrate/management-plane/extended-services.md` §5.
+
+### Roles
+
+| Role | Purpose |
+|------|---------|
+| `proxmox_vm` | Clone a management-plane VM from a Packer-built Proxmox template |
+| `powerdns` | PowerDNS Authoritative serving per-tenant delegated zones (ADR-0004) |
+
+### Planned
 
 - **Centralized Logging** - Log aggregation and analysis
 - **Monitoring** - Grafana dashboards and metrics collection
 - **Observability** - Unified visibility into infrastructure health
 
+These land on their own host, not beside tenant DNS: their change cadence is much higher, and a
+restart there must not take tenant name resolution with it.
+
 ## Requirements
 
 - Ansible >= 2.14
 - Target systems: Fedora/RHEL
+- Collections: `ansible.posix`, `community.general`
+- **On the control node**: `proxmoxer` and `requests`, required by `community.general.proxmox_kvm`.
+  Note that `deevnet.net`'s `proxmox_node_network` role deliberately uses raw `ansible.builtin.uri`
+  to avoid this dependency; `proxmox_vm` accepts it in exchange for not hand-rolling clone,
+  cloud-init and lifecycle handling.
+
+  ```bash
+  pip install proxmoxer requests
+  ```
 
 ## Installation
 

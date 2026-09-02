@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: powerdns
+  description: PowerDNS Authoritative serving per-tenant delegated zones (ADR-0004)
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

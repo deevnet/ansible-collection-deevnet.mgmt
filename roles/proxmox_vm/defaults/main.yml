@@ -1,0 +1,53 @@
+---
+# Create a management-plane VM on a Proxmox node by cloning a Packer-built
+# template. Ansible-only by design: management-plane workloads carry no
+# Terraform state (extended-services.md section 5).
+#
+# Everything below is normally supplied by the host's `mgmt_vm` block in
+# host_vars; these are the fallbacks.
+
+# Which hypervisor, and which PVE node on it.
+proxmox_vm_hypervisor: "{{ mgmt_vm.hypervisor }}"
+proxmox_vm_node: "{{ mgmt_vm.node }}"
+
+# The VM's own identity. vmid is declared so a rebuild reclaims the same slot.
+proxmox_vm_name: "{{ inventory_hostname }}"
+proxmox_vm_id: "{{ mgmt_vm.vmid }}"
+
+# Template selection is by NAME PREFIX, never by VMID. The image factory names
+# templates fedora-server-<release>-<build> and Proxmox assigns the next free
+# ID on every rebuild, so a pinned ID goes stale silently. The newest matching
+# template wins.
+proxmox_vm_template_prefix: "{{ mgmt_vm.template_prefix | default('fedora-server-') }}"
+
+proxmox_vm_storage: "{{ mgmt_vm.storage }}"
+proxmox_vm_cores: "{{ mgmt_vm.cores | default(2) }}"
+proxmox_vm_memory: "{{ mgmt_vm.memory | default(2048) }}"
+proxmox_vm_disk_size: "{{ mgmt_vm.disk_size | default(32) }}"
+proxmox_vm_bridge: "{{ mgmt_vm.bridge | default('vmbr0') }}"
+
+# Addressing is deterministic MAC + DHCP reservation, not static cloud-init.
+# The MAC is declared in inventory and the core router's Kea reservation pins
+# the address to it, so a rebuilt VM keeps its identity and its DNS record.
+# (Management-hypervisor MAC policy; extended-services.md section 4.)
+#
+# This is deliberately NOT the tenant pattern. Tenant workloads are addressed
+# statically by cloud-init because EVPN zones have no DHCP at all (ADR-0002);
+# the management segment does have DHCP, so it is used.
+proxmox_vm_mac: "{{ env.interfaces.eth0.mac }}"
+proxmox_vm_ipconfig: "ip=dhcp"
+
+proxmox_vm_ciuser: a_autoprov
+proxmox_vm_sshkeys: "{{ deevnet_autoprov_ssh_key }}"
+proxmox_vm_searchdomain: "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
+proxmox_vm_nameserver: "{{ deevnet_vlans.management.gateway }}"
+
+# PVE API, taken from the hypervisor's own inventory entry so credentials live
+# in one place (host_vars/<hypervisor>/vault.yml).
+proxmox_vm_api_host: "{{ hostvars[proxmox_vm_hypervisor].ansible_host }}"
+proxmox_vm_api_token_id: "{{ hostvars[proxmox_vm_hypervisor].proxmox_token_id }}"
+proxmox_vm_api_token_secret: "{{ hostvars[proxmox_vm_hypervisor].proxmox_token_secret }}"
+proxmox_vm_api_validate_certs: false
+
+# Seconds to wait for the guest to come up on SSH after first boot.
+proxmox_vm_boot_timeout: 300

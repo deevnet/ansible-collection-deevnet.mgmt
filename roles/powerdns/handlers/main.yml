@@ -1,0 +1,13 @@
+---
+- name: restart pdns-auth
+  ansible.builtin.service:
+    name: pdns-auth
+    state: restarted
+  become: true
+
+- name: cleanup powerdns temp dir
+  ansible.builtin.file:
+    path: "{{ powerdns_temp_dir.path }}"
+    state: absent
+  become: true
+  when: powerdns_temp_dir is defined

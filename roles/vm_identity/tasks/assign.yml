@@ -1,0 +1,82 @@
+---
+# Allocation is the only write this role makes, and it only ever creates
+# identity for a management VM that has none. It never renumbers an existing
+# one: that would move the MAC, the reservation and the address, and
+# opnsense_dhcp does not prune the orphan it would leave behind.
+
+- name: Report when there is nothing to allocate
+  ansible.builtin.debug:
+    msg: >-
+      Every host in '{{ vm_identity_group }}' already has an identity. Nothing
+      to allocate.
+  when: vm_identity_unassigned | length == 0
+
+- name: Allocate identity
+  when: vm_identity_unassigned | length > 0
+  block:
+
+    # The whole batch is allocated in one call so that two new hosts in a
+    # single run cannot be handed the same VMID.
+    - name: Choose free VMIDs for {{ vm_identity_unassigned | join(', ') }}
+      ansible.builtin.set_fact:
+        vm_identity_allocations: >-
+          {{ vm_identity_unassigned | zip(
+               (vm_identity_used_vmids
+                + (vm_identity_declared | map(attribute='vmid') | map('int') | list))
+               | deevnet.mgmt.free_vmids(vm_identity_range.start,
+                                         vm_identity_range.end,
+                                         vm_identity_unassigned | length))
+             | list }}
+
+    - name: Check the host_vars directory exists for each new host
+      ansible.builtin.stat:
+        path: "{{ vm_identity_inventory_dir }}/host_vars/{{ item[0] }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      loop: "{{ vm_identity_allocations }}"
+      loop_control:
+        label: "{{ item[0] }}"
+      register: vm_identity_hostvars_dirs
+
+    - name: Assert each new host uses the host_vars directory layout
+      ansible.builtin.assert:
+        that:
+          - _missing | length == 0
+        fail_msg: >-
+          Generated identity needs host_vars/<host>/ to be a directory, but it
+          is not for: {{ _missing | join(', ') }}. Convert the flat file first,
+          e.g. `git mv host_vars/<host>.yml host_vars/<host>/vars.yml`, so the
+          hand-written vars and the generated identity are separate files.
+        success_msg: "host_vars layout is ready for {{ vm_identity_unassigned | join(', ') }}."
+      vars:
+        _missing: >-
+          {{ vm_identity_hostvars_dirs.results
+             | rejectattr('stat.isdir', 'defined')
+             | map(attribute='item.0') | list }}
+
+    - name: Write generated identity
+      ansible.builtin.template:
+        src: identity.yml.j2
+        dest: "{{ vm_identity_inventory_dir }}/host_vars/{{ item[0] }}/identity.yml"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      loop: "{{ vm_identity_allocations }}"
+      loop_control:
+        label: "{{ item[0] }}"
+      vars:
+        identity_host: "{{ item[0] }}"
+        identity_vmid: "{{ item[1] | int }}"
+        identity_mac: "{{ item[1] | int | deevnet.mgmt.vmid_to_mac(vm_identity_namespace) }}"
+
+    - name: Report what was allocated
+      ansible.builtin.debug:
+        msg: >-
+          {{ item[0] }}: vmid {{ item[1] }} ->
+          {{ item[1] | int | deevnet.mgmt.vmid_to_mac(vm_identity_namespace) }}.
+          Run the opnsense_dhcp role against the core router BEFORE building
+          this VM, or it will boot on a pool lease instead of its reservation.
+      loop: "{{ vm_identity_allocations }}"
+      loop_control:
+        label: "{{ item[0] }}"

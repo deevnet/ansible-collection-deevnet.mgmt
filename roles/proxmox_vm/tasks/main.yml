@@ -1,0 +1,148 @@
+---
+# The VM does not exist yet, so every PVE call is delegated to the control node
+# and talks to the hypervisor's API. Only the final reachability check runs
+# against the guest itself.
+
+- name: Assert the host declares a VM specification
+  ansible.builtin.assert:
+    that:
+      - mgmt_vm is defined
+      - mgmt_vm.node is defined
+      - mgmt_vm.vmid is defined
+      - proxmox_vm_mac is defined
+      - proxmox_vm_mac | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} has no usable mgmt_vm block. A management-plane
+      VM needs mgmt_vm.node, mgmt_vm.vmid and a declared MAC at
+      infrastructure.interfaces.eth0.mac (the DHCP reservation and the DNS
+      record both key off that MAC).
+    success_msg: "VM specification present for {{ inventory_hostname }}."
+
+- name: Look up VMs on {{ proxmox_vm_node }}
+  community.general.proxmox_vm_info:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    node: "{{ proxmox_vm_node }}"
+    type: qemu
+  delegate_to: localhost
+  become: false
+  register: proxmox_vm_inventory
+
+- name: Select the newest template matching {{ proxmox_vm_template_prefix }}
+  ansible.builtin.set_fact:
+    proxmox_vm_template: >-
+      {{
+        proxmox_vm_inventory.proxmox_vms
+        | selectattr('template', 'defined')
+        | selectattr('template', 'equalto', 1)
+        | selectattr('name', 'defined')
+        | selectattr('name', 'match', '^' ~ proxmox_vm_template_prefix)
+        | map(attribute='name')
+        | sort
+        | last
+        | default('')
+      }}
+
+- name: Fail clearly when no template matches
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_template | length > 0
+    fail_msg: >-
+      No template on node {{ proxmox_vm_node }} whose name starts with
+      '{{ proxmox_vm_template_prefix }}'. Build one first:
+      `make proxmox-fedora-pve1` in deevnet-image-factory.
+    success_msg: "Cloning from template {{ proxmox_vm_template }}."
+
+- name: Determine whether {{ proxmox_vm_name }} already exists
+  ansible.builtin.set_fact:
+    proxmox_vm_exists: >-
+      {{
+        proxmox_vm_inventory.proxmox_vms
+        | selectattr('name', 'defined')
+        | selectattr('name', 'equalto', proxmox_vm_name)
+        | list | length > 0
+      }}
+
+# Guarded rather than relying on the module's own clone idempotency: a clone is
+# a create-once operation and a second one would collide on vmid.
+- name: Clone {{ proxmox_vm_template }} into {{ proxmox_vm_name }}
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    node: "{{ proxmox_vm_node }}"
+    clone: "{{ proxmox_vm_template }}"
+    name: "{{ proxmox_vm_name }}"
+    newid: "{{ proxmox_vm_id }}"
+    storage: "{{ proxmox_vm_storage }}"
+    full: true
+    timeout: "{{ proxmox_vm_boot_timeout }}"
+    state: present
+  delegate_to: localhost
+  become: false
+  when: not proxmox_vm_exists
+
+- name: Configure {{ proxmox_vm_name }} hardware, MAC and cloud-init
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    node: "{{ proxmox_vm_node }}"
+    vmid: "{{ proxmox_vm_id }}"
+    cores: "{{ proxmox_vm_cores }}"
+    memory: "{{ proxmox_vm_memory }}"
+    agent: "enabled=1"
+    # The declared MAC is the whole point: the Kea reservation and the A record
+    # key off it, so the address survives a rebuild.
+    net:
+      net0: "virtio={{ proxmox_vm_mac }},bridge={{ proxmox_vm_bridge }}"
+    ipconfig:
+      ipconfig0: "{{ proxmox_vm_ipconfig }}"
+    ciuser: "{{ proxmox_vm_ciuser }}"
+    sshkeys: "{{ proxmox_vm_sshkeys }}"
+    nameservers: "{{ proxmox_vm_nameserver }}"
+    searchdomains: "{{ proxmox_vm_searchdomain }}"
+    update: true
+    state: present
+  delegate_to: localhost
+  become: false
+
+- name: Start {{ proxmox_vm_name }}
+  community.general.proxmox_kvm:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    node: "{{ proxmox_vm_node }}"
+    vmid: "{{ proxmox_vm_id }}"
+    state: started
+  delegate_to: localhost
+  become: false
+
+# Asserts the outcome, not the API call: the guest booted, got its reserved
+# address and accepts the automation key.
+- name: Wait for {{ proxmox_vm_name }} to answer on SSH
+  ansible.builtin.wait_for_connection:
+    timeout: "{{ proxmox_vm_boot_timeout }}"
+
+- name: Gather facts now the guest is up
+  ansible.builtin.setup:
+
+- name: Assert the guest came up on its reserved address
+  ansible.builtin.assert:
+    that:
+      - env.interfaces.eth0.ip in ansible_all_ipv4_addresses
+    fail_msg: >-
+      {{ proxmox_vm_name }} booted but is not on {{ env.interfaces.eth0.ip }}
+      (has {{ ansible_all_ipv4_addresses | join(', ') }}). The DHCP reservation
+      for {{ proxmox_vm_mac }} is missing or points elsewhere - run the
+      opnsense_dhcp role against the core router.
+    success_msg: "{{ proxmox_vm_name }} is up on {{ env.interfaces.eth0.ip }}."

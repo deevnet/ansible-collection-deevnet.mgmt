@@ -1,0 +1,19 @@
+[Unit]
+Description=PowerDNS Authoritative - tenant DNS (ADR-0004)
+Documentation=https://doc.powerdns.com/authoritative/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+ExecStartPre=-/usr/bin/podman stop {{ powerdns_container_name }}
+ExecStart=/usr/bin/podman start -a {{ powerdns_container_name }}
+ExecStop=/usr/bin/podman stop -t 30 {{ powerdns_container_name }}
+
+[Install]
+WantedBy=multi-user.target

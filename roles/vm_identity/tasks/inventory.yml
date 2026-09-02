@@ -1,0 +1,69 @@
+---
+# What inventory believes, as opposed to what the hypervisors report. The two
+# must agree, and inventory additionally covers VMs allocated but not yet built,
+# which the API cannot see.
+
+- name: Initialise inventory identity lists
+  ansible.builtin.set_fact:
+    vm_identity_declared: []
+    vm_identity_unassigned: []
+    vm_identity_all_macs: []
+
+# Every host declaring an mgmt_vm block is a VM we build, and therefore one
+# whose MAC we ASSIGN. Everything else is a MAC we merely OBSERVE - a bare-metal
+# NIC or a guest that predates this scheme - recorded as found and not rewritten.
+#
+# A host whose identity has not been allocated yet resolves to vmid 0 (its
+# vars.yml defaults the generated values), which is how it stays parseable
+# before the generated file exists.
+- name: Collect declared VM identities
+  ansible.builtin.set_fact:
+    vm_identity_declared: "{{ vm_identity_declared + [_entry] }}"
+  loop: "{{ groups['all'] }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - hostvars[item].mgmt_vm is defined
+    - hostvars[item].mgmt_vm.vmid is defined
+    - hostvars[item].mgmt_vm.vmid | int > 0
+  vars:
+    _entry:
+      host: "{{ item }}"
+      # `| int` throughout: mgmt_vm.vmid arrives as a string, because it is
+      # itself templated from the generated identity file.
+      vmid: "{{ hostvars[item].mgmt_vm.vmid | int }}"
+      node: "{{ hostvars[item].mgmt_vm.node | default('') }}"
+      hypervisor: "{{ hostvars[item].mgmt_vm.hypervisor | default('') }}"
+      namespace: "{{ hostvars[item].deevnet_mac_namespace }}"
+      mac: >-
+        {{ hostvars[item].infrastructure.interfaces[vm_identity_interface].mac
+           | default('') | lower }}
+
+- name: Collect management VMs still awaiting an identity
+  ansible.builtin.set_fact:
+    vm_identity_unassigned: "{{ vm_identity_unassigned + [item] }}"
+  loop: "{{ groups[vm_identity_group] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: >-
+    hostvars[item].mgmt_vm is not defined
+    or hostvars[item].mgmt_vm.vmid is not defined
+    or hostvars[item].mgmt_vm.vmid | int == 0
+
+# Every MAC anywhere in inventory, assigned or observed. A derived MAC that
+# collided with a bare-metal NIC would break exactly as hard as one that
+# collided with another VM, so the uniqueness check has to see both.
+- name: Collect every MAC declared in inventory
+  ansible.builtin.set_fact:
+    vm_identity_all_macs: "{{ vm_identity_all_macs + _macs }}"
+  loop: "{{ groups['all'] }}"
+  loop_control:
+    label: "{{ item }}"
+  when: hostvars[item].infrastructure.interfaces is defined
+  vars:
+    _macs: >-
+      {{ hostvars[item].infrastructure.interfaces | dict2items
+         | selectattr('value.mac', 'defined')
+         | rejectattr('value.mac', 'in', vm_identity_null_macs)
+         | map('combine', {'host': item})
+         | list }}

@@ -1,0 +1,21 @@
+---
+- name: Create PowerDNS data root
+  ansible.builtin.file:
+    path: "{{ powerdns_data_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+
+- name: Create PowerDNS config and database directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ powerdns_config_dir }}"
+    - "{{ powerdns_db_dir }}"
+  become: true

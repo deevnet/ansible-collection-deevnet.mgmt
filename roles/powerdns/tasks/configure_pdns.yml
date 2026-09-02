@@ -1,0 +1,10 @@
+---
+- name: Deploy pdns.conf
+  ansible.builtin.template:
+    src: pdns.conf.j2
+    dest: "{{ powerdns_config_dir }}/pdns.conf"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart pdns-auth
+  become: true

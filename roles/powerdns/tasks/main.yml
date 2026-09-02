@@ -1,0 +1,36 @@
+---
+# Mirrors the shape of deevnet.builder's omada_controller role: podman image
+# from the artifact server, hand-written systemd unit, SELinux contexts and a
+# firewall opening. The two extra steps are DNS-specific - a config file and
+# the per-tenant zone/key provisioning that is ADR-0004's onboarding act.
+
+- name: Install Podman
+  ansible.builtin.import_tasks: install_podman.yml
+
+- name: Free port 53 on the host
+  ansible.builtin.import_tasks: free_port53.yml
+
+- name: Setup persistent data directories
+  ansible.builtin.import_tasks: setup_directories.yml
+
+- name: Configure SELinux for container volumes
+  ansible.builtin.import_tasks: setup_selinux.yml
+
+- name: Deploy PowerDNS configuration
+  ansible.builtin.import_tasks: configure_pdns.yml
+
+- name: Download container image tarball
+  ansible.builtin.import_tasks: download_image.yml
+
+- name: Load container image and create container
+  ansible.builtin.import_tasks: load_container.yml
+
+- name: Configure systemd service
+  ansible.builtin.import_tasks: setup_systemd.yml
+
+- name: Configure firewall rules
+  ansible.builtin.import_tasks: configure_firewall.yml
+
+- name: Provision tenant zones and TSIG keys
+  ansible.builtin.import_tasks: provision_zones.yml
+  tags: [tenant-dns]

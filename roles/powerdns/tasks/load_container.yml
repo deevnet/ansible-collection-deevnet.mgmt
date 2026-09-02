@@ -1,0 +1,52 @@
+---
+- name: Load the PowerDNS image into podman
+  ansible.builtin.command:
+    cmd: "podman load -i {{ powerdns_tarball_path }}"
+  register: powerdns_load
+  changed_when: "'Loaded image' in powerdns_load.stdout or 'Getting image source signatures' in powerdns_load.stdout"
+  become: true
+
+- name: Stop pdns-auth if running
+  ansible.builtin.systemd:
+    name: pdns-auth
+    state: stopped
+  become: true
+  failed_when: false
+
+- name: Initialise the sqlite schema on first run
+  ansible.builtin.import_tasks: init_database.yml
+
+- name: Check whether the PowerDNS container already exists
+  ansible.builtin.command:
+    cmd: "podman container exists {{ powerdns_container_name }}"
+  register: powerdns_container_exists
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Remove the existing PowerDNS container if present
+  ansible.builtin.command:
+    cmd: "podman rm -f {{ powerdns_container_name }}"
+  when: powerdns_container_exists.rc == 0
+  become: true
+  notify: restart pdns-auth
+
+# Host networking rather than published ports: an authoritative server must see
+# the real client address for its per-zone ALLOW-DNSUPDATE-FROM check, and a
+# port mapping would rewrite every source to the container gateway - silently
+# turning that control into "anyone on the host network".
+- name: Create the PowerDNS container
+  ansible.builtin.command:
+    cmd: >
+      podman create
+      --name {{ powerdns_container_name }}
+      --hostname {{ inventory_hostname }}
+      --network host
+      -v {{ powerdns_config_dir }}:/etc/powerdns:Z
+      -v {{ powerdns_db_dir }}:/var/lib/powerdns:Z
+      --restart=no
+      {{ powerdns_image_name }}:{{ powerdns_image_tag }}
+  register: powerdns_create
+  changed_when: powerdns_create.rc == 0
+  become: true
+  notify: restart pdns-auth

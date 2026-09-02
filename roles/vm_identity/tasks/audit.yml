@@ -1,0 +1,230 @@
+---
+# Every check here guards a way the VMID -> MAC -> reservation -> address chain
+# breaks silently. None would surface as an error at build time; they surface as
+# a VM that boots on the wrong address five minutes later.
+#
+# Offender lists are accumulated with `when:` rather than filtered out of a
+# templated boolean: a bool rendered into a string is "False", which is truthy,
+# and every one of these checks would then pass vacuously.
+
+- name: Initialise audit result lists
+  ansible.builtin.set_fact:
+    vm_identity_outside: []
+    vm_identity_checked: []
+    vm_identity_drifted: []
+    vm_identity_stolen: []
+    vm_identity_grub_drift: []
+
+- name: Find declared VMIDs outside the allocation range
+  ansible.builtin.set_fact:
+    vm_identity_outside: "{{ vm_identity_outside + [item] }}"
+  loop: "{{ vm_identity_declared }}"
+  loop_control:
+    label: "{{ item.host }}"
+  when: >-
+    (item.vmid | int) < (vm_identity_range.start | int)
+    or (item.vmid | int) > (vm_identity_range.end | int)
+
+- name: Assert declared VMIDs are inside the allocation range
+  ansible.builtin.assert:
+    that:
+      - vm_identity_outside | length == 0
+    fail_msg: >-
+      The VMID is the sole source of the MAC, so the allocation range
+      {{ vm_identity_range.start }}-{{ vm_identity_range.end }} is also the MAC
+      range - a VMID outside it derives an address outside the block this
+      substrate reserves. Outside the range:
+      {% for e in vm_identity_outside %}
+        {{ e.host }} ({{ e.vmid }})
+      {% endfor %}
+    success_msg: "All {{ vm_identity_declared | length }} declared VMID(s) in range."
+
+- name: Assert declared VMIDs are unique across the substrate
+  ansible.builtin.assert:
+    that:
+      - _vmids | length == _vmids | unique | length
+    fail_msg: >-
+      Two hosts declare the same VMID:
+      {% for v in _vmids | unique %}{% if _vmids | select('equalto', v) | list | length > 1 %}
+      {{ v }} on {{ vm_identity_declared | selectattr('vmid', 'equalto', v | string)
+         | map(attribute='host') | join(' and ') }}.{% endif %}{% endfor %}
+      They would derive the same MAC, and the Kea reservation for it would flip
+      between their two addresses on every run.
+    success_msg: "Declared VMIDs are unique."
+  vars:
+    _vmids: "{{ vm_identity_declared | map(attribute='vmid') | map('int') | list }}"
+
+- name: Assert every host agrees on the MAC namespace
+  ansible.builtin.assert:
+    that:
+      - vm_identity_declared | map(attribute='namespace') | unique | list
+        | difference([vm_identity_namespace]) | length == 0
+    fail_msg: >-
+      Hosts disagree about deevnet_mac_namespace. One inventory is one
+      substrate and must have one namespace; a per-host override would let two
+      substrates' MACs collide.
+    success_msg: "MAC namespace is {{ vm_identity_namespace }} throughout."
+
+# Safe now that the range is proven: vmid_to_mac raises on an unencodable VMID,
+# and that exception would arrive instead of the assert message above.
+- name: Resolve each declared identity against the substrate
+  ansible.builtin.set_fact:
+    vm_identity_checked: "{{ vm_identity_checked + [_row] }}"
+  loop: "{{ vm_identity_declared }}"
+  loop_control:
+    label: "{{ item.host }}"
+  vars:
+    _derived: "{{ item.vmid | int | deevnet.mgmt.vmid_to_mac(vm_identity_namespace) }}"
+    _pve_name: >-
+      {{ vm_identity_in_use | selectattr('vmid', 'equalto', item.vmid | int)
+         | map(attribute='name') | first | default('') }}
+    _row: "{{ item | combine({'derived': _derived, 'pve_name': _pve_name}) }}"
+
+- name: Find assigned MACs that disagree with their VMID
+  ansible.builtin.set_fact:
+    vm_identity_drifted: "{{ vm_identity_drifted + [item] }}"
+  loop: "{{ vm_identity_checked }}"
+  loop_control:
+    label: "{{ item.host }}"
+  when:
+    - item.mac | length > 0
+    - item.mac != item.derived
+
+- name: Assert every assigned MAC matches the MAC its VMID derives
+  ansible.builtin.assert:
+    that:
+      - vm_identity_drifted | length == 0
+    fail_msg: >-
+      Stored MAC does not match the MAC derived from the VMID. Either the
+      generated identity file was hand-edited, or the VMID changed without
+      regenerating it. opnsense_dhcp does not prune orphans, so delete the
+      stale reservation on the core router before re-running with
+      -e vm_identity_assign=true.
+      {% for e in vm_identity_drifted %}
+        {{ e.host }}: vmid {{ e.vmid }} derives {{ e.derived }}, inventory says {{ e.mac }}.
+      {% endfor %}
+    success_msg: >-
+      {{ vm_identity_checked | rejectattr('mac', 'equalto', '') | list | length }}
+      assigned MAC(s) match their VMID.
+
+- name: Find declared VMIDs occupied by a different VM
+  ansible.builtin.set_fact:
+    vm_identity_stolen: "{{ vm_identity_stolen + [item] }}"
+  loop: "{{ vm_identity_checked }}"
+  loop_control:
+    label: "{{ item.host }}"
+  when:
+    - item.pve_name | length > 0
+    - item.pve_name != item.host
+
+- name: Assert no declared VMID is occupied by a different VM
+  ansible.builtin.assert:
+    that:
+      - vm_identity_stolen | length == 0
+    fail_msg: >-
+      A declared VMID is already in use by a different VM. The clone would fail
+      on a newid collision - rename the existing VM, or allocate a fresh VMID.
+      {% for e in vm_identity_stolen %}
+        {{ e.host }} claims vmid {{ e.vmid }}, but that slot holds '{{ e.pve_name }}'.
+      {% endfor %}
+    success_msg: "No declared VMID is occupied by another VM."
+
+- name: Assert every MAC in inventory is lowercase and colon-separated
+  ansible.builtin.assert:
+    that:
+      - _malformed | length == 0
+    fail_msg: >-
+      MAC not in the required format - lowercase hex, colon separated
+      (docs/standards/mac-address-format):
+      {% for e in _malformed %}
+        {{ e.host }} {{ e.key }}: {{ e.value.mac }}
+      {% endfor %}
+    success_msg: >-
+      All {{ vm_identity_all_macs | length }} MAC(s) in inventory are well formed.
+  vars:
+    _malformed: >-
+      {{ vm_identity_all_macs
+         | rejectattr('value.mac', 'match', '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$')
+         | list }}
+
+- name: Assert no MAC is declared twice anywhere in inventory
+  ansible.builtin.assert:
+    that:
+      - _macs | length == _macs | unique | length
+    fail_msg: >-
+      The same MAC is declared on more than one interface. A derived MAC
+      colliding with a bare-metal NIC breaks exactly as hard as one colliding
+      with another VM, which is why observed MACs are audited too.
+      {% for m in _macs | unique %}{% if _macs | select('equalto', m) | list | length > 1 %}
+        {{ m }} on {{ _pairs | selectattr('1', 'equalto', m) | map(attribute='0') | join(', ') }}
+      {% endif %}{% endfor %}
+    success_msg: "Every MAC in inventory is unique."
+  vars:
+    _macs: "{{ vm_identity_all_macs | map(attribute='value.mac') | map('lower') | list }}"
+    _labels: >-
+      {{ vm_identity_all_macs | map(attribute='host')
+         | zip(vm_identity_all_macs | map(attribute='key')) | map('join', ' ') | list }}
+    _pairs: "{{ _labels | zip(_macs) | list }}"
+
+# bootstrap_grub_mac_configs used to restate MACs as literals rather than
+# reference them, which is a second place for a MAC to go stale. They are
+# references now; this keeps them that way.
+- name: Find PXE GRUB configs that disagree with host_vars
+  ansible.builtin.set_fact:
+    vm_identity_grub_drift: "{{ vm_identity_grub_drift + [item] }}"
+  loop: "{{ _grub_entries }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: >-
+    (item.mac | lower)
+    != (hostvars[item.hostname].infrastructure.interfaces[vm_identity_interface].mac | lower)
+  vars:
+    _grub_entries: >-
+      {{ groups['bootstrap_nodes'] | default([]) | map('extract', hostvars)
+         | selectattr('bootstrap_grub_mac_configs', 'defined')
+         | map(attribute='bootstrap_grub_mac_configs') | flatten
+         | selectattr('hostname', 'in', groups['all']) | unique | list }}
+
+- name: Assert PXE GRUB configs agree with host_vars MACs
+  ansible.builtin.assert:
+    that:
+      - vm_identity_grub_drift | length == 0
+    fail_msg: >-
+      bootstrap_grub_mac_configs disagrees with host_vars. Reference the host's
+      MAC rather than restating it.
+      {% for e in vm_identity_grub_drift %}
+        {{ e.hostname }}: GRUB config says {{ e.mac | lower }}, host_vars says
+        {{ hostvars[e.hostname].infrastructure.interfaces[vm_identity_interface].mac | lower }}.
+      {% endfor %}
+    success_msg: "PXE GRUB configs agree with host_vars."
+
+- name: Report substrate VM identity
+  ansible.builtin.debug:
+    msg: "{{ _header + _pve_rows + _declared_header + _declared_rows + _footer }}"
+  vars:
+    _sorted: "{{ vm_identity_in_use | sort(attribute='vmid') }}"
+    _header:
+      - "VMIDs in use across {{ groups[vm_identity_hypervisor_group] | length }} hypervisor(s):"
+    _pve_rows: >-
+      {{ _sorted | map(attribute='vmid')
+         | zip(_sorted | map(attribute='node'), _sorted | map(attribute='name'))
+         | map('join', '  ') | list }}
+    _declared_header:
+      - ""
+      - "Declared in inventory (host, vmid, mac):"
+    _declared_rows: >-
+      {{ vm_identity_checked | map(attribute='host')
+         | zip(vm_identity_checked | map(attribute='vmid'),
+               vm_identity_checked | map(attribute='mac')
+               | map('default', '(unassigned)', true))
+         | map('join', '  ') | list }}
+    _next: >-
+      {{ (vm_identity_used_vmids
+          + (vm_identity_declared | map(attribute='vmid') | map('int') | list))
+         | deevnet.mgmt.free_vmids(vm_identity_range.start, vm_identity_range.end, 1)
+         | first }}
+    _footer:
+      - ""
+      - "Awaiting allocation: {{ vm_identity_unassigned | join(', ') | default('none', true) }}"
+      - "Range {{ vm_identity_range.start }}-{{ vm_identity_range.end }}, namespace {{ vm_identity_namespace }}"
+      - "NEXT FREE VMID: {{ _next }}  ->  {{ _next | int | deevnet.mgmt.vmid_to_mac(vm_identity_namespace) }}"

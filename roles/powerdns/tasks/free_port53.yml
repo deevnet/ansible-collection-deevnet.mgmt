@@ -1,0 +1,53 @@
+---
+# The container binds :53 on the host. Fedora Server ships systemd-resolved,
+# whose stub listener also wants port 53. They do not collide in every
+# configuration, but a resolved restart can take the port, so the stub is
+# turned off explicitly rather than left to chance.
+
+- name: Check whether systemd-resolved is running
+  ansible.builtin.systemd:
+    name: systemd-resolved
+  register: powerdns_resolved
+  failed_when: false
+  become: true
+
+- name: Establish whether the stub listener needs disabling
+  ansible.builtin.set_fact:
+    powerdns_resolved_active: >-
+      {{ powerdns_resolved.status is defined
+         and (powerdns_resolved.status.ActiveState | default('')) == 'active' }}
+
+- name: Ensure the resolved drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: powerdns_resolved_active | bool
+  become: true
+
+- name: Disable the systemd-resolved stub listener
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/90-deevnet-pdns.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by deevnet.mgmt.powerdns
+      # PowerDNS Authoritative binds :53 on this host (ADR-0004). The resolved
+      # stub listener is turned off so it cannot take the port on a restart.
+      [Resolve]
+      DNSStubListener=no
+  when: powerdns_resolved_active | bool
+  become: true
+  register: powerdns_resolved_conf
+
+- name: Restart systemd-resolved to release the stub port
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: restarted
+  when:
+    - powerdns_resolved_active | bool
+    - powerdns_resolved_conf.changed
+  become: true
