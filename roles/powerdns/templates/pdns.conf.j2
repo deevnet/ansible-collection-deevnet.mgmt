@@ -17,6 +17,16 @@ local-port={{ powerdns_listen_port }}
 # a promise.
 dnsupdate={{ 'yes' if powerdns_dnsupdate_enabled else 'no' }}
 
+# ADR-0005: the zone apex belongs to the substrate. Without this, create-zone
+# stamps every new zone with `a.misconfigured.dns.server.invalid` as its
+# primary - PowerDNS's literal placeholder - which breaks the SOA that a future
+# AXFR-fed secondary would use to find its primary.
+#
+# This governs zones created from now on ONLY; the stored SOA of an existing
+# zone is not rewritten by a config change, which is why provision_zones also
+# reconciles the apex of zones that already exist.
+default-soa-content={{ powerdns_apex_ns }} {{ powerdns_soa_rname }} 0 {{ powerdns_soa_timers }}
+
 # The HTTP API is deliberately NOT enabled. Its key is global to the server, so
 # exposing it would hand any holder write access to every tenant's zone - the
 # reason ADR-0004 chose RFC 2136 over the API in the first place. Zone and key

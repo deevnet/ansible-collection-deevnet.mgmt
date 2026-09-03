@@ -79,3 +79,6 @@
       pdnsutil set-meta {{ item }} ALLOW-DNSUPDATE-FROM {{ powerdns_dnsupdate_from }}
   loop: "{{ powerdns_tenant_zone_names }}"
   become: true
+
+- name: Reconcile the zone apex (ADR-0005)
+  ansible.builtin.import_tasks: reconcile_apex.yml
