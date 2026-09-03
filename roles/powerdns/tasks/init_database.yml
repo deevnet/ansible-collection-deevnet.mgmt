@@ -13,12 +13,18 @@
   register: powerdns_db
   become: true
 
+# Searched from /usr, not /usr/share: the upstream image builds PowerDNS from
+# source under --prefix=/usr/local, so the schema ships at
+# /usr/local/share/doc/pdns/schema.sqlite3.sql and a /usr/share search never
+# descends into it. The exact -name match resolves to a single file (the
+# migration scripts are all prefixed, e.g. 4.3.1_to_4.7.0_schema.sqlite3.sql),
+# so head -1 is a guard rather than a choice.
 - name: Locate the sqlite schema inside the image
   ansible.builtin.shell:
     cmd: >
       podman run --rm --entrypoint /bin/sh
       {{ powerdns_image_name }}:{{ powerdns_image_tag }}
-      -c 'find /usr/share -name "schema.sqlite3.sql" 2>/dev/null | head -1'
+      -c 'find /usr -name "schema.sqlite3.sql" 2>/dev/null | head -1'
   register: powerdns_schema_path
   changed_when: false
   when: not powerdns_db.stat.exists
@@ -29,7 +35,7 @@
     that:
       - powerdns_schema_path.stdout | trim | length > 0
     fail_msg: >-
-      No schema.sqlite3.sql under /usr/share in
+      No schema.sqlite3.sql under /usr in
       {{ powerdns_image_name }}:{{ powerdns_image_tag }}. PowerDNS does not
       create its own schema, so the database cannot be seeded. Find it with:
         podman run --rm --entrypoint /bin/sh {{ powerdns_image_name }}:{{ powerdns_image_tag }} -c 'find / -name schema.sqlite3.sql'
@@ -59,4 +65,45 @@
     path: "{{ powerdns_data_root }}/schema.sqlite3.sql"
     state: absent
   when: not powerdns_db.stat.exists
+  become: true
+
+# The schema is applied by root, but the container drops to its own unprivileged
+# user, so the database it has to WRITE ends up owned by the wrong uid. sqlite
+# needs write permission on the directory as well as the file - it creates the
+# journal/WAL alongside the database - which is why the directory is chowned
+# too. Symptom without this: pdns starts, binds 53, then dies with
+# "gsqlite3: connection failed: attempt to write a readonly database".
+#
+# The uid is read out of the image rather than hardcoded so an image bump that
+# renumbers the account does not silently reintroduce a read-only database.
+# Rootful podman with no userns remapping, so the container uid is the host uid.
+- name: Read the container's runtime uid and gid from the image
+  ansible.builtin.shell:
+    cmd: >
+      podman run --rm --entrypoint /bin/sh
+      {{ powerdns_image_name }}:{{ powerdns_image_tag }}
+      -c 'id -u {{ powerdns_container_user }}; id -g {{ powerdns_container_user }}'
+  register: powerdns_container_ids
+  changed_when: false
+  become: true
+
+- name: Assert the uid lookup returned something usable
+  ansible.builtin.assert:
+    that:
+      - powerdns_container_ids.stdout_lines | length >= 2
+      - powerdns_container_ids.stdout_lines[0] | trim | int > 0
+    fail_msg: >-
+      Could not resolve the '{{ powerdns_container_user }}' account inside
+      {{ powerdns_image_name }}:{{ powerdns_image_tag }}. The database would be
+      left root-owned and PowerDNS would fail with a readonly database.
+
+- name: Give the database and its directory to the container user
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: "{{ powerdns_container_ids.stdout_lines[0] | trim }}"
+    group: "{{ powerdns_container_ids.stdout_lines[1] | trim }}"
+    state: "{{ 'directory' if item == powerdns_db_dir else 'file' }}"
+  loop:
+    - "{{ powerdns_db_dir }}"
+    - "{{ powerdns_db_dir }}/{{ powerdns_db_file }}"
   become: true

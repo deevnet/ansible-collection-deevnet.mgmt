@@ -16,6 +16,8 @@ powerdns_data_root: /srv/pdns
 powerdns_config_dir: "{{ powerdns_data_root }}/etc"
 powerdns_db_dir: "{{ powerdns_data_root }}/data"
 powerdns_db_file: pdns.sqlite3
+# Account the upstream image drops to; the database must be writable by it.
+powerdns_container_user: pdns
 powerdns_selinux_context: container_file_t
 
 powerdns_systemd_unit_path: /etc/systemd/system/pdns-auth.service

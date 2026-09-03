@@ -114,6 +114,16 @@
     nameservers: "{{ proxmox_vm_nameserver }}"
     searchdomains: "{{ proxmox_vm_searchdomain }}"
     update: true
+    # Without this the module SILENTLY DROPS net and reports changed anyway.
+    # proxmox_kvm deletes net/virtio/ide/sata/scsi from an update payload
+    # unless update_unsafe is set - and its docs give changing the MAC as the
+    # very reason ("Per example updating net update the MAC address"), which is
+    # precisely what this role exists to do. Without it the clone keeps the
+    # random MAC PVE generated, the Kea reservation never matches, and the guest
+    # comes up on a pool address.
+    # Safe here because this task passes no disk parameters at all - the only
+    # thing the flag unlocks is net0.
+    update_unsafe: true
     state: present
   delegate_to: localhost
   become: false
