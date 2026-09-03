@@ -35,6 +35,11 @@
 # the real client address for its per-zone ALLOW-DNSUPDATE-FROM check, and a
 # port mapping would rewrite every source to the container gateway - silently
 # turning that control into "anyone on the host network".
+#
+# NET_BIND_SERVICE because the image drops to the unprivileged 'pdns' user and
+# 53 is a privileged port: without it pdns_server exits at startup with
+# "Unable to bind UDP socket to '0.0.0.0:53': Permission denied" and systemd
+# restart-loops it, which surfaces only as the port-53 wait timing out.
 - name: Create the PowerDNS container
   ansible.builtin.command:
     cmd: >
@@ -42,6 +47,7 @@
       --name {{ powerdns_container_name }}
       --hostname {{ inventory_hostname }}
       --network host
+      --cap-add=NET_BIND_SERVICE
       -v {{ powerdns_config_dir }}:/etc/powerdns:Z
       -v {{ powerdns_db_dir }}:/var/lib/powerdns:Z
       --restart=no
