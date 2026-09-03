@@ -13,12 +13,18 @@
   register: powerdns_db
   become: true
 
+# Searched from /usr, not /usr/share: the upstream image builds PowerDNS from
+# source under --prefix=/usr/local, so the schema ships at
+# /usr/local/share/doc/pdns/schema.sqlite3.sql and a /usr/share search never
+# descends into it. The exact -name match resolves to a single file (the
+# migration scripts are all prefixed, e.g. 4.3.1_to_4.7.0_schema.sqlite3.sql),
+# so head -1 is a guard rather than a choice.
 - name: Locate the sqlite schema inside the image
   ansible.builtin.shell:
     cmd: >
       podman run --rm --entrypoint /bin/sh
       {{ powerdns_image_name }}:{{ powerdns_image_tag }}
-      -c 'find /usr/share -name "schema.sqlite3.sql" 2>/dev/null | head -1'
+      -c 'find /usr -name "schema.sqlite3.sql" 2>/dev/null | head -1'
   register: powerdns_schema_path
   changed_when: false
   when: not powerdns_db.stat.exists
@@ -29,7 +35,7 @@
     that:
       - powerdns_schema_path.stdout | trim | length > 0
     fail_msg: >-
-      No schema.sqlite3.sql under /usr/share in
+      No schema.sqlite3.sql under /usr in
       {{ powerdns_image_name }}:{{ powerdns_image_tag }}. PowerDNS does not
       create its own schema, so the database cannot be seeded. Find it with:
         podman run --rm --entrypoint /bin/sh {{ powerdns_image_name }}:{{ powerdns_image_tag }} -c 'find / -name schema.sqlite3.sql'
