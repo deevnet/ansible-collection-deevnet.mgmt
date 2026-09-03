@@ -31,6 +31,10 @@
   become: false
   register: proxmox_vm_inventory
 
+# version_sort, not sort: names are fedora-server-<release>-<build>, so a plain
+# lexicographic sort puts 44-1.9 above 44-1.10 and picks the older template the
+# moment a build number reaches double digits. The same trap applies to the
+# release: 9 sorts above 10.
 - name: Select the newest template matching {{ proxmox_vm_template_prefix }}
   ansible.builtin.set_fact:
     proxmox_vm_template: >-
@@ -41,7 +45,7 @@
         | selectattr('name', 'defined')
         | selectattr('name', 'match', '^' ~ proxmox_vm_template_prefix)
         | map(attribute='name')
-        | sort
+        | community.general.version_sort
         | last
         | default('')
       }}
