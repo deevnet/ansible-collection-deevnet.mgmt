@@ -31,6 +31,10 @@
   become: false
   register: proxmox_vm_inventory
 
+# version_sort, not sort: names are fedora-server-<release>-<build>, so a plain
+# lexicographic sort puts 44-1.9 above 44-1.10 and picks the older template the
+# moment a build number reaches double digits. The same trap applies to the
+# release: 9 sorts above 10.
 - name: Select the newest template matching {{ proxmox_vm_template_prefix }}
   ansible.builtin.set_fact:
     proxmox_vm_template: >-
@@ -41,7 +45,7 @@
         | selectattr('name', 'defined')
         | selectattr('name', 'match', '^' ~ proxmox_vm_template_prefix)
         | map(attribute='name')
-        | sort
+        | community.general.version_sort
         | last
         | default('')
       }}
@@ -113,6 +117,55 @@
     state: present
   delegate_to: localhost
   become: false
+
+# The configure task reports `changed` from the API call, not from the guest's
+# resulting config. If net0 silently kept the MAC the clone inherited from the
+# template, the Kea reservation would point at an address nothing asks for, and
+# the first sign of it would be wait_for_connection timing out several minutes
+# later with nothing to say about why. Read the value back instead.
+#
+# `pending` rather than `current`: a stopped VM applies config immediately, but
+# a re-run against a running one would leave the change pending, and either way
+# this asks "what will this VM boot with".
+- name: Read back {{ proxmox_vm_name }}'s configuration
+  community.general.proxmox_vm_info:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    node: "{{ proxmox_vm_node }}"
+    vmid: "{{ proxmox_vm_id }}"
+    type: qemu
+    config: pending
+  delegate_to: localhost
+  become: false
+  register: proxmox_vm_readback
+
+- name: Assert net0 carries the declared MAC
+  vars:
+    # PVE returns the MAC upper-cased inside the net0 string
+    # ("virtio=02:DE:20:00:00:C8,bridge=vmbr0"), so both sides are folded.
+    proxmox_vm_net0: >-
+      {{
+        proxmox_vm_readback.proxmox_vms
+        | default([])
+        | selectattr('config', 'defined')
+        | map(attribute='config')
+        | map(attribute='net0', default='')
+        | first
+        | default('')
+      }}
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_net0 | length > 0
+      - proxmox_vm_mac | lower in proxmox_vm_net0 | lower
+    fail_msg: >-
+      {{ proxmox_vm_name }} (vmid {{ proxmox_vm_id }}) has net0
+      '{{ proxmox_vm_net0 | default('<absent>') }}', which does not carry the
+      declared MAC {{ proxmox_vm_mac }}. The DHCP reservation and the A record
+      both key off that MAC, so the VM must not be started in this state.
+    success_msg: "net0 carries {{ proxmox_vm_mac }}."
 
 - name: Start {{ proxmox_vm_name }}
   community.general.proxmox_kvm:

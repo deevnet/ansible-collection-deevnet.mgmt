@@ -27,14 +27,20 @@ proxmox_vm_disk_size: "{{ mgmt_vm.disk_size | default(32) }}"
 proxmox_vm_bridge: "{{ mgmt_vm.bridge | default('vmbr0') }}"
 
 # Addressing is deterministic MAC + DHCP reservation, not static cloud-init.
-# The MAC is declared in inventory and the core router's Kea reservation pins
-# the address to it, so a rebuilt VM keeps its identity and its DNS record.
-# (Management-hypervisor MAC policy; extended-services.md section 4.)
+# The MAC is derived from the VMID, held in inventory, and the core router's
+# Kea reservation pins the address to it, so a rebuilt VM keeps its identity
+# and its DNS record. (docs/standards/mac-naming.)
 #
 # This is deliberately NOT the tenant pattern. Tenant workloads are addressed
 # statically by cloud-init because EVPN zones have no DHCP at all (ADR-0002);
 # the management segment does have DHCP, so it is used.
-proxmox_vm_mac: "{{ env.interfaces.eth0.mac }}"
+#
+# `infrastructure`, not `env`: a MAC is a property of the interface, and that
+# is the one place both classes of MAC live - derived for NICs we create, read
+# off the hardware for the ones we do not. Defaulted so an unallocated host
+# reaches the assert below and gets its fail_msg, rather than dying on an
+# undefined variable before the assert can run.
+proxmox_vm_mac: "{{ infrastructure.interfaces.eth0.mac | default('') }}"
 proxmox_vm_ipconfig: "ip=dhcp"
 
 proxmox_vm_ciuser: a_autoprov
