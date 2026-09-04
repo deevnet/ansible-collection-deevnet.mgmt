@@ -1,0 +1,124 @@
+---
+# Format and mount the data disk that roles/proxmox_vm attached.
+#
+# Every step is create-once. The filesystem is made only when the disk does not
+# already carry one, so a guest reinstalled onto a fresh OS disk re-mounts the
+# existing data instead of erasing it - which is the whole reason the data lives
+# on a second disk rather than the disposable OS disk
+# (architecture/substrate/storage.md).
+
+- name: Configure the data disk
+  when: data_disk | length > 0
+  become: true
+  block:
+
+    # Resolved by serial, not by device name. Both by-id aliases PVE can expose
+    # (scsi-0QEMU_... and scsi-SQEMU_...) point at the same disk, so resolve the
+    # symlinks and dedupe rather than counting links.
+    - name: Resolve the data disk by serial {{ data_disk_serial }}
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          for link in /dev/disk/by-id/*{{ data_disk_serial }}*; do
+            [ -e "$link" ] || continue
+            readlink -f "$link"
+          done | sort -u
+        executable: /bin/bash
+      register: _data_disk_found
+      changed_when: false
+      failed_when: false
+      when: data_disk_block_device | length == 0
+
+    - name: Set the resolved device
+      ansible.builtin.set_fact:
+        data_disk_device: >-
+          {{ data_disk_block_device if data_disk_block_device | length > 0
+             else (_data_disk_found.stdout_lines | default([]) | first | default('')) }}
+
+    - name: Assert exactly one disk carries serial {{ data_disk_serial }}
+      ansible.builtin.assert:
+        that:
+          - data_disk_device | length > 0
+          - data_disk_block_device | length > 0 or (_data_disk_found.stdout_lines | default([]) | length) == 1
+        fail_msg: >-
+          Expected exactly one disk with serial '{{ data_disk_serial }}', found
+          {{ _data_disk_found.stdout_lines | default([]) | length }}
+          ({{ _data_disk_found.stdout_lines | default([]) | join(', ') | default('none') }}).
+          Check `lsblk -o NAME,SIZE,SERIAL` on the guest. If this controller does
+          not expose serials, set mgmt_vm.data_disk.block_device explicitly.
+        success_msg: "Data disk is {{ data_disk_device }}."
+
+    # A wrong device here destroys the OS. Cheap to check, and it is what makes
+    # the rest of this role safe to re-run unattended.
+    - name: Refuse to touch the disk backing /
+      vars:
+        _root_source: >-
+          {{ ansible_mounts | default([]) | selectattr('mount', 'equalto', '/')
+             | map(attribute='device') | first | default('') }}
+      ansible.builtin.assert:
+        that:
+          - _root_source | length == 0 or data_disk_device not in _root_source
+        fail_msg: >-
+          {{ data_disk_device }} appears to back / (which is on {{ _root_source }}).
+          Refusing to touch it.
+
+    - name: Check whether {{ data_disk_mount }} is already a mountpoint
+      ansible.builtin.command:
+        cmd: findmnt --noheadings --target {{ data_disk_mount }} --output TARGET
+      register: _data_disk_mnt
+      changed_when: false
+      failed_when: false
+
+    - name: Find existing content under {{ data_disk_mount }}
+      ansible.builtin.find:
+        paths: "{{ data_disk_mount }}"
+        file_type: any
+        hidden: true
+      register: _data_disk_existing
+      when: (_data_disk_mnt.stdout | trim) != data_disk_mount
+
+    # Mounting over a populated directory hides its contents with no error and no
+    # obvious symptom - the files are still on the old disk, invisible, and the
+    # new empty filesystem fills up instead.
+    - name: Refuse to mount over existing content at {{ data_disk_mount }}
+      ansible.builtin.assert:
+        that:
+          - (_data_disk_existing.files | default([]) | length) == 0
+        fail_msg: >-
+          {{ data_disk_mount }} already holds
+          {{ _data_disk_existing.files | default([]) | length }} entries and is not
+          a mountpoint. Mounting over it would hide them. Move the content aside,
+          then re-run.
+      when: (_data_disk_mnt.stdout | trim) != data_disk_mount
+
+    # force is left at its default false on purpose: with it true this reformats
+    # the data disk on every rebuild while reporting success. An existing
+    # filesystem of a DIFFERENT type is a hard failure here, which is correct -
+    # that is a disk someone else is using.
+    - name: Create the {{ data_disk_fstype }} filesystem on {{ data_disk_device }}
+      community.general.filesystem:
+        dev: "{{ data_disk_device }}"
+        fstype: "{{ data_disk_fstype }}"
+        opts: "-L {{ data_disk_label }}"
+        state: present
+
+    # Mounted by LABEL so the fstab entry survives a controller or bus change.
+    - name: Mount {{ data_disk_mount }}
+      ansible.posix.mount:
+        path: "{{ data_disk_mount }}"
+        src: "LABEL={{ data_disk_label }}"
+        fstype: "{{ data_disk_fstype }}"
+        opts: "{{ data_disk_opts }}"
+        state: mounted
+      register: _data_disk_mounted
+
+    # A freshly made filesystem mounts with the default context, not the one the
+    # directory had. nginx and in.tftpd are then denied reads on files that look
+    # perfectly present - the mount succeeded, so nothing reports an error.
+    - name: Restore SELinux contexts under {{ data_disk_mount }}
+      ansible.builtin.command:
+        cmd: restorecon -RF {{ data_disk_mount }}
+      changed_when: true
+      when:
+        - _data_disk_mounted is changed
+        - ansible_selinux.status | default('disabled') == 'enabled'

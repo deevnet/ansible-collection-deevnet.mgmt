@@ -23,8 +23,52 @@ proxmox_vm_template_prefix: "{{ mgmt_vm.template_prefix | default('fedora-server
 proxmox_vm_storage: "{{ mgmt_vm.storage }}"
 proxmox_vm_cores: "{{ mgmt_vm.cores | default(2) }}"
 proxmox_vm_memory: "{{ mgmt_vm.memory | default(2048) }}"
-proxmox_vm_disk_size: "{{ mgmt_vm.disk_size | default(32) }}"
 proxmox_vm_bridge: "{{ mgmt_vm.bridge | default('vmbr0') }}"
+
+# The OS disk starts as whatever the template carries (32G today, plain-partitioned
+# with root LAST so cloud-init's growpart can extend it) and the clone is a full
+# copy of it. Declaring os_disk_size grows that copy BEFORE the first boot, which
+# is what architecture/substrate/storage.md means by "a VM that needs a larger root
+# filesystem is given a larger disk at creation time":
+#
+#   mgmt_vm:
+#     os_disk_size: 64            # GiB. 0 or absent keeps the template's size.
+#
+# Not the same knob as the image factory's own `os_disk_size`
+# (fedora.pkr.hcl:130), which is the size the TEMPLATE ships with. Same disk, two
+# layers: Packer sets what every clone starts at, this grows one clone past it.
+#
+# Bulk capacity still does not belong here - that is what the data disk below is
+# for. This is for a root filesystem that a host's own packages outgrow.
+#
+# There was a `proxmox_vm_disk_size` on this line that NOTHING in the role ever
+# read, so `mgmt_vm.disk_size: 32` looked like a setting while doing nothing. This
+# replaces it with one that is actually wired up.
+proxmox_vm_os_disk_device: "{{ mgmt_vm.os_disk_device | default('scsi0') }}"
+proxmox_vm_os_disk_size: "{{ mgmt_vm.os_disk_size | default(0) }}"
+
+# Optional second disk, for hosts that need capacity which outlives the OS disk -
+# an artifact mirror, a database. Declared on the host as:
+#
+#   mgmt_vm:
+#     data_disk:
+#       device: scsi1
+#       size: 250                   # GiB, integer, no suffix
+#       storage: local-lvm-big-thin
+#       mount: /srv
+#
+# Scope of the promise, stated precisely: the disk survives re-running this play
+# and survives replacing the OS disk (a guest reinstall into the same VMID). It
+# does NOT survive `qm destroy`, which removes every disk the VM owns. "Outlives
+# the VM" here means "outlives the OS disk", not "outlives the VMID".
+proxmox_vm_data_disk: "{{ mgmt_vm.data_disk | default({}) }}"
+
+# The serial is what makes the disk findable from inside the guest. Without it
+# the guest-side role has to guess at /dev/sdX, which is assigned in discovery
+# order - so adding a disk later silently renumbers it and the guess formats the
+# wrong device. With it, the disk appears at a stable
+# /dev/disk/by-id/*<serial> path. PVE caps this at 20 chars, [A-Za-z0-9_-].
+proxmox_vm_data_disk_serial: "{{ proxmox_vm_data_disk.serial | default('deevnet-data') }}"
 
 # Addressing is deterministic MAC + DHCP reservation, not static cloud-init.
 # The MAC is derived from the VMID, held in inventory, and the core router's

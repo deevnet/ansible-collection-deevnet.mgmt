@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: data_disk
+  description: Partition, format and mount the data disk attached by proxmox_vm
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

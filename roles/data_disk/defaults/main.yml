@@ -1,0 +1,28 @@
+---
+# Guest-side half of the data disk that roles/proxmox_vm attaches to the VM.
+#
+# Declared on the host in mgmt_vm.data_disk - see roles/proxmox_vm/defaults/main.yml
+# for the shape, and for the exact scope of what "outlives the VM" does and does
+# not promise.
+data_disk: "{{ mgmt_vm.data_disk | default({}) }}"
+
+# The disk is found by the serial proxmox_vm stamped on it, never by /dev/sdX.
+# Device names are handed out in discovery order, so adding a disk later
+# renumbers them - and a role that guesses wrong formats the wrong disk.
+data_disk_serial: "{{ data_disk.serial | default('deevnet-data') }}"
+
+# Escape hatch for a controller that does not surface the serial in
+# /dev/disk/by-id. Set mgmt_vm.data_disk.block_device to a real path to skip
+# resolution entirely; the safety assertions below still apply.
+data_disk_block_device: "{{ data_disk.block_device | default('') }}"
+
+# Filesystem straight onto the whole disk - no partition table. Growing it later
+# is `qm resize` plus a single xfs_growfs, with no partition to extend first, and
+# it removes the by-id "<path>1" vs "<path>-part1" naming trap entirely.
+data_disk_fstype: "{{ data_disk.fstype | default('xfs') }}"
+data_disk_label: "{{ data_disk.label | default('deevnet-data') }}"
+data_disk_mount: "{{ data_disk.mount | default('/srv') }}"
+
+# nofail: a detached data disk should degrade the host, not drop it to an
+# emergency shell where it cannot be reached to fix the problem.
+data_disk_opts: "{{ data_disk.opts | default('defaults,nofail') }}"

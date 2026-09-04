@@ -16,7 +16,19 @@
   # The guest does not exist on the first run, so the PVE calls are delegated to
   # the control node; the role gathers facts itself once the VM answers on SSH.
   roles:
-    - proxmox_vm
+    # Not every management-plane host is cloned from a template. A PXE-installed
+    # member declares an identity (VMID -> MAC -> DHCP reservation) and nothing
+    # else, so it belongs in this group for the allocator, addressing and DNS, but
+    # has no `mgmt_vm.hypervisor` and must not be handed to proxmox_vm - which
+    # would fail its opening assert on the missing node.
+    - role: proxmox_vm
+      when: mgmt_vm.hypervisor is defined
+
+    # Guest-side half of proxmox_vm's data disk. Runs in the same play so it reuses
+    # the facts proxmox_vm gathered once the guest answered; skips itself when the
+    # host declares no data disk.
+    - role: data_disk
+      when: mgmt_vm.data_disk is defined
 
 - name: Configure tenant authoritative DNS
   hosts: tenant_dns
