@@ -128,6 +128,33 @@
   delegate_to: localhost
   become: false
 
+# Attached before the first boot, so the guest sees the disk on the same boot that
+# the data_disk role partitions and mounts it on.
+#
+# `create: regular` means create-if-absent: on a re-run it updates options on the
+# existing disk and does NOT re-create or resize it, so the data is safe. Never use
+# `create: forced` here - that detaches the existing disk and builds a new one,
+# which reads as "make sure it exists" and behaves as "throw the old one away".
+# Growing the disk later is a deliberate one-off with state: resized, not this task.
+- name: Attach the data disk to {{ proxmox_vm_name }}
+  community.general.proxmox_disk:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    vmid: "{{ proxmox_vm_id }}"
+    disk: "{{ proxmox_vm_data_disk.device }}"
+    storage: "{{ proxmox_vm_data_disk.storage }}"
+    size: "{{ proxmox_vm_data_disk.size }}"
+    serial: "{{ proxmox_vm_data_disk_serial }}"
+    create: regular
+    backup: false
+    state: present
+  delegate_to: localhost
+  become: false
+  when: proxmox_vm_data_disk | length > 0
+
 # The configure task reports `changed` from the API call, not from the guest's
 # resulting config. If net0 silently kept the MAC the clone inherited from the
 # template, the Kea reservation would point at an address nothing asks for, and
@@ -176,6 +203,90 @@
       declared MAC {{ proxmox_vm_mac }}. The DHCP reservation and the A record
       both key off that MAC, so the VM must not be started in this state.
     success_msg: "net0 carries {{ proxmox_vm_mac }}."
+
+# Same argument as the MAC assert above: the API reporting `changed` is not
+# evidence the disk is there. A missing data disk is worse than a loud failure -
+# the guest-side role would mount nothing, and the artifact mirror would quietly
+# fill the 32G OS disk instead.
+- name: Assert the data disk is attached with its serial
+  vars:
+    proxmox_vm_data_dev: >-
+      {{
+        proxmox_vm_readback.proxmox_vms
+        | default([])
+        | selectattr('config', 'defined')
+        | map(attribute='config')
+        | map(attribute=proxmox_vm_data_disk.device, default='')
+        | first
+        | default('')
+      }}
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_data_dev | length > 0
+      - proxmox_vm_data_disk.storage in proxmox_vm_data_dev
+      - "'serial=' ~ proxmox_vm_data_disk_serial in proxmox_vm_data_dev"
+    fail_msg: >-
+      {{ proxmox_vm_name }} has no usable data disk at
+      {{ proxmox_vm_data_disk.device }} (got
+      '{{ proxmox_vm_data_dev | default('<absent>') }}'). Without the serial the
+      guest cannot find the disk by a stable path.
+    success_msg: >-
+      {{ proxmox_vm_data_disk.device }} is attached with serial
+      {{ proxmox_vm_data_disk_serial }}.
+  when: proxmox_vm_data_disk | length > 0
+
+# Placed here on purpose, in both directions. It is AFTER the readback, so the
+# guard below gets the current size out of a config we already fetched - no extra
+# API call. And it is BEFORE Start, so cloud-init's growpart sees the larger disk
+# on the guest's very first boot and there is never a moment where the VM is
+# running on a disk we intended to grow.
+- name: Assert the OS disk is not being shrunk
+  vars:
+    _os_disk_cfg: >-
+      {{ proxmox_vm_readback.proxmox_vms | default([])
+         | selectattr('config', 'defined') | map(attribute='config')
+         | map(attribute=proxmox_vm_os_disk_device, default='') | first | default('') }}
+    # regex_search returns None on no match, and `None | first` raises - hence
+    # default([], true) before first. A size PVE reports in some unit other than G
+    # parses as 0, which disables the guard rather than blowing up on a shape we
+    # did not anticipate.
+    _os_disk_current: >-
+      {{ (_os_disk_cfg | regex_search('size=(\d+)G', '\1')
+          | default([], true) | first | default(0)) | int }}
+  ansible.builtin.assert:
+    that:
+      - _os_disk_current | int == 0 or proxmox_vm_os_disk_size | int >= _os_disk_current | int
+    fail_msg: >-
+      {{ proxmox_vm_name }}'s {{ proxmox_vm_os_disk_device }} is
+      {{ _os_disk_current }}G and os_disk_size asks for
+      {{ proxmox_vm_os_disk_size }}G. PVE can grow a disk but cannot shrink one -
+      the API refuses, and doing it by hand means rebuilding the guest. Raise the
+      number, or drop it to keep the current size.
+    success_msg: >-
+      {{ proxmox_vm_os_disk_device }} is {{ _os_disk_current }}G, growing to
+      {{ proxmox_vm_os_disk_size }}G.
+  when: proxmox_vm_os_disk_size | int > 0
+
+- name: Grow the OS disk to {{ proxmox_vm_os_disk_size }}G
+  community.general.proxmox_disk:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    vmid: "{{ proxmox_vm_id }}"
+    disk: "{{ proxmox_vm_os_disk_device }}"
+    # The trailing G is REQUIRED, and is the whole of this task's idempotency.
+    # proxmox_disk's resize path compares the requested size against PVE's config
+    # string by EXACT STRING EQUALITY (`if size == actual_size`), and PVE reports
+    # "size=64G". Pass a bare "64" and it never matches, so this resizes on every
+    # single run - which on a disk means real work, not just a red herring in the
+    # play recap.
+    size: "{{ proxmox_vm_os_disk_size }}G"
+    state: resized
+  delegate_to: localhost
+  become: false
+  when: proxmox_vm_os_disk_size | int > 0
 
 - name: Start {{ proxmox_vm_name }}
   community.general.proxmox_kvm:
