@@ -1,0 +1,39 @@
+---
+- name: Deploy the minio systemd unit
+  ansible.builtin.template:
+    src: minio.service.j2
+    dest: "{{ minio_systemd_unit_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart minio
+  become: true
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+
+- name: Enable and start minio
+  ansible.builtin.service:
+    name: minio
+    enabled: "{{ minio_systemd_enabled }}"
+    state: "{{ minio_systemd_state }}"
+  become: true
+
+# Asserts the outcome, not the API call: the container was created and started,
+# which says nothing about whether the service is answering.
+- name: Wait for MinIO to answer on port {{ minio_api_port }}
+  ansible.builtin.wait_for:
+    port: "{{ minio_api_port }}"
+    host: 127.0.0.1
+    timeout: 90
+
+- name: Confirm MinIO reports itself healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ minio_api_port }}/minio/health/live"
+    status_code: [200]
+  register: minio_health
+  retries: 10
+  delay: 3
+  until: minio_health.status is defined and minio_health.status == 200

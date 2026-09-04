@@ -1,0 +1,22 @@
+---
+- name: Install Podman
+  ansible.builtin.import_tasks: install_podman.yml
+
+- name: Set up persistent data directories
+  ansible.builtin.import_tasks: setup_directories.yml
+
+- name: Download container image tarball
+  ansible.builtin.import_tasks: download_image.yml
+
+- name: Load container image and create container
+  ansible.builtin.import_tasks: load_container.yml
+
+- name: Configure systemd service
+  ansible.builtin.import_tasks: setup_systemd.yml
+
+- name: Configure firewall rules
+  ansible.builtin.import_tasks: configure_firewall.yml
+
+- name: Provision the state bucket and per-tenant credentials
+  ansible.builtin.import_tasks: provision_buckets.yml
+  tags: [tenant-state]

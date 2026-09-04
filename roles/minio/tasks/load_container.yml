@@ -1,0 +1,74 @@
+---
+- name: Load the MinIO image into podman
+  ansible.builtin.command:
+    cmd: "podman load -i {{ minio_data_root }}/{{ minio_tarball_filename }}"
+  register: minio_load
+  changed_when: "'Loaded image' in minio_load.stdout or 'Getting image source signatures' in minio_load.stdout"
+  become: true
+
+- name: Stop minio if running
+  ansible.builtin.systemd:
+    name: minio
+    state: stopped
+  become: true
+  failed_when: false
+
+- name: Fail early if root credentials are missing
+  ansible.builtin.assert:
+    that:
+      - minio_root_user | length > 0
+      - minio_root_password | length > 0
+    fail_msg: >-
+      vault_minio_root_user / vault_minio_root_password are not set. MinIO would
+      start with a default credential pair, which is a state store anyone on the
+      management segment could read. Generate a pair and add them to the vault:
+        openssl rand -base64 24
+  no_log: true
+
+- name: Check whether the MinIO container already exists
+  ansible.builtin.command:
+    cmd: "podman container exists {{ minio_container_name }}"
+  register: minio_container_exists
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Remove the existing MinIO container if present
+  ansible.builtin.command:
+    cmd: "podman rm -f {{ minio_container_name }}"
+  when: minio_container_exists.rc == 0
+  become: true
+  notify: restart minio
+
+# Published ports rather than host networking: unlike an authoritative DNS
+# server, MinIO has no per-request source-address policy that a port mapping
+# would defeat. Access control is the credential, and the credential is scoped
+# per tenant by policy rather than by where the request came from.
+#
+# Ports are above 1024, so no NET_BIND_SERVICE is needed here - the capability
+# the PowerDNS container required does not apply.
+#
+# --pull=never so a failed `podman load` fails loudly instead of silently
+# reaching out to the registry. Substrate provisioning is meant to run against
+# the artifact server, not the internet (correctness 5.4), and the first version
+# of this role pulled from quay.io without anyone noticing.
+- name: Create the MinIO container
+  ansible.builtin.command:
+    cmd: >
+      podman create
+      --name {{ minio_container_name }}
+      --hostname {{ inventory_hostname }}
+      -p {{ minio_listen_address }}:{{ minio_api_port }}:9000
+      -p {{ minio_listen_address }}:{{ minio_console_port }}:9001
+      -v {{ minio_data_dir }}:/data:Z
+      -e MINIO_ROOT_USER={{ minio_root_user }}
+      -e MINIO_ROOT_PASSWORD={{ minio_root_password }}
+      --restart=no
+      --pull=never
+      {{ minio_image_name }}:{{ minio_image_tag }}
+      server /data --console-address ":9001"
+  register: minio_create
+  changed_when: minio_create.rc == 0
+  become: true
+  no_log: true
+  notify: restart minio

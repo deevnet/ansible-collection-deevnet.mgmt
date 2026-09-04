@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+[Unit]
+Description=MinIO - tenant Terraform state store (ADR-0007)
+Documentation=https://min.io/docs/minio/linux/index.html
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+ExecStartPre=-/usr/bin/podman stop {{ minio_container_name }}
+ExecStart=/usr/bin/podman start -a {{ minio_container_name }}
+ExecStop=/usr/bin/podman stop -t 30 {{ minio_container_name }}
+
+[Install]
+WantedBy=multi-user.target

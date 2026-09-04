@@ -8,6 +8,7 @@
 #   ansible-playbook playbooks/site.yml
 #   ansible-playbook playbooks/site.yml --limit tenant_dns
 #   ansible-playbook playbooks/site.yml --tags tenant-dns   # zones/keys only
+#   ansible-playbook playbooks/site.yml --tags tenant-state # buckets/creds only
 
 - name: Create management-plane VMs
   hosts: management_plane
@@ -22,6 +23,12 @@
   become: true
   roles:
     - powerdns
+
+- name: Configure the tenant Terraform state store
+  hosts: tenant_state
+  become: true
+  roles:
+    - minio
 
 # Placeholder plays for substrate-facing management services. These land on
 # their own host, not beside tenant DNS: their change cadence is much higher and
