@@ -39,6 +39,17 @@ powerdns_tsig_algorithm: hmac-sha256
 # the outcome; this is defence in depth, not the control.
 powerdns_dnsupdate_from: "{{ deevnet_vlans.management.subnet }}"
 
+# ADR-0005: the zone apex is substrate-owned. The NS target must be a name that
+# has an address record - `tdns` is an Unbound host ALIAS, so it resolves as a
+# CNAME, and RFC 2181 s10.3 forbids an NS pointing at one - so this is the
+# server's own A record, not its convenience name.
+powerdns_apex_ns: "{{ deevnet_fqdn }}"
+powerdns_apex_ttl: 3600
+# `hostmaster.@` is PowerDNS's own substitution: @ expands to the zone name, so
+# one value is correct for every zone.
+powerdns_soa_rname: "hostmaster.@"
+powerdns_soa_timers: "10800 3600 604800 3600"
+
 # Tenant zones are derived from the site registry, never listed here.
 # For tenant `t` index `n` (ADR-0002 / ADR-0004):
 #   forward  t.<substrate>.<root>

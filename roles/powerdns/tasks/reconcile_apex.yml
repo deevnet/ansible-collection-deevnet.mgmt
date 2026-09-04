@@ -1,0 +1,67 @@
+---
+# ADR-0005: the zone apex - SOA and apex NS - is substrate-owned and set at
+# onboarding. `pdnsutil create-zone` leaves an SOA whose primary is the literal
+# placeholder `a.misconfigured.dns.server.invalid` and no apex NS at all, which
+# is a malformed zone that happens to resolve only because the substrate side is
+# an Unbound forward rather than a referral.
+#
+# Reconciled on every run rather than written once at creation, because
+# `default-soa-content` only applies to zones created AFTER it is set. Zones
+# that already exist keep the placeholder SOA as a stored row, so a
+# create-time-only fix would silently skip exactly the zones that have the
+# defect.
+#
+# This is the one place the substrate writes into a live tenant zone after
+# onboarding. It is confined to the apex; nothing a tenant authored is touched.
+
+- name: Reconcile the apex of each tenant zone
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      zone="{{ item }}"
+      want="{{ powerdns_apex_ns }}"
+      ttl="{{ powerdns_apex_ttl }}"
+      pu() { podman exec {{ powerdns_container_name }} pdnsutil "$@"; }
+
+      listing=$(pu list-zone "$zone")
+
+      # pdnsutil prints the apex unqualified while $ORIGIN is ".", so match the
+      # name with and without the trailing dot rather than assuming either.
+      apex_soa=$(printf '%s\n' "$listing" \
+        | awk -v z="$zone" -v zd="$zone." '($1==z||$1==zd) && $4=="SOA" {print $5,$6,$7,$8,$9,$10,$11; exit}')
+
+      if [ -z "$apex_soa" ]; then
+        echo "NOSOA $zone" >&2
+        exit 1
+      fi
+
+      cur_mname=$(printf '%s' "$apex_soa" | awk '{print $1}')
+      if [ "$cur_mname" != "$want" ]; then
+        # The serial is carried forward and bumped rather than reset. A
+        # secondary decides whether to transfer by comparing serials, so
+        # rewriting it to 0 on every correction would make the zone look stale
+        # forever. Bumping once, here, is the honest signal that content moved.
+        rname=$(printf '%s' "$apex_soa" | awk '{print $2}')
+        serial=$(printf '%s' "$apex_soa" | awk '{print $3}')
+        timers=$(printf '%s' "$apex_soa" | awk '{print $4, $5, $6, $7}')
+        # "@", not the zone name: pdnsutil treats NAME as RELATIVE to the zone,
+        # so passing the zone here creates <zone>.<zone> instead of the apex.
+        pu replace-rrset "$zone" @ SOA "$ttl" "$want $rname $((serial + 1)) $timers" >/dev/null
+        echo "CHANGED soa $zone $cur_mname -> $want"
+      fi
+
+      # Only the APEX NS set is ours. A tenant may legitimately delegate a
+      # subzone inside its own zone, so NS records at other names are left alone.
+      have_ns=$(printf '%s\n' "$listing" \
+        | awk -v z="$zone" -v zd="$zone." '($1==z||$1==zd) && $4=="NS" {print $5}' \
+        | sed 's/\.$//')
+
+      if ! printf '%s\n' "$have_ns" | grep -qx "$want"; then
+        pu replace-rrset "$zone" @ NS "$ttl" "$want" >/dev/null
+        echo "CHANGED ns $zone -> $want"
+      fi
+    executable: /bin/bash
+  loop: "{{ powerdns_tenant_zone_names }}"
+  register: powerdns_apex
+  changed_when: "'CHANGED' in powerdns_apex.stdout"
+  become: true
