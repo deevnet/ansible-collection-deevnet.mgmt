@@ -1,0 +1,174 @@
+---
+# Creates the state bucket and issues one scoped credential per tenant.
+#
+# This is the same shape as ADR-0004's per-zone TSIG key, and for the same
+# reason: a tenant is refused another tenant's state BY THE SERVER, not because
+# its Terraform declines to ask. Repo permissions already separate tenants, so
+# this is defence in depth rather than the only control - but it is what keeps
+# the boundary true if two tenants ever share an operator.
+#
+# Driven from the substrate tenant registry, so onboarding a tenant there is
+# what creates its state user, alongside its zone, key and egress.
+
+- name: Locate the MinIO client inside the image
+  ansible.builtin.command:
+    cmd: "podman exec {{ minio_container_name }} sh -c 'command -v mc'"
+  register: minio_mc
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Fail clearly if the image ships no MinIO client
+  ansible.builtin.assert:
+    that:
+      - minio_mc.rc == 0
+      - minio_mc.stdout | trim | length > 0
+    fail_msg: >-
+      No `mc` in {{ minio_image_name }}:{{ minio_image_tag }}, so the bucket and
+      the per-tenant credentials cannot be provisioned from here. Check with:
+        podman exec {{ minio_container_name }} sh -c 'command -v mc'
+      If the image has dropped it, install mc on the host and point this role at
+      it, or use a mc sidecar image.
+    success_msg: "MinIO client at {{ minio_mc.stdout | trim }}."
+
+- name: Register a local mc alias
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc alias set local http://127.0.0.1:9000
+      {{ minio_root_user }} {{ minio_root_password }}
+  changed_when: false
+  become: true
+  no_log: true
+
+- name: Create the state bucket
+  ansible.builtin.command:
+    cmd: "podman exec {{ minio_container_name }} mc mb --ignore-existing local/{{ minio_state_bucket }}"
+  register: minio_mb
+  changed_when: "'created successfully' in minio_mb.stdout"
+  become: true
+
+# Versioning is the cheap insurance that makes losing state recoverable rather
+# than a rebuild. State is small and rewritten on every apply, so the cost is
+# negligible and the benefit is an undo for the one file that cannot be
+# re-derived from code.
+- name: Check whether versioning is already enabled
+  ansible.builtin.command:
+    cmd: "podman exec {{ minio_container_name }} mc version info local/{{ minio_state_bucket }}"
+  register: minio_ver_info
+  changed_when: false
+  become: true
+
+- name: Enable versioning on the state bucket
+  ansible.builtin.command:
+    cmd: "podman exec {{ minio_container_name }} mc version enable local/{{ minio_state_bucket }}"
+  when: "'is enabled' not in (minio_ver_info.stdout | lower)"
+  become: true
+
+- name: Fail if a tenant has no state credential in the vault
+  ansible.builtin.assert:
+    that:
+      - minio_tenant_secrets[item.name] is defined
+      - minio_tenant_secrets[item.name] | length >= 8
+    fail_msg: >-
+      Tenant '{{ item.name }}' has no state-store secret. Add one to the vault
+      under vault_tenant_state_keys['{{ item.name }}']:
+
+        openssl rand -base64 24
+
+      Then give the tenant the same value as AWS_SECRET_ACCESS_KEY. A tenant
+      that declines the state store needs no entry - remove it from
+      minio_tenants instead of inventing a key it will never use.
+  loop: "{{ minio_tenants }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# Staged outside the data directory: /data is MinIO's object backend and stray
+# files in it are asking for trouble. They are copied into the container rather
+# than reached through the mount - /data/.. inside the container is the
+# container's own root, not the host path the mount came from, which is a
+# mistake that only shows up at run time.
+- name: Write each tenant's scoped policy
+  ansible.builtin.copy:
+    dest: "{{ minio_policy_dir }}/policy-{{ item.name }}.json"
+    mode: '0600'
+    content: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": ["arn:aws:s3:::{{ minio_state_bucket }}"],
+            "Condition": {"StringLike": {"s3:prefix": ["tenants/{{ item.name }}/*"]}}
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+            "Resource": ["arn:aws:s3:::{{ minio_state_bucket }}/tenants/{{ item.name }}/*"]
+          }
+        ]
+      }
+  loop: "{{ minio_tenants }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+
+- name: Copy each tenant's policy into the container
+  ansible.builtin.command:
+    cmd: >
+      podman cp {{ minio_policy_dir }}/policy-{{ item.name }}.json
+      {{ minio_container_name }}:/tmp/policy-{{ item.name }}.json
+  loop: "{{ minio_tenants }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  become: true
+
+- name: Load each tenant's policy
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc admin policy create local tenant-{{ item.name }}
+      /tmp/policy-{{ item.name }}.json
+  loop: "{{ minio_tenants }}"
+  loop_control:
+    label: "tenant-{{ item.name }}"
+  register: minio_pol
+  changed_when: "'created' in minio_pol.stdout | lower"
+  failed_when:
+    - minio_pol.rc != 0
+    - "'already exists' not in (minio_pol.stderr | default('') | lower)"
+  become: true
+
+- name: Create each tenant's state user
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc admin user add local {{ item.name }} {{ minio_tenant_secrets[item.name] }}
+  loop: "{{ minio_tenants }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: minio_user
+  changed_when: "'added successfully' in minio_user.stdout | lower"
+  failed_when:
+    - minio_user.rc != 0
+    - "'already exists' not in (minio_user.stderr | default('') | lower)"
+  become: true
+  no_log: true
+
+- name: Bind each tenant's policy to its user
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc admin policy attach local tenant-{{ item.name }} --user {{ item.name }}
+  loop: "{{ minio_tenants }}"
+  loop_control:
+    label: "tenant-{{ item.name }}"
+  register: minio_attach
+  changed_when: "'attached successfully' in minio_attach.stdout | lower"
+  failed_when:
+    - minio_attach.rc != 0
+    - "'already' not in (minio_attach.stderr | default('') | lower)"
+  become: true

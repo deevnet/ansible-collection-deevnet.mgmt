@@ -1,0 +1,7 @@
+---
+- name: Download the MinIO image tarball from the artifact server
+  ansible.builtin.get_url:
+    url: "{{ minio_tarball_url }}"
+    dest: "{{ minio_data_root }}/{{ minio_tarball_filename }}"
+    mode: '0644'
+  become: true

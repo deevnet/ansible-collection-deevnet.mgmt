@@ -1,0 +1,47 @@
+---
+# MinIO - Terraform state store offered to tenants (ADR-0007).
+#
+# OFFERED, NOT MANDATED. The substrate guarantees a state store exists; a tenant
+# may decline it and keep local state. That opt-out is what makes the hard
+# dependency acceptable - a tenant that cannot tolerate "state store down means
+# I cannot apply" simply does not use it. Nothing in this role reaches into a
+# tenant repository.
+
+minio_image_name: "quay.io/minio/minio"
+minio_image_tag: "RELEASE.2025-09-07T16-13-09Z"
+minio_tarball_filename: "minio-latest.tar"
+minio_tarball_url: "{{ bootstrap_artifact_server }}/container-images/minio/{{ minio_tarball_filename }}"
+
+minio_container_name: "minio"
+
+minio_data_root: /srv/minio
+minio_data_dir: "{{ minio_data_root }}/data"
+# Policies are staged here, deliberately outside minio_data_dir: that directory
+# is MinIO's object backend and should contain nothing but its own storage.
+minio_policy_dir: "{{ minio_data_root }}/policies"
+# This image declares no user and runs as root, unlike the PowerDNS one. The
+# data directory is owned to match - see setup_directories.yml.
+
+minio_api_port: 9000
+minio_console_port: 9001
+minio_listen_address: "0.0.0.0"
+
+# The bucket every stack's state lives in. One bucket, prefixed per consumer,
+# so a single policy shape covers both the fabric and every tenant.
+minio_state_bucket: tf-state
+
+minio_systemd_unit_path: /etc/systemd/system/minio.service
+minio_systemd_enabled: true
+minio_systemd_state: started
+
+# Root credentials come from the vault, like every other credential here. They
+# are the administrative pair used to create buckets and per-tenant users; they
+# are never issued to a tenant.
+minio_root_user: "{{ vault_minio_root_user | default('') }}"
+minio_root_password: "{{ vault_minio_root_password | default('') }}"
+
+# Tenants that should be issued a scoped state credential. Defaults to the
+# substrate tenant registry, so onboarding a tenant there is what creates its
+# state user - the same single list that drives its zone, key and egress.
+minio_tenants: "{{ deevnet_tenants | default([]) }}"
+minio_tenant_secrets: "{{ vault_tenant_state_keys | default({}) }}"

@@ -1,0 +1,11 @@
+---
+- name: Open the MinIO API and console ports
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - "{{ minio_api_port }}"
+    - "{{ minio_console_port }}"
+  become: true

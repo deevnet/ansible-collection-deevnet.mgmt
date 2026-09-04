@@ -1,0 +1,23 @@
+---
+# Ownership deliberately differs from the powerdns role, and the difference is
+# the point rather than an oversight. That image drops to an unprivileged `pdns`
+# account, so its storage has to be chowned to match or the server starts and
+# then fails its first write. This image declares no user at all and runs as
+# root, so root-owned storage IS the matching ownership.
+#
+# The rule is "match the account the image actually runs as", not "chown to
+# something unprivileged". Verified on the image that is deployed:
+#   podman inspect ... --format '{{ "{{" }}.Config.User{{ "}}" }}'   -> empty
+#   podman run --rm --entrypoint /bin/sh ... -c id            -> uid=0(root)
+- name: Create the MinIO data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  loop:
+    - "{{ minio_data_root }}"
+    - "{{ minio_data_dir }}"
+    - "{{ minio_policy_dir }}"
+  become: true
