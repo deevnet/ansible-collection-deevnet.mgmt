@@ -25,6 +25,23 @@ proxmox_vm_cores: "{{ mgmt_vm.cores | default(2) }}"
 proxmox_vm_memory: "{{ mgmt_vm.memory | default(2048) }}"
 proxmox_vm_bridge: "{{ mgmt_vm.bridge | default('vmbr0') }}"
 
+# VLAN tag for net0. Absent or 0 means untagged, which is what every
+# management-plane VM has always been: vmbr0 carries the management segment
+# untagged, so a host there needs no tag and none is added. The rendered net0
+# is byte-identical to before for any host that does not declare one.
+#
+# A host on any other segment does need a tag - the bridge trunks the rest.
+#
+#   mgmt_vm:
+#     vlan_tag: 35              # iot_backend
+#
+# Declared explicitly rather than derived from env.interfaces.eth0.segment.
+# Deriving it would silently start tagging existing hosts the first time a
+# segment key was renamed, and a management-plane VM that suddenly appears on a
+# tagged VLAN is unreachable - which is exactly the failure you cannot fix over
+# the network.
+proxmox_vm_vlan_tag: "{{ mgmt_vm.vlan_tag | default(0) | int }}"
+
 # The OS disk starts as whatever the template carries (32G today, plain-partitioned
 # with root LAST so cloud-init's growpart can extend it) and the clone is a full
 # copy of it. Declaring os_disk_size grows that copy BEFORE the first boot, which
@@ -85,12 +102,36 @@ proxmox_vm_data_disk_serial: "{{ proxmox_vm_data_disk.serial | default('deevnet-
 # reaches the assert below and gets its fail_msg, rather than dying on an
 # undefined variable before the assert can run.
 proxmox_vm_mac: "{{ infrastructure.interfaces.eth0.mac | default('') }}"
-proxmox_vm_ipconfig: "ip=dhcp"
+#
+# Segments other than management have no DHCP pool - deevnet_vlans marks them
+# "static mappings only" - and opnsense_dhcp holds exactly one
+# dhcp_subnet_uuid, the management subnet. A Kea reservation on another segment
+# therefore has no subnet to attach to, so such a host declares its address
+# instead and is addressed by cloud-init:
+#
+#   mgmt_vm:
+#     static_ip: 10.20.35.20/24     # CIDR, not a bare address
+#     static_gateway: 10.20.35.1
+#
+# This is the same pattern tenant workloads already use on EVPN zones, which
+# have no DHCP at all (ADR-0002). The derived MAC still applies and is still
+# asserted; what a static host gives up is the reservation, not its identity.
+proxmox_vm_static_ip: "{{ mgmt_vm.static_ip | default('') }}"
+proxmox_vm_static_gateway: "{{ mgmt_vm.static_gateway | default('') }}"
+proxmox_vm_ipconfig: >-
+  {{ ('ip=' ~ proxmox_vm_static_ip ~ ',gw=' ~ proxmox_vm_static_gateway)
+     if proxmox_vm_static_ip | length > 0
+     else 'ip=dhcp' }}
 
 proxmox_vm_ciuser: a_autoprov
 proxmox_vm_sshkeys: "{{ deevnet_autoprov_ssh_key }}"
 proxmox_vm_searchdomain: "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
-proxmox_vm_nameserver: "{{ deevnet_vlans.management.gateway }}"
+#
+# Overridable because a host off the management segment cannot use the
+# management resolver - the firewall carries no iot_backend -> management rule,
+# and network-segmentation.md forbids that path outright. Such a host resolves
+# through its own segment's gateway, which is the same core router.
+proxmox_vm_nameserver: "{{ mgmt_vm.nameserver | default(deevnet_vlans.management.gateway) }}"
 
 # PVE API, taken from the hypervisor's own inventory entry so credentials live
 # in one place (host_vars/<hypervisor>/vault.yml).

@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+#
+# Topic permissions, per account.
+#
+# Mosquitto denies anything not granted here, so an account with no entry can
+# authenticate and then do nothing - which is the desired failure, not a
+# misconfiguration.
+#
+# The point of splitting these is blast radius. A stand credential that could
+# write any topic could repaint every stand in the house; the IoT segment is
+# rated Medium trust precisely because its devices are assumed to be reachable
+# by things you did not write.
+{% for user, rules in mosquitto_acls | dictsort %}
+
+user {{ user }}
+{% for rule in rules %}
+topic {{ rule.access }} {{ rule.topic }}
+{% endfor %}
+{% endfor %}

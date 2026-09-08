@@ -42,6 +42,17 @@
   roles:
     - minio
 
+# The MQTT broker for custom-firmware embedded devices. Substrate rather than a
+# tenant service: MQTT clients always dial the broker, so its segment must
+# accept inbound, and the tenant fabric has no inbound path by design. Devices
+# on IoT reach it directly; publishers in tenants reach it outbound over the
+# perimeter (tenant_transit -> iot_backend in firewall.yml).
+- name: Configure the MQTT broker
+  hosts: mqtt_brokers
+  become: true
+  roles:
+    - mosquitto
+
 # Placeholder plays for substrate-facing management services. These land on
 # their own host, not beside tenant DNS: their change cadence is much higher and
 # a restart there must not take tenant name resolution with it (ADR-0004).

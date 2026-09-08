@@ -106,7 +106,11 @@
     # The declared MAC is the whole point: the Kea reservation and the A record
     # key off it, so the address survives a rebuild.
     net:
-      net0: "virtio={{ proxmox_vm_mac }},bridge={{ proxmox_vm_bridge }}"
+      # The tag is appended only when declared, so an untagged host renders
+      # exactly the string it always did.
+      net0: >-
+        virtio={{ proxmox_vm_mac }},bridge={{ proxmox_vm_bridge }}{{
+        ',tag=' ~ proxmox_vm_vlan_tag if proxmox_vm_vlan_tag | int > 0 else '' }}
     ipconfig:
       ipconfig0: "{{ proxmox_vm_ipconfig }}"
     ciuser: "{{ proxmox_vm_ciuser }}"
