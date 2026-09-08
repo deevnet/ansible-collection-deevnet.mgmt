@@ -1,0 +1,16 @@
+---
+- name: Open the MQTT port
+  ansible.posix.firewalld:
+    port: "{{ mosquitto_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  become: true
+
+- name: Open the MQTT TLS port
+  ansible.posix.firewalld:
+    port: "{{ mosquitto_tls_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: "{{ 'enabled' if mosquitto_tls_enabled else 'disabled' }}"
+  become: true

@@ -1,0 +1,60 @@
+---
+- name: Assert the broker has accounts to serve
+  ansible.builtin.assert:
+    that:
+      - mosquitto_users | length > 0
+    fail_msg: >-
+      No MQTT accounts defined. Set vault_mqtt_users in the inventory vault -
+      a broker refusing anonymous access and holding no credentials accepts
+      nobody, which fails silently as "the lights stopped working".
+    success_msg: "{{ mosquitto_users | length }} MQTT account(s) defined."
+
+- name: Install Mosquitto
+  ansible.builtin.dnf:
+    name: "{{ mosquitto_package }}"
+    state: present
+  become: true
+
+- name: Ensure the persistence directory exists
+  ansible.builtin.file:
+    path: "{{ mosquitto_persistence_location }}"
+    state: directory
+    owner: mosquitto
+    group: mosquitto
+    mode: '0750'
+  become: true
+  when: mosquitto_persistence
+
+- name: Write the broker configuration
+  ansible.builtin.template:
+    src: mosquitto.conf.j2
+    dest: "{{ mosquitto_config_file }}"
+    owner: root
+    group: mosquitto
+    mode: '0640'
+  become: true
+  notify: restart mosquitto
+
+- name: Write the topic ACLs
+  ansible.builtin.template:
+    src: acl.j2
+    dest: "{{ mosquitto_acl_file }}"
+    owner: root
+    group: mosquitto
+    mode: '0640'
+  become: true
+  notify: restart mosquitto
+
+- name: Configure accounts
+  ansible.builtin.import_tasks: configure_accounts.yml
+
+- name: Open the broker port
+  ansible.builtin.import_tasks: configure_firewall.yml
+
+- name: Enable and start Mosquitto
+  ansible.builtin.systemd:
+    name: mosquitto
+    enabled: "{{ mosquitto_service_enabled }}"
+    state: "{{ mosquitto_service_state }}"
+    daemon_reload: true
+  become: true

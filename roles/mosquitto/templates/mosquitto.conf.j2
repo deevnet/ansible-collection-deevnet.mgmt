@@ -1,0 +1,42 @@
+# {{ ansible_managed }}
+# Mosquitto - MQTT broker for the IoT Backend segment.
+#
+# Devices on the IoT segment dial this host; publishers in tenants reach it
+# outbound over the perimeter. Nothing here dials out.
+
+pid_file /run/mosquitto/mosquitto.pid
+
+{% if mosquitto_persistence %}
+# Retained messages must survive a broker restart. The LP stand pulls its
+# current scene from a retained message on reconnect, so losing retention
+# means every stand goes dark until the next record rather than picking the
+# current one back up.
+persistence true
+persistence_location {{ mosquitto_persistence_location }}
+{% else %}
+persistence false
+{% endif %}
+
+log_dest syslog
+log_type warning
+log_type error
+log_type notice
+
+# Authentication. Anonymous access is refused: an open broker on a segment
+# built to accept inbound from Medium-trust devices is an open relay.
+allow_anonymous {{ 'true' if mosquitto_allow_anonymous else 'false' }}
+password_file {{ mosquitto_password_file }}
+acl_file {{ mosquitto_acl_file }}
+
+listener {{ mosquitto_port }} {{ mosquitto_listen_address }}
+protocol mqtt
+{% if mosquitto_tls_enabled %}
+
+# TLS listener. Server-side only for now - the client presents a username and
+# password over it. Per-device client certificates are the intended end state.
+listener {{ mosquitto_tls_port }} {{ mosquitto_listen_address }}
+protocol mqtt
+certfile {{ mosquitto_tls_certfile }}
+keyfile {{ mosquitto_tls_keyfile }}
+tls_version tlsv1.2
+{% endif %}

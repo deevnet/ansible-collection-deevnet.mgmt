@@ -1,0 +1,57 @@
+---
+# Mosquitto - MQTT broker on the IoT Backend segment.
+#
+# network-segmentation.md defines IoT Backend as the segment that "accepts
+# inbound connections from IoT segment (sensor data, MQTT publish)" and names
+# an MQTT broker as its typical inhabitant. This role builds that.
+#
+# Installed from the Fedora repository rather than as a container image, unlike
+# minio and powerdns. Those pull their tarballs from the artifact server on the
+# management segment, and this host cannot reach it: there is no
+# iot_backend -> management rule and network-segmentation.md forbids that path
+# outright. iot_backend does have internet egress (firewall_internet_zones), so
+# dnf works. The trade is a package version that follows Fedora instead of a
+# pinned image digest.
+
+mosquitto_package: mosquitto
+
+mosquitto_config_dir: /etc/mosquitto
+mosquitto_config_file: "{{ mosquitto_config_dir }}/mosquitto.conf"
+mosquitto_password_file: "{{ mosquitto_config_dir }}/passwd"
+mosquitto_acl_file: "{{ mosquitto_config_dir }}/acl"
+
+mosquitto_listen_address: "0.0.0.0"
+mosquitto_port: 1883
+
+# TLS is off until the broker has a certificate. Username and password over a
+# plaintext listener is the bring-up state, deliberately chosen as the simple
+# first step; per-device mutual TLS is the intended end state (see the LP stand
+# firmware roadmap). Turning this on needs a cert and key on the host.
+mosquitto_tls_enabled: false
+mosquitto_tls_port: 8883
+mosquitto_tls_certfile: "{{ mosquitto_config_dir }}/certs/server.crt"
+mosquitto_tls_keyfile: "{{ mosquitto_config_dir }}/certs/server.key"
+
+# Anonymous access is refused. An unauthenticated broker on a segment whose
+# whole job is accepting inbound from Medium-trust devices is not a broker, it
+# is an open relay.
+mosquitto_allow_anonymous: false
+
+# Accounts, as username -> password, from the vault. Each device and each
+# publisher gets its own, so a credential can be revoked without taking the
+# rest down - and so the ACL below can tell them apart.
+mosquitto_users: "{{ vault_mqtt_users | default({}) }}"
+
+# Topic permissions, as username -> list of {access, topic}.
+#
+# A stand may only subscribe to its own scene topic and write its own status
+# and state. Without this any device credential could repaint every stand in
+# the house, which is exactly the blast radius the IoT segment's Medium trust
+# rating assumes is contained.
+mosquitto_acls: "{{ mqtt_acls | default({}) }}"
+
+mosquitto_persistence: true
+mosquitto_persistence_location: /var/lib/mosquitto/
+
+mosquitto_service_enabled: true
+mosquitto_service_state: started

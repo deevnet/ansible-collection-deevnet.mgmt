@@ -1,0 +1,70 @@
+---
+# mosquitto_passwd hashes in place and has no idempotent mode, so writing the
+# file on every run would restart the broker on every run - and a broker
+# restart drops every device's connection. The file is built once into a temp
+# location, hashed, and only copied over the live one if the result differs.
+
+- name: Stage the plaintext account file
+  ansible.builtin.copy:
+    content: |
+      {% for user, password in mosquitto_users | dictsort %}
+      {{ user }}:{{ password }}
+      {% endfor %}
+    dest: "{{ mosquitto_password_file }}.staged"
+    owner: root
+    group: mosquitto
+    mode: '0640'
+  become: true
+  no_log: true
+  changed_when: false
+
+- name: Hash the staged accounts
+  ansible.builtin.command:
+    cmd: "mosquitto_passwd -U {{ mosquitto_password_file }}.staged"
+  become: true
+  changed_when: false
+
+- name: Read the existing account file
+  ansible.builtin.slurp:
+    src: "{{ mosquitto_password_file }}"
+  become: true
+  register: mosquitto_existing_passwd
+  failed_when: false
+
+- name: Read the staged account file
+  ansible.builtin.slurp:
+    src: "{{ mosquitto_password_file }}.staged"
+  become: true
+  register: mosquitto_staged_passwd
+  no_log: true
+
+# Compare on usernames only. The hashes carry a per-run salt, so comparing
+# whole files would report a change every time and restart the broker every
+# time - the exact thing the staging dance exists to avoid.
+- name: Determine whether the account set changed
+  ansible.builtin.set_fact:
+    mosquitto_accounts_changed: >-
+      {{ (mosquitto_existing_passwd.content | default('') | b64decode).split('\n')
+           | map('regex_replace', ':.*$', '') | select | sort
+         !=
+         (mosquitto_staged_passwd.content | b64decode).split('\n')
+           | map('regex_replace', ':.*$', '') | select | sort }}
+
+- name: Install the account file
+  ansible.builtin.copy:
+    src: "{{ mosquitto_password_file }}.staged"
+    dest: "{{ mosquitto_password_file }}"
+    remote_src: true
+    owner: root
+    group: mosquitto
+    mode: '0640'
+  become: true
+  when: mosquitto_accounts_changed | bool
+  notify: restart mosquitto
+
+- name: Remove the staged account file
+  ansible.builtin.file:
+    path: "{{ mosquitto_password_file }}.staged"
+    state: absent
+  become: true
+  changed_when: false
