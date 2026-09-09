@@ -103,6 +103,14 @@
     cores: "{{ proxmox_vm_cores }}"
     memory: "{{ proxmox_vm_memory }}"
     agent: "enabled=1"
+    # Set here rather than at clone time: the clone inherits the template's value
+    # (0), and this is the task that already owns "make the VM match what the host
+    # declares". Asserted from the readback below, because a silently-dropped
+    # onboot looks identical to a working one until the hypervisor reboots.
+    onboot: "{{ proxmox_vm_onboot | bool }}"
+    # Omitted entirely when undeclared, so an unordered host renders exactly the
+    # config it always did.
+    startup: "{{ proxmox_vm_startup | default(omit, true) }}"
     # The declared MAC is the whole point: the Kea reservation and the A record
     # key off it, so the address survives a rebuild.
     net:
@@ -207,6 +215,33 @@
       declared MAC {{ proxmox_vm_mac }}. The DHCP reservation and the A record
       both key off that MAC, so the VM must not be started in this state.
     success_msg: "net0 carries {{ proxmox_vm_mac }}."
+
+# Same argument as the MAC assert above, and the reason this role grew an onboot
+# setting in the first place: `changed` from the API is not evidence the VM will
+# come back. A management-plane VM that silently stays onboot=0 looks completely
+# healthy right up until the hypervisor reboots without it.
+- name: Assert {{ proxmox_vm_name }} will start with its hypervisor
+  vars:
+    proxmox_vm_onboot_actual: >-
+      {{
+        proxmox_vm_readback.proxmox_vms
+        | default([])
+        | selectattr('config', 'defined')
+        | map(attribute='config')
+        | map(attribute='onboot', default=0)
+        | first
+        | default(0)
+      }}
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_onboot_actual | int == (1 if proxmox_vm_onboot | bool else 0)
+    fail_msg: >-
+      {{ proxmox_vm_name }} (vmid {{ proxmox_vm_id }}) has onboot={{
+      proxmox_vm_onboot_actual }}, but this host declares
+      onboot={{ proxmox_vm_onboot | bool }}. Left as-is the VM does not come back
+      after a hypervisor reboot, and nothing reports it until one happens.
+    success_msg: >-
+      onboot={{ proxmox_vm_onboot_actual }} as declared.
 
 # Same argument as the MAC assert above: the API reporting `changed` is not
 # evidence the disk is there. A missing data disk is worse than a loud failure -
