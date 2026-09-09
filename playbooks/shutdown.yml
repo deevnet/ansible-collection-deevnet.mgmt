@@ -197,24 +197,40 @@
   # router, which stays up.
   hosts: dv02cor002p01
   gather_facts: false
-  become: true
   tasks:
-    # OPNsense is FreeBSD: -p powers the machine off, where -h only halts it.
-    - name: Issue poweroff
-      ansible.builtin.command:
-        cmd: /sbin/shutdown -p now "substrate shutdown"
-      async: 1
-      poll: 0
-      changed_when: true
+    # Over the REST API, delegated to the control node - the same way every
+    # deevnet.net role talks to this box, and the only way that works. The router
+    # does NOT accept a_autoprov over SSH; `ansible_user` in
+    # group_vars/routers/vars.yml is vestigial, since nothing SSHes here.
+    #
+    # This is the one call in the playbook that cannot be rehearsed - testing it
+    # powers the lab off. Everything around it has been exercised.
+    - name: Halt the core router
+      ansible.builtin.uri:
+        url: "{{ opnsense_api_url }}/core/system/halt"
+        method: POST
+        url_username: "{{ opnsense_api_key }}"
+        url_password: "{{ opnsense_api_secret }}"
+        force_basic_auth: true
+        validate_certs: "{{ opnsense_validate_certs }}"
+        # The box starts shutting down while it is answering, so the response can
+        # be cut off mid-flight. A dropped connection here is success, not failure -
+        # the wait below is what actually decides.
+        status_code: [200, 202]
+        timeout: 30
+      delegate_to: localhost
+      become: false
       failed_when: false
-      ignore_unreachable: true
 
     # Everything past this point has no gateway, no DNS and no DHCP. The only
     # remaining stage is local for exactly that reason.
+    #
+    # Waits on 443 rather than 22: the API is the service we know is running,
+    # because we just authenticated against it.
     - name: Wait for the core router to stop answering
       ansible.builtin.wait_for:
         host: "{{ ansible_host }}"
-        port: 22
+        port: 443
         state: stopped
         timeout: 300
       delegate_to: localhost
