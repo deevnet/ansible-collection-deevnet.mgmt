@@ -20,9 +20,10 @@
 # of which appears in hosts.yml.
 #
 # Deliberately NOT included, all of which stay powered:
-#   - the access switch (dv02acc001p01) - its PoE is the AP's only power source,
-#     and it carries the very traffic the earlier stages need
-#   - the Omada AP (dv02wap001p01)
+#   - the access switch (dv02acc001p01) - it carries the very traffic the
+#     earlier stages need
+#   - the Omada AP (dv02wap001p01) - powered by its own PoE injector, not by the
+#     switch (the SG2218 has no PoE)
 #   - the edge router (dv02edg001p01) - the WAN uplink, and the way back in
 #
 # There is no matching startup playbook and there does not need to be: every host
