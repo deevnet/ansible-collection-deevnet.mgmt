@@ -123,6 +123,35 @@ proxmox_vm_ipconfig: >-
      if proxmox_vm_static_ip | length > 0
      else 'ip=dhcp' }}
 
+# Whether the VM comes back with its hypervisor.
+#
+# A management-plane VM is substrate - tenant DNS, the Terraform state store, the
+# builder - and has to be there after a PVE reboot without someone opening the web
+# UI. This defaults to true for that reason.
+#
+# It was easy to miss that it had never been set: the role starts the VM at the end
+# of a build, so a run always ends with the guest running whether onboot is set or
+# not, and only a hypervisor reboot tells you otherwise. That is exactly what
+# happened - tdn/tst/bld001 were all onboot=0 and stayed down after a PVE restart.
+#
+# A host that genuinely should not come back on its own says so:
+#
+#   mgmt_vm:
+#     onboot: false
+proxmox_vm_onboot: "{{ mgmt_vm.onboot | default(true) }}"
+
+# PVE start/stop ordering within the node, for hosts whose peers depend on them.
+# Format is PVE's own: "order=N,up=SECONDS,down=SECONDS" - order ascending on
+# boot and descending on shutdown, `up` a delay before the next VM starts, `down`
+# how long PVE waits for this one to stop before killing it.
+#
+#   mgmt_vm:
+#     startup: "order=1,up=30"    # tenant DNS, before anything that resolves through it
+#
+# Absent means unordered, which is what PVE does by default and what every host
+# here did before this existed.
+proxmox_vm_startup: "{{ mgmt_vm.startup | default('') }}"
+
 proxmox_vm_ciuser: a_autoprov
 proxmox_vm_sshkeys: "{{ deevnet_autoprov_ssh_key }}"
 proxmox_vm_searchdomain: "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"

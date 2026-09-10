@@ -1,0 +1,253 @@
+---
+# Substrate-wide graceful shutdown, in dependency order.
+#
+# Usage:
+#   cd ansible-collection-deevnet.mgmt
+#   ansible-playbook playbooks/shutdown.yml -e confirm_shutdown=yes
+#
+# The ordering IS this playbook. Each stage is the next one's dependency, so each
+# must be fully down - verified, not assumed - before the next begins:
+#
+#   1. guests        every qemu VM on both hypervisors
+#   2. hypervisors   dv02hyp001p01, dv02hyp002p02
+#   3. pis           the `pis` group
+#   4. core router   dv02cor002p01 - this is the network; nothing is reachable after
+#   5. builder       the control node running this playbook, powered off locally
+#
+# Stage 1 enumerates guests from the PVE API rather than from inventory, because a
+# hypervisor cannot safely halt while ANY guest is running - including guests that
+# were never in inventory. Today that is vdvntm-admin-01 and vdvntm-winox, neither
+# of which appears in hosts.yml.
+#
+# Deliberately NOT included, all of which stay powered:
+#   - the access switch (dv02acc001p01) - its PoE is the AP's only power source,
+#     and it carries the very traffic the earlier stages need
+#   - the Omada AP (dv02wap001p01)
+#   - the edge router (dv02edg001p01) - the WAN uplink, and the way back in
+#
+# There is no matching startup playbook and there does not need to be: every host
+# here comes back on its own, which is what onboot on the VMs (proxmox_vm) and the
+# hypervisors' own power-on behaviour are for.
+
+- name: Confirm intent
+  # The control node itself, not `localhost`. group_vars/all derives ansible_host
+  # from env.interfaces, which the implicit localhost does not have, so a play
+  # targeting localhost dies computing its own connection address before it ever
+  # reaches the assert - aborting for the right outcome but entirely the wrong
+  # reason, and just as fatally when the confirmation IS supplied.
+  hosts: dv00bld001p01
+  gather_facts: false
+  connection: local
+  become: false
+  # Without this the guard below does not guard anything. A failed assert marks
+  # localhost failed, and Ansible carries on into the next play - which targets
+  # different hosts and so is entirely unaffected. any_errors_fatal is what turns
+  # one failed host into an aborted playbook.
+  any_errors_fatal: true
+  tasks:
+    # A playbook that powers off the entire substrate must not be one keystroke of
+    # shell history away from running by accident, and `--check` is no protection
+    # here - a shutdown is not a check-mode-aware operation.
+    - name: Require an explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - confirm_shutdown | default('') == 'yes'
+        fail_msg: >-
+          This powers off the whole mobile substrate: every VM, both hypervisors,
+          the pis, the core router, and finally this control node. Re-run with
+          -e confirm_shutdown=yes if that is what you want.
+        success_msg: "Confirmed. Shutting down the substrate."
+
+- name: Stage 1 - shut down every guest on every hypervisor
+  hosts: hypervisors
+  gather_facts: false
+  # Every call here is to the PVE API, not to the hypervisor's shell, so nothing
+  # in this play needs SSH to the node.
+  connection: local
+  become: false
+  tasks:
+    - name: Enumerate qemu guests on {{ proxmox_node }}
+      community.general.proxmox_vm_info:
+        api_host: "{{ ansible_host }}"
+        api_user: "{{ proxmox_token_id.split('!')[0] }}"
+        api_token_id: "{{ proxmox_token_id.split('!')[1] }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        type: qemu
+      register: shutdown_guest_inventory
+
+    # Filtering on status alone, deliberately: a PVE template cannot run, so it is
+    # already excluded by status != running. Testing `template` instead would need
+    # a `selectattr('template', 'defined')` guard first, because the key is absent
+    # on ordinary guests and rejectattr raises on a missing attribute rather than
+    # treating it as false.
+    - name: Select the running guests
+      ansible.builtin.set_fact:
+        shutdown_running_guests: >-
+          {{
+            shutdown_guest_inventory.proxmox_vms
+            | default([])
+            | selectattr('status', 'defined')
+            | selectattr('status', 'equalto', 'running')
+            | list
+          }}
+
+    - name: Report what will be stopped on {{ proxmox_node }}
+      ansible.builtin.debug:
+        msg: >-
+          {{ proxmox_node }}:
+          {{ shutdown_running_guests | map(attribute='name') | list | join(', ')
+             | default('nothing running', true) }}
+
+    # force: false is the whole point - this posts to PVE's status/shutdown, which
+    # is an ACPI request the guest agent answers, NOT a virtual power cord. PVE
+    # falls back to a hard stop only after `timeout` seconds, so a guest that
+    # ignores ACPI still stops rather than blocking the hypervisor behind it.
+    - name: Gracefully shut down each running guest
+      community.general.proxmox_kvm:
+        api_host: "{{ ansible_host }}"
+        api_user: "{{ proxmox_token_id.split('!')[0] }}"
+        api_token_id: "{{ proxmox_token_id.split('!')[1] }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ item.vmid }}"
+        state: stopped
+        force: false
+        timeout: "{{ shutdown_guest_timeout | default(180) }}"
+      loop: "{{ shutdown_running_guests }}"
+      loop_control:
+        label: "{{ item.name }} (vmid {{ item.vmid }})"
+
+    # Asserts the outcome rather than trusting the API's `changed`. The next stage
+    # halts these nodes, and a guest still flushing its filesystem when its
+    # hypervisor cuts out is exactly the corruption this ordering exists to avoid.
+    - name: Wait until no guest is running on {{ proxmox_node }}
+      community.general.proxmox_vm_info:
+        api_host: "{{ ansible_host }}"
+        api_user: "{{ proxmox_token_id.split('!')[0] }}"
+        api_token_id: "{{ proxmox_token_id.split('!')[1] }}"
+        api_token_secret: "{{ proxmox_token_secret }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        type: qemu
+      register: shutdown_guest_check
+      until: >-
+        shutdown_guest_check.proxmox_vms
+        | default([])
+        | selectattr('status', 'defined')
+        | selectattr('status', 'equalto', 'running')
+        | list | length == 0
+      retries: 30
+      delay: 10
+
+- name: Stage 2 - power off the hypervisors
+  hosts: hypervisors
+  gather_facts: false
+  become: true
+  tasks:
+    # async/poll:0 because the node stops answering mid-command: the SSH session
+    # dies with the box, and a synchronous task would report that as a failure.
+    # ignore_unreachable covers a node that is already off, which is a success
+    # for our purposes, not an error.
+    - name: Issue poweroff
+      ansible.builtin.command:
+        cmd: /sbin/shutdown -h now "substrate shutdown"
+      async: 1
+      poll: 0
+      changed_when: true
+      failed_when: false
+      ignore_unreachable: true
+
+    - name: Wait for {{ inventory_hostname }} to stop answering
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        state: stopped
+        timeout: 300
+      delegate_to: localhost
+      become: false
+
+- name: Stage 3 - power off the pis
+  hosts: pis
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Issue poweroff
+      ansible.builtin.command:
+        cmd: /sbin/shutdown -h now "substrate shutdown"
+      async: 1
+      poll: 0
+      changed_when: true
+      failed_when: false
+      ignore_unreachable: true
+
+    - name: Wait for {{ inventory_hostname }} to stop answering
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        state: stopped
+        timeout: 300
+      delegate_to: localhost
+      become: false
+
+- name: Stage 4 - power off the core router
+  # dv02cor002p01 by name, not the `routers` group: that group also holds the edge
+  # router, which stays up.
+  hosts: dv02cor002p01
+  gather_facts: false
+  tasks:
+    # Over the REST API, delegated to the control node - the same way every
+    # deevnet.net role talks to this box, and the only way that works. The router
+    # does NOT accept a_autoprov over SSH; `ansible_user` in
+    # group_vars/routers/vars.yml is vestigial, since nothing SSHes here.
+    #
+    # This is the one call in the playbook that cannot be rehearsed - testing it
+    # powers the lab off. Everything around it has been exercised.
+    - name: Halt the core router
+      ansible.builtin.uri:
+        url: "{{ opnsense_api_url }}/core/system/halt"
+        method: POST
+        url_username: "{{ opnsense_api_key }}"
+        url_password: "{{ opnsense_api_secret }}"
+        force_basic_auth: true
+        validate_certs: "{{ opnsense_validate_certs }}"
+        # The box starts shutting down while it is answering, so the response can
+        # be cut off mid-flight. A dropped connection here is success, not failure -
+        # the wait below is what actually decides.
+        status_code: [200, 202]
+        timeout: 30
+      delegate_to: localhost
+      become: false
+      failed_when: false
+
+    # Everything past this point has no gateway, no DNS and no DHCP. The only
+    # remaining stage is local for exactly that reason.
+    #
+    # Waits on 443 rather than 22: the API is the service we know is running,
+    # because we just authenticated against it.
+    - name: Wait for the core router to stop answering
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 443
+        state: stopped
+        timeout: 300
+      delegate_to: localhost
+      become: false
+
+- name: Stage 5 - power off the control node
+  hosts: dv00bld001p01
+  gather_facts: false
+  # Local on purpose, and not only because the network is gone by now: this is the
+  # host the playbook is running on, so it never needed SSH to reach itself.
+  connection: local
+  become: true
+  tasks:
+    - name: Issue poweroff
+      ansible.builtin.command:
+        cmd: /sbin/shutdown -h now "substrate shutdown"
+      async: 1
+      poll: 0
+      changed_when: true
+      failed_when: false
