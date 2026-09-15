@@ -42,6 +42,21 @@
     podman_service_start_timeout: 300
     podman_service_stop_timeout: 120
 
+# Adding to the lists above opens ports; nothing closes one a list stopped
+# declaring. These are named explicitly rather than inferred, so the role never
+# closes a port it did not open.
+- name: Close ports earlier versions of this role opened
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: disabled
+  loop: "{{ omada_firewall_ports_retired }}"
+  when:
+    - "'firewalld.service' in ansible_facts.services"
+    - ansible_facts.services['firewalld.service'].state == 'running'
+  become: true
+
 - name: Wait for the controller to listen on {{ omada_https_port }}
   ansible.builtin.wait_for:
     port: "{{ omada_https_port }}"
