@@ -1,0 +1,36 @@
+---
+# Deevnet API (ADR-0012) and its database, in the provisioning VM (ADR-0013 §1).
+#
+# Provisioning-only: nothing at runtime depends on it being up. The database is
+# hosted tenant state, not the source of truth (ADR-0012), so it has no
+# published port - only the API reaches it, over a private podman network.
+
+# Built and staged by the deevnet-api repository's `make stage`. Bump the
+# version here when a new one is staged.
+deevnet_api_version: "v0.1.0"
+deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
+deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
+deevnet_api_container_name: deevnet-api
+
+deevnet_api_listen_address: "0.0.0.0"
+deevnet_api_port: 8080
+
+# The shared bearer token of the API shell. Per-tenant credentials replace it
+# (ADR-0012 §9). Generate with: openssl rand -hex 32
+deevnet_api_token: "{{ vault_deevnet_api_token | default('') }}"
+
+deevnet_api_network: deevnet-api
+
+deevnet_api_db_container_name: deevnet-api-db
+deevnet_api_db_image_name: "docker.io/library/postgres"
+deevnet_api_db_image_tag: "17.11"
+deevnet_api_db_tarball: "postgres/postgres-{{ deevnet_api_db_image_tag }}.tar"
+deevnet_api_db_name: deevnet_api
+deevnet_api_db_user: deevnet_api
+# Applied only when the data directory is first initialised. Changing it later
+# needs an ALTER ROLE inside the database as well as a vault edit.
+# Generate with: openssl rand -hex 24
+deevnet_api_db_password: "{{ vault_deevnet_api_db_password | default('') }}"
+
+deevnet_api_data_root: /srv/deevnet-api
+deevnet_api_db_data_dir: "{{ deevnet_api_data_root }}/pgdata"

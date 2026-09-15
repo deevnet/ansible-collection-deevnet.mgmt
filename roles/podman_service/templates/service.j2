@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description={{ podman_service_description }}
+After=network-online.target{% for unit in podman_service_after %} {{ unit }}{% endfor %}
+
+Wants=network-online.target{% for unit in podman_service_after %} {{ unit }}{% endfor %}
+
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+TimeoutStartSec={{ podman_service_start_timeout }}
+TimeoutStopSec={{ podman_service_stop_timeout + 30 }}
+
+ExecStartPre=-/usr/bin/podman stop {{ podman_service_name }}
+ExecStart=/usr/bin/podman start -a {{ podman_service_name }}
+ExecStop=/usr/bin/podman stop -t {{ podman_service_stop_timeout }} {{ podman_service_name }}
+
+[Install]
+WantedBy=multi-user.target

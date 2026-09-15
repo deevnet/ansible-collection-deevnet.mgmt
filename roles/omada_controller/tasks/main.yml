@@ -1,0 +1,61 @@
+---
+# The controller's database is derived state (ADR-0009 §1): it can be rebuilt
+# from inventory. This role creates an empty controller; the setup wizard, the
+# Owner account and the Open API client are ADR-0009 §5's manual floor, done
+# once in the browser after the first run.
+
+- name: Create the controller's data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ omada_data_root }}"
+    - "{{ omada_data_root }}/data"
+    - "{{ omada_data_root }}/work"
+    - "{{ omada_data_root }}/logs"
+  become: true
+
+- name: Run the Omada controller container
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ omada_container_name }}"
+    podman_service_description: "TP-Link Omada Controller (ADR-0009)"
+    podman_service_image: "{{ omada_image_name }}:{{ omada_image_tag }}"
+    podman_service_tarball: "{{ omada_tarball }}"
+    # Must be host. Device discovery is a broadcast to 255.255.255.255:29810, and
+    # podman's published-port DNAT forwards only unicast to a host address - with
+    # bridge networking the controller sees no devices at all, even though they
+    # are broadcasting on the same L2 segment.
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ omada_data_root }}/data:/opt/tplink/EAPController/data:Z"
+      - "{{ omada_data_root }}/work:/opt/tplink/EAPController/work:Z"
+      - "{{ omada_data_root }}/logs:/opt/tplink/EAPController/logs:Z"
+    podman_service_env: "{{ dict(omada_env_vars | map('regex_search', '^([^=]+)=(.*)$', '\\1', '\\2')) }}"
+    podman_service_firewall_ports: >-
+      {{ (omada_firewall_ports_tcp | map('string') | map('regex_replace', '$', '/tcp') | list)
+         + (omada_firewall_ports_udp | map('string') | map('regex_replace', '$', '/udp') | list) }}
+    podman_service_start_timeout: 300
+    podman_service_stop_timeout: 120
+
+- name: Wait for the controller to listen on {{ omada_https_port }}
+  ansible.builtin.wait_for:
+    port: "{{ omada_https_port }}"
+    host: 127.0.0.1
+    timeout: "{{ omada_start_timeout }}"
+
+# Listening is not serving: the web tier binds before MongoDB is ready. The
+# controller's unauthenticated info endpoint answers once it can take a login.
+- name: Wait for the controller to answer
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ omada_https_port }}/api/info"
+    validate_certs: false
+    status_code: [200]
+  register: omada_info
+  retries: 40
+  delay: 15
+  until: omada_info.status is defined and omada_info.status == 200

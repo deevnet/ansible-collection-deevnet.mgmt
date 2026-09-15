@@ -1,0 +1,109 @@
+---
+- name: Create podman network {{ podman_service_network }}
+  when:
+    - podman_service_network_create | bool
+    - podman_service_network not in ['', 'host']
+  block:
+    - name: Check whether network {{ podman_service_network }} exists
+      ansible.builtin.command:
+        argv: [podman, network, exists, "{{ podman_service_network }}"]
+      register: _podman_service_network_present
+      changed_when: false
+      failed_when: _podman_service_network_present.rc not in [0, 1]
+      check_mode: false
+      become: true
+
+    - name: Create network {{ podman_service_network }}
+      ansible.builtin.command:
+        argv: [podman, network, create, "{{ podman_service_network }}"]
+      when: _podman_service_network_present.rc != 0
+      changed_when: true
+      become: true
+
+- name: Ensure the env and spec directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ podman_service_env_dir }}"
+    - "{{ podman_service_spec_dir }}"
+  become: true
+
+- name: Write the environment file for {{ podman_service_name }}
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ podman_service_env_dir }}/{{ podman_service_name }}.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: _podman_service_env_file
+  no_log: true
+  become: true
+
+- name: Assemble the container definition for {{ podman_service_name }}
+  ansible.builtin.set_fact:
+    _podman_service_argv: >-
+      {{ ['podman', 'create',
+          '--name', podman_service_name,
+          '--hostname', podman_service_hostname,
+          '--restart=no',
+          '--pull=never',
+          '--env-file', podman_service_env_dir ~ '/' ~ podman_service_name ~ '.env']
+         + (['--network', podman_service_network] if podman_service_network | length > 0 else [])
+         + (podman_service_ports | map('regex_replace', '^', '--publish=') | list)
+         + (podman_service_volumes | map('regex_replace', '^', '--volume=') | list)
+         + (podman_service_caps | map('regex_replace', '^', '--cap-add=') | list)
+         + podman_service_create_args
+         + [podman_service_image]
+         + podman_service_command }}
+
+- name: Record the container definition for {{ podman_service_name }}
+  ansible.builtin.copy:
+    content: "{{ _podman_service_argv | to_nice_json }}\n"
+    dest: "{{ podman_service_spec_dir }}/{{ podman_service_name }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  register: _podman_service_spec
+  become: true
+
+- name: Check whether container {{ podman_service_name }} exists
+  ansible.builtin.command:
+    argv: [podman, container, exists, "{{ podman_service_name }}"]
+  register: _podman_service_container_present
+  changed_when: false
+  failed_when: _podman_service_container_present.rc not in [0, 1]
+  check_mode: false
+  become: true
+
+- name: Decide whether {{ podman_service_name }} must be (re)created
+  ansible.builtin.set_fact:
+    _podman_service_recreate: >-
+      {{ _podman_service_container_present.rc != 0
+         or _podman_service_spec is changed
+         or _podman_service_env_file is changed }}
+
+- name: Replace container {{ podman_service_name }}
+  when: _podman_service_recreate | bool
+  block:
+    - name: Stop {{ podman_service_name }}
+      ansible.builtin.systemd:
+        name: "{{ podman_service_name }}"
+        state: stopped
+      failed_when: false
+      become: true
+
+    - name: Remove the old container
+      ansible.builtin.command:
+        argv: [podman, rm, -f, --ignore, "{{ podman_service_name }}"]
+      changed_when: _podman_service_container_present.rc == 0
+      become: true
+
+    - name: Create container {{ podman_service_name }}
+      ansible.builtin.command:
+        argv: "{{ _podman_service_argv }}"
+      changed_when: true
+      become: true

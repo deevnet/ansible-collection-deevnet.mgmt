@@ -1,21 +1,70 @@
 ---
-- name: Install Podman
-  ansible.builtin.import_tasks: install_podman.yml
+# MinIO around the shared podman_service role. The steps here are MinIO's own:
+# its directories, the credential check, the health check, and the per-tenant
+# bucket provisioning.
 
 - name: Set up persistent data directories
   ansible.builtin.import_tasks: setup_directories.yml
 
-- name: Download container image tarball
-  ansible.builtin.import_tasks: download_image.yml
+- name: Fail early if root credentials are missing
+  ansible.builtin.assert:
+    that:
+      - minio_root_user | length > 0
+      - minio_root_password | length > 0
+    fail_msg: >-
+      vault_minio_root_user / vault_minio_root_password are not set. MinIO would
+      start with a default credential pair, which is a state store anyone who can
+      reach the host could read. Generate a pair and add them to the vault:
+        openssl rand -base64 24
+  no_log: true
 
-- name: Load container image and create container
-  ansible.builtin.import_tasks: load_container.yml
+# Published ports rather than host networking: unlike an authoritative DNS
+# server, MinIO has no per-request source-address policy that a port mapping
+# would defeat. Access control is the credential, and the credential is scoped
+# per tenant by policy rather than by where the request came from.
+#
+# Ports are above 1024, so no NET_BIND_SERVICE is needed here - the capability
+# the PowerDNS container required does not apply.
+#
+# The root credentials travel in podman_service's root-only env file, not on
+# the podman command line.
+- name: Run the MinIO container
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ minio_container_name }}"
+    podman_service_description: "MinIO - tenant Terraform state store (ADR-0007)"
+    podman_service_image: "{{ minio_image_name }}:{{ minio_image_tag }}"
+    podman_service_tarball: "{{ minio_tarball }}"
+    podman_service_ports:
+      - "{{ minio_listen_address }}:{{ minio_api_port }}:9000/tcp"
+      - "{{ minio_listen_address }}:{{ minio_console_port }}:9001/tcp"
+    podman_service_volumes:
+      - "{{ minio_data_dir }}:/data:Z"
+    podman_service_env:
+      MINIO_ROOT_USER: "{{ minio_root_user }}"
+      MINIO_ROOT_PASSWORD: "{{ minio_root_password }}"
+    podman_service_command: [server, /data, --console-address, ":9001"]
+    podman_service_firewall_ports:
+      - "{{ minio_api_port }}/tcp"
+      - "{{ minio_console_port }}/tcp"
 
-- name: Configure systemd service
-  ansible.builtin.import_tasks: setup_systemd.yml
+# Asserts the outcome, not the API call: the container was created and started,
+# which says nothing about whether the service is answering.
+- name: Wait for MinIO to answer on port {{ minio_api_port }}
+  ansible.builtin.wait_for:
+    port: "{{ minio_api_port }}"
+    host: 127.0.0.1
+    timeout: 90
 
-- name: Configure firewall rules
-  ansible.builtin.import_tasks: configure_firewall.yml
+- name: Confirm MinIO reports itself healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ minio_api_port }}/minio/health/live"
+    status_code: [200]
+  register: minio_health
+  retries: 10
+  delay: 3
+  until: minio_health.status is defined and minio_health.status == 200
 
 - name: Provision the state bucket and per-tenant credentials
   ansible.builtin.import_tasks: provision_buckets.yml

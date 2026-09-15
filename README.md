@@ -14,7 +14,18 @@ Management-plane workloads are **Ansible-only by design** — they carry no Terr
 | Role | Purpose |
 |------|---------|
 | `proxmox_vm` | Clone a management-plane VM from a Packer-built Proxmox template |
-| `powerdns` | PowerDNS Authoritative serving per-tenant delegated zones (ADR-0004) |
+| `vm_identity` | Allocate and audit VMID-derived MACs for management-plane VMs |
+| `data_disk` | Guest-side half of a `proxmox_vm` data disk |
+| `podman_service` | Run one container under systemd from an image pushed from the control node. Shared by every container role below. |
+| `powerdns` | PowerDNS Authoritative serving per-tenant delegated zones (ADR-0004), in the identity VM |
+| `minio` | Tenant Terraform state store (ADR-0007), in the provisioning VM |
+| `deevnet_api` | The Deevnet API and its PostgreSQL database (ADR-0012), in the provisioning VM |
+| `omada_controller` | The site's Omada controller (ADR-0009), in the network management VM |
+| `mosquitto` | MQTT broker (to be replaced by VerneMQ in the messaging VM, ADR-0012 §8) |
+
+Services are grouped into domain VMs on the management hypervisor, each on exactly one segment
+(ADR-0013): network management and substrate observability on management; provisioning, identity
+and tenant observability on Platform; device messaging on IoT Backend.
 
 ### Planned
 
@@ -22,8 +33,8 @@ Management-plane workloads are **Ansible-only by design** — they carry no Terr
 - **Monitoring** - Grafana dashboards and metrics collection
 - **Observability** - Unified visibility into infrastructure health
 
-These land on their own host, not beside tenant DNS: their change cadence is much higher, and a
-restart there must not take tenant name resolution with it.
+These land in the two observability VMs (ADR-0013 §5): substrate observability on management,
+tenant observability on Platform.
 
 ## Requirements
 
@@ -73,8 +84,9 @@ ansible-playbook playbooks/site.yml
 ### Limit to specific hosts
 
 ```bash
-ansible-playbook playbooks/site.yml --limit logging_servers
-ansible-playbook playbooks/site.yml --limit monitoring_servers
+ansible-playbook playbooks/site.yml --limit management_plane   # create the VMs
+ansible-playbook playbooks/site.yml --limit tenant_dns
+ansible-playbook playbooks/site.yml --limit deevnet_api
 ```
 
 ## Collection Structure

@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: deevnet_api
+  description: Deevnet API and its PostgreSQL database in the provisioning VM (ADR-0012, ADR-0013)
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

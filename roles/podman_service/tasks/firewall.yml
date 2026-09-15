@@ -1,0 +1,18 @@
+---
+- name: Open ports for {{ podman_service_name }}
+  when: podman_service_firewall_ports | length > 0
+  block:
+    - name: Gather service facts (for firewalld detection)
+      ansible.builtin.service_facts:
+
+    - name: Open {{ podman_service_firewall_ports | join(', ') }} in firewalld
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ podman_service_firewall_ports }}"
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - ansible_facts.services['firewalld.service'].state == 'running'
+      become: true

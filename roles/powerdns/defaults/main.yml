@@ -7,8 +7,9 @@
 
 powerdns_image_name: "docker.io/powerdns/pdns-auth-49"
 powerdns_image_tag: "4.9.17"
-powerdns_tarball_filename: "pdns-auth-latest.tar"
-powerdns_tarball_url: "{{ bootstrap_artifact_server }}/container-images/pdns-auth/{{ powerdns_tarball_filename }}"
+# Pushed from the control node's image store by podman_service. The versioned
+# file, so the tarball and the tag cannot disagree.
+powerdns_tarball: "pdns-auth/pdns-auth-{{ powerdns_image_tag }}.tar"
 
 powerdns_container_name: "pdns-auth"
 
@@ -19,10 +20,6 @@ powerdns_db_file: pdns.sqlite3
 # Account the upstream image drops to; the database must be writable by it.
 powerdns_container_user: pdns
 powerdns_selinux_context: container_file_t
-
-powerdns_systemd_unit_path: /etc/systemd/system/pdns-auth.service
-powerdns_systemd_enabled: true
-powerdns_systemd_state: started
 
 # Authoritative only - it never recurses. Substrate clients reach it through
 # the core router's Unbound, which delegates the tenant zones to it.

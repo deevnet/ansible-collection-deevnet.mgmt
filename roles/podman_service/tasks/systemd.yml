@@ -1,0 +1,28 @@
+---
+- name: Deploy the {{ podman_service_name }} systemd unit
+  ansible.builtin.template:
+    src: service.j2
+    dest: "/etc/systemd/system/{{ podman_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: _podman_service_unit
+  become: true
+
+- name: Enable {{ podman_service_name }}
+  ansible.builtin.systemd:
+    name: "{{ podman_service_name }}"
+    enabled: "{{ podman_service_enabled | bool }}"
+    daemon_reload: "{{ _podman_service_unit is changed }}"
+  become: true
+
+# Restarted, not just started, when anything under it changed: a recreated
+# container or a new unit is not running until the service is cycled.
+- name: Start {{ podman_service_name }}
+  ansible.builtin.systemd:
+    name: "{{ podman_service_name }}"
+    state: >-
+      {{ 'restarted'
+         if ((_podman_service_recreate | default(false) | bool) or _podman_service_unit is changed)
+         else 'started' }}
+  become: true

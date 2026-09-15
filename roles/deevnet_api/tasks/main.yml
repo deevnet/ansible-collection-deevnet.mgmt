@@ -1,0 +1,109 @@
+---
+- name: Fail early if the API's secrets are missing
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_token | length >= 32
+      - deevnet_api_db_password | length >= 16
+    fail_msg: >-
+      vault_deevnet_api_token (at least 32 characters) and
+      vault_deevnet_api_db_password (at least 16) must be in the vault. The API
+      refuses to start without a token, and an empty database password would
+      leave PostgreSQL's init to fail. Generate them with:
+        openssl rand -hex 32
+        openssl rand -hex 24
+  no_log: true
+
+- name: Create the database data directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ deevnet_api_data_root }}"
+    # The image's entrypoint starts as root and hands this to its postgres
+    # account on first init, so root ownership here is correct.
+    - "{{ deevnet_api_db_data_dir }}"
+  become: true
+
+- name: Run the API database
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ deevnet_api_db_container_name }}"
+    podman_service_description: "Deevnet API database (PostgreSQL)"
+    podman_service_image: "{{ deevnet_api_db_image_name }}:{{ deevnet_api_db_image_tag }}"
+    podman_service_tarball: "{{ deevnet_api_db_tarball }}"
+    # No published port. The API reaches it by container name on this network.
+    podman_service_network: "{{ deevnet_api_network }}"
+    podman_service_network_create: true
+    podman_service_volumes:
+      - "{{ deevnet_api_db_data_dir }}:/var/lib/postgresql/data:Z"
+    podman_service_env:
+      POSTGRES_DB: "{{ deevnet_api_db_name }}"
+      POSTGRES_USER: "{{ deevnet_api_db_user }}"
+      POSTGRES_PASSWORD: "{{ deevnet_api_db_password }}"
+    podman_service_stop_timeout: 60
+
+- name: Wait for the database to accept connections
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - "{{ deevnet_api_db_container_name }}"
+      - pg_isready
+      - --username={{ deevnet_api_db_user }}
+      - --dbname={{ deevnet_api_db_name }}
+  register: deevnet_api_db_ready
+  changed_when: false
+  retries: 30
+  delay: 2
+  until: deevnet_api_db_ready.rc == 0
+  become: true
+
+- name: Run the API
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ deevnet_api_container_name }}"
+    podman_service_description: "Deevnet API (ADR-0012)"
+    podman_service_image: "{{ deevnet_api_image }}"
+    podman_service_tarball: "{{ deevnet_api_tarball }}"
+    podman_service_network: "{{ deevnet_api_network }}"
+    podman_service_ports:
+      - "{{ deevnet_api_listen_address }}:{{ deevnet_api_port }}:8080/tcp"
+    podman_service_env:
+      DEEVNET_API_TOKEN: "{{ deevnet_api_token }}"
+      DATABASE_URL: >-
+        postgres://{{ deevnet_api_db_user }}:{{ deevnet_api_db_password | urlencode }}@{{
+        deevnet_api_db_container_name }}:5432/{{ deevnet_api_db_name }}?sslmode=disable
+    podman_service_after:
+      - "{{ deevnet_api_db_container_name }}.service"
+    podman_service_firewall_ports:
+      - "{{ deevnet_api_port }}/tcp"
+
+- name: Wait for the API to report ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ deevnet_api_port }}/readyz"
+    status_code: [200]
+  register: deevnet_api_ready
+  retries: 15
+  delay: 2
+  until: deevnet_api_ready.status is defined and deevnet_api_ready.status == 200
+
+- name: Read the API's version
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ deevnet_api_port }}/version"
+    return_content: true
+  register: deevnet_api_version_info
+
+- name: Confirm the running API is the pinned version
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_version_info.json.version == deevnet_api_version
+    fail_msg: >-
+      The API answers as {{ deevnet_api_version_info.json.version }}, but
+      deevnet_api_version is {{ deevnet_api_version }}. The staged tarball was
+      built from a different commit than its name says.
+    quiet: true
