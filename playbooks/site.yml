@@ -14,6 +14,10 @@
 - name: Create management-plane VMs
   hosts: management_plane
   gather_facts: false
+  # Tagged so VM creation and service configuration can run as separate steps:
+  #   --tags vms        create the VMs only
+  #   --skip-tags vms   configure services on VMs that already exist
+  tags: [vms]
   # The guest does not exist on the first run, so the PVE calls are delegated to
   # the control node; the role gathers facts itself once the VM answers on SSH.
   roles:
