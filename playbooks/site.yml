@@ -7,12 +7,17 @@
 # Usage:
 #   ansible-playbook playbooks/site.yml
 #   ansible-playbook playbooks/site.yml --limit tenant_dns
+#   ansible-playbook playbooks/site.yml --limit deevnet_api
 #   ansible-playbook playbooks/site.yml --tags tenant-dns   # zones/keys only
 #   ansible-playbook playbooks/site.yml --tags tenant-state # buckets/creds only
 
 - name: Create management-plane VMs
   hosts: management_plane
   gather_facts: false
+  # Tagged so VM creation and service configuration can run as separate steps:
+  #   --tags vms        create the VMs only
+  #   --skip-tags vms   configure services on VMs that already exist
+  tags: [vms]
   # The guest does not exist on the first run, so the PVE calls are delegated to
   # the control node; the role gathers facts itself once the VM answers on SSH.
   roles:
@@ -30,41 +35,50 @@
     - role: data_disk
       when: mgmt_vm.data_disk is defined
 
+# Tenant authoritative DNS (ADR-0004), in the identity VM (ADR-0013 §6).
 - name: Configure tenant authoritative DNS
   hosts: tenant_dns
   become: true
   roles:
     - powerdns
 
+# Tenant Terraform state store (ADR-0007), in the provisioning VM (ADR-0013 §6).
 - name: Configure the tenant Terraform state store
   hosts: tenant_state
   become: true
   roles:
     - minio
 
+# The Deevnet API and its database (ADR-0012), in the provisioning VM.
+- name: Configure the Deevnet API
+  hosts: deevnet_api
+  become: true
+  roles:
+    - deevnet_api
+
+# The site's Omada controller, in the network management VM (ADR-0013 §7).
+#
+# Intersected with management_plane so this role can only ever land on a
+# domain VM. The Builder's controller is deevnet.builder's cold fallback and is
+# never touched from here, even if the Builder is put back in the group.
+- name: Configure the Omada controller
+  hosts: network_controllers:&management_plane
+  become: true
+  roles:
+    - omada_controller
+
 # The MQTT broker for custom-firmware embedded devices. Substrate rather than a
 # tenant service: MQTT clients always dial the broker, so its segment must
-# accept inbound, and the tenant fabric has no inbound path by design. Devices
-# on IoT reach it directly; publishers in tenants reach it outbound over the
-# perimeter (tenant_transit -> iot_backend in firewall.yml).
+# accept inbound, and the tenant fabric has no inbound path by design.
+#
+# The group is empty until the messaging VM's broker is built (ADR-0012 §8
+# replaces mosquitto with VerneMQ), so this play currently matches no host.
 - name: Configure the MQTT broker
   hosts: mqtt_brokers
   become: true
   roles:
     - mosquitto
 
-# Placeholder plays for substrate-facing management services. These land on
-# their own host, not beside tenant DNS: their change cadence is much higher and
-# a restart there must not take tenant name resolution with it (ADR-0004).
-#
-# - name: Configure logging servers
-#   hosts: logging_servers
-#   become: true
-#   roles:
-#     - logging
-#
-# - name: Configure monitoring servers
-#   hosts: monitoring_servers
-#   become: true
-#   roles:
-#     - grafana
+# Observability tooling is not chosen yet. It lands in the substrate
+# observability VM (substrate_observability) and the tenant observability VM
+# (tenant_observability), which are built empty for now (ADR-0013 §5).

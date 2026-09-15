@@ -17,7 +17,11 @@ repo-root/                 # Collection root = git repo root (Galaxy-compatible 
 ├── playbooks/site.yml     # Main playbook
 ├── roles/
 │   ├── proxmox_vm/        # Clone a mgmt-plane VM from a Packer template
+│   ├── podman_service/    # Shared: one container under systemd, image pushed
 │   ├── powerdns/          # Tenant authoritative DNS (ADR-0004)
+│   ├── minio/             # Tenant Terraform state store (ADR-0007)
+│   ├── deevnet_api/       # Deevnet API + PostgreSQL (ADR-0012)
+│   ├── omada_controller/  # Omada controller (ADR-0009, ADR-0013)
 │   ├── logging/           # (planned) Centralized log aggregation
 │   ├── grafana/           # (planned) Grafana dashboards and monitoring
 │   └── ...
@@ -28,10 +32,21 @@ repo-root/                 # Collection root = git repo root (Galaxy-compatible 
 
 - **No Terraform here.** Management-plane workloads are Ansible-only
   (`extended-services.md` §5). That is not an oversight to be corrected.
-- **Management VMs are addressed by DHCP reservation, not static cloud-init.**
-  The MAC is declared in inventory, the core router's Kea reservation pins the
-  address to it, and the A record follows. Static `ipconfig` is the *tenant*
-  pattern, correct there only because EVPN zones have no DHCP at all.
+- **Addressing follows the segment.** A domain VM on management is addressed by
+  DHCP reservation: the MAC is declared in inventory, the core router's Kea
+  reservation pins the address to it, and the A record follows. Platform and
+  IoT Backend have no DHCP pool, so VMs there set `dhcp_reservation: false` and
+  take `static_ip`/`static_gateway`/`nameserver` through cloud-init. The derived
+  MAC is still asserted either way.
+- **One VM, one segment** (ADR-0013 §2). A domain that needs two segments is
+  two VMs, never a second NIC.
+- **Container roles go through `podman_service`.** It pushes the image tarball
+  from the control node's image store (`/srv/deevnet-http/container-images`),
+  loads it, creates the container from a recorded definition, and runs it
+  under systemd. Don't reintroduce `get_url` from the artifact server: Platform
+  and IoT Backend VMs have no path back to management under the zone policy.
+- **Secrets reach containers through `podman_service_env`**, which becomes a
+  root-only env file. Never put them in `podman_service_create_args`.
 - **Never pin a template VMID.** Proxmox reassigns it on every image-factory
   rebuild. `proxmox_vm` matches the template by name prefix and takes the newest.
 - **`powerdns` creates zones and keys, never records.** Records are tenant

@@ -1,0 +1,88 @@
+---
+- name: Check the podman_service inputs for {{ podman_service_name | default('(unnamed)') }}
+  ansible.builtin.assert:
+    that:
+      - podman_service_name | length > 0
+      - podman_service_image | length > 0
+      - podman_service_tarball | length > 0
+      - "'/' in podman_service_image and ':' in podman_service_image.split('/')[-1]"
+    fail_msg: >-
+      podman_service needs podman_service_name, podman_service_tarball, and a fully
+      qualified, tagged podman_service_image (got '{{ podman_service_image }}').
+    quiet: true
+
+- name: Install podman
+  ansible.builtin.package:
+    name: podman
+    state: present
+  become: true
+
+- name: Check whether {{ podman_service_image }} is already loaded
+  ansible.builtin.command:
+    argv: [podman, image, exists, "{{ podman_service_image }}"]
+  register: _podman_service_image_present
+  changed_when: false
+  failed_when: _podman_service_image_present.rc not in [0, 1]
+  check_mode: false
+  become: true
+
+- name: Push and load {{ podman_service_image }}
+  when: _podman_service_image_present.rc != 0
+  block:
+    # Checked on the control node before anything is copied, so a missing
+    # tarball fails with its path instead of as a copy error.
+    - name: Find the tarball on the control node
+      ansible.builtin.stat:
+        path: "{{ podman_service_image_store }}/{{ podman_service_tarball }}"
+      register: _podman_service_tarball_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Fail clearly if the tarball is not staged
+      ansible.builtin.assert:
+        that:
+          - _podman_service_tarball_stat.stat.exists
+        fail_msg: >-
+          {{ podman_service_image_store }}/{{ podman_service_tarball }} does not exist
+          on the control node. Stage it first: upstream images through the
+          deevnet.builder artifacts role (artifacts_podman_images), locally built
+          ones with their repository's `make stage`.
+        quiet: true
+
+    - name: Ensure the image directory exists
+      ansible.builtin.file:
+        path: "{{ podman_service_image_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      become: true
+
+    - name: Push the tarball to {{ inventory_hostname }}
+      ansible.builtin.copy:
+        src: "{{ podman_service_image_store }}/{{ podman_service_tarball }}"
+        dest: "{{ podman_service_image_dir }}/{{ podman_service_tarball | basename }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+
+    - name: Load the tarball into podman
+      ansible.builtin.command:
+        argv: [podman, load, -i, "{{ podman_service_image_dir }}/{{ podman_service_tarball | basename }}"]
+      changed_when: true
+      become: true
+
+    # A tarball whose contents are not the pinned tag would otherwise surface
+    # later as a --pull=never create failure, far from the cause.
+    - name: Confirm the tarball provided {{ podman_service_image }}
+      ansible.builtin.command:
+        argv: [podman, image, exists, "{{ podman_service_image }}"]
+      changed_when: false
+      become: true
+
+    - name: Remove the pushed tarball
+      ansible.builtin.file:
+        path: "{{ podman_service_image_dir }}/{{ podman_service_tarball | basename }}"
+        state: absent
+      become: true

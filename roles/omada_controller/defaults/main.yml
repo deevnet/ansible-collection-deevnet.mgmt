@@ -1,0 +1,49 @@
+---
+# Omada controller - the site's network device controller (ADR-0009), run as a
+# container in the network management VM (ADR-0013 §7).
+#
+# Ported from deevnet.builder's omada_controller role, which stays behind as a
+# cold fallback. The differences are the VM's: no base/artifacts dependencies,
+# the image is pushed rather than fetched from 127.0.0.1, and the container's
+# hostname is the VM's.
+
+omada_image_name: "docker.io/mbentley/omada-controller"
+omada_image_tag: "6.3.0.45"
+# Pushed from the control node's image store by podman_service.
+omada_tarball: "omada-controller/omada-controller-{{ omada_image_tag }}.tar"
+
+omada_container_name: "omada-controller"
+
+omada_data_root: "/opt/omada-controller"
+
+# Same shape as the builder role, and the inventory's network_controllers vars:
+# a list of KEY=VALUE strings.
+omada_env_vars:
+  - "TZ=America/New_York"
+  - "MANAGE_HTTP_PORT=8088"
+  - "MANAGE_HTTPS_PORT=8043"
+  - "PORTAL_HTTP_PORT=8088"
+  - "PORTAL_HTTPS_PORT=8843"
+  - "SHOW_SERVER_LOGS=true"
+  - "SHOW_MONGODB_LOGS=false"
+
+omada_https_port: 8043
+
+# Host networking, so firewalld is the only gate - keep these lists complete.
+# See https://www.tp-link.com/us/support/faq/3281/
+omada_firewall_ports_tcp:
+  - 8088    # management portal (HTTP)
+  - 8043    # management portal (HTTPS)
+  - 8843    # portal HTTPS redirector
+  - 29811   # manager connection (v1)
+  - 29812
+  - 29813
+  - 29814   # discovery and adoption (v2)
+  - 27002   # device discovery and adoption
+omada_firewall_ports_udp:
+  - 29810   # discovery and adoption (v1) - a broadcast
+  - 29814   # discovery and adoption (v2)
+  - 27001   # device discovery and adoption
+
+# First start initialises MongoDB and takes minutes, not seconds.
+omada_start_timeout: 600

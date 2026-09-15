@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: omada_controller
+  description: Omada network controller in the network management VM (ADR-0009, ADR-0013)
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

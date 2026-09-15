@@ -1,0 +1,18 @@
+---
+# Image, then container, then unit, then firewall.
+#
+# A service role that must touch the image before its container exists - the
+# powerdns role seeds its schema from files inside the image - includes
+# `tasks_from: image` first. Running image.yml again here is then a no-op.
+
+- name: Load the image
+  ansible.builtin.import_tasks: image.yml
+
+- name: Create the container
+  ansible.builtin.import_tasks: container.yml
+
+- name: Run it under systemd
+  ansible.builtin.import_tasks: systemd.yml
+
+- name: Open its ports
+  ansible.builtin.import_tasks: firewall.yml

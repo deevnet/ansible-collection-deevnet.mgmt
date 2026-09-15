@@ -1,0 +1,73 @@
+---
+# podman_service - one container, run by systemd, from an image PUSHED from the
+# control node.
+#
+# The shared half of every container role in this collection. A service role
+# (powerdns, minio, omada_controller, deevnet_api) prepares its own directories
+# and configuration, then includes this role with the podman_service_* variables
+# set, then does its service-specific provisioning.
+#
+# Why push: the domain VMs sit on Platform and IoT Backend, and the zone policy
+# gives neither a path back to the artifact server on management. The control
+# node is on management, and management -> platform / iot_backend is declared,
+# so the image travels over the same SSH connection Ansible already has
+# (ADR-0013). Nothing on the target reaches out for it.
+
+# Required. The systemd unit and the container share this name.
+podman_service_name: ""
+podman_service_description: "{{ podman_service_name }}"
+
+# Required. Fully qualified image reference, tag included. Podman refuses short
+# names non-interactively, and the tag is the pin: a new version is a new tag.
+podman_service_image: ""
+
+# Required. The image tarball, relative to podman_service_image_store on the
+# CONTROL NODE - the same files the builder's artifacts role saves and nginx
+# serves. Name the versioned file, not *-latest.tar, so the tarball and the tag
+# cannot disagree.
+podman_service_tarball: ""
+podman_service_image_store: /srv/deevnet-http/container-images
+
+# Where the tarball is copied on the target. It is removed once loaded.
+podman_service_image_dir: /var/lib/deevnet/images
+
+# "host", a podman network name, or "" for podman's default network.
+podman_service_network: ""
+# Create podman_service_network if it does not exist. Ignored for "" and "host".
+podman_service_network_create: false
+
+podman_service_hostname: "{{ inventory_hostname }}"
+
+# Lists of podman argument values, without the flag:
+#   ports:   ["0.0.0.0:9000:9000/tcp"]
+#   volumes: ["/srv/minio/data:/data:Z"]
+#   caps:    ["NET_BIND_SERVICE"]
+podman_service_ports: []
+podman_service_volumes: []
+podman_service_caps: []
+
+# Environment, as a dict. Written to a root-only env file and passed with
+# --env-file, so values - secrets included - never appear in the podman command
+# line, in `ps`, or in Ansible's output.
+podman_service_env: {}
+podman_service_env_dir: /etc/deevnet/env
+
+# Anything else podman create needs, as a list of whole arguments.
+podman_service_create_args: []
+# Command and arguments after the image.
+podman_service_command: []
+
+# Other units this one starts after, e.g. ["deevnet-api-db.service"].
+podman_service_after: []
+
+podman_service_start_timeout: 120
+podman_service_stop_timeout: 30
+podman_service_enabled: true
+
+# Opened in firewalld when firewalld is running, e.g. ["53/tcp", "53/udp"].
+podman_service_firewall_ports: []
+
+# The container definition is recorded here. A change to it, or to the env
+# file, recreates the container - an image bump or a new port is not silently
+# ignored by a container that already exists.
+podman_service_spec_dir: /etc/deevnet/containers

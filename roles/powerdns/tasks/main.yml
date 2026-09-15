@@ -1,11 +1,14 @@
 ---
-# Mirrors the shape of deevnet.builder's omada_controller role: podman image
-# from the artifact server, hand-written systemd unit, SELinux contexts and a
-# firewall opening. The two extra steps are DNS-specific - a config file and
-# the per-tenant zone/key provisioning that is ADR-0004's onboarding act.
+# PowerDNS around the shared podman_service role. The steps here are the
+# DNS-specific ones: free :53, the config file, a schema seeded from the image
+# before the container first starts, and the per-tenant zone/key provisioning
+# that is ADR-0004's onboarding act.
 
-- name: Install Podman
-  ansible.builtin.import_tasks: install_podman.yml
+- name: Install the sqlite client used to seed the schema
+  ansible.builtin.package:
+    name: sqlite
+    state: present
+  become: true
 
 - name: Free port 53 on the host
   ansible.builtin.import_tasks: free_port53.yml
@@ -19,17 +22,49 @@
 - name: Deploy PowerDNS configuration
   ansible.builtin.import_tasks: configure_pdns.yml
 
-- name: Download container image tarball
-  ansible.builtin.import_tasks: download_image.yml
+# The schema is read out of the image, so the image is loaded before the
+# container exists. podman_service's own image step then finds it loaded.
+- name: Load the PowerDNS image
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+    tasks_from: image
+  vars: &powerdns_container
+    podman_service_name: "{{ powerdns_container_name }}"
+    podman_service_description: "PowerDNS Authoritative - tenant DNS (ADR-0004)"
+    podman_service_image: "{{ powerdns_image_name }}:{{ powerdns_image_tag }}"
+    podman_service_tarball: "{{ powerdns_tarball }}"
+    # Host networking rather than published ports: an authoritative server must
+    # see the real client address for its per-zone ALLOW-DNSUPDATE-FROM check,
+    # and a port mapping would rewrite every source to the container gateway -
+    # silently turning that control into "anyone on the host network".
+    podman_service_network: host
+    # NET_BIND_SERVICE because the image drops to the unprivileged 'pdns' user
+    # and 53 is a privileged port: without it pdns_server exits at startup with
+    # "Unable to bind UDP socket to '0.0.0.0:53': Permission denied" and systemd
+    # restart-loops it, which surfaces only as the port-53 wait timing out.
+    podman_service_caps: [NET_BIND_SERVICE]
+    podman_service_volumes:
+      - "{{ powerdns_config_dir }}:/etc/powerdns:Z"
+      - "{{ powerdns_db_dir }}:/var/lib/powerdns:Z"
+    # Reached by the core router's Unbound (delegation) and by tenant Terraform
+    # (dynamic update), both over port 53.
+    podman_service_firewall_ports:
+      - "{{ powerdns_listen_port }}/tcp"
+      - "{{ powerdns_listen_port }}/udp"
 
-- name: Load container image and create container
-  ansible.builtin.import_tasks: load_container.yml
+- name: Initialise the sqlite schema on first run
+  ansible.builtin.import_tasks: init_database.yml
 
-- name: Configure systemd service
-  ansible.builtin.import_tasks: setup_systemd.yml
+- name: Run the PowerDNS container
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars: *powerdns_container
 
-- name: Configure firewall rules
-  ansible.builtin.import_tasks: configure_firewall.yml
+- name: Wait for PowerDNS to answer on port {{ powerdns_listen_port }}
+  ansible.builtin.wait_for:
+    port: "{{ powerdns_listen_port }}"
+    host: 127.0.0.1
+    timeout: 60
 
 - name: Provision tenant zones and TSIG keys
   ansible.builtin.import_tasks: provision_zones.yml

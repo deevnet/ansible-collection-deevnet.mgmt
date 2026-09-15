@@ -9,8 +9,9 @@
 
 minio_image_name: "quay.io/minio/minio"
 minio_image_tag: "RELEASE.2025-09-07T16-13-09Z"
-minio_tarball_filename: "minio-latest.tar"
-minio_tarball_url: "{{ bootstrap_artifact_server }}/container-images/minio/{{ minio_tarball_filename }}"
+# Pushed from the control node's image store by podman_service. The versioned
+# file, so the tarball and the tag cannot disagree.
+minio_tarball: "minio/minio-{{ minio_image_tag }}.tar"
 
 minio_container_name: "minio"
 
@@ -29,10 +30,6 @@ minio_listen_address: "0.0.0.0"
 # The bucket every stack's state lives in. One bucket, prefixed per consumer,
 # so a single policy shape covers both the fabric and every tenant.
 minio_state_bucket: tf-state
-
-minio_systemd_unit_path: /etc/systemd/system/minio.service
-minio_systemd_enabled: true
-minio_systemd_state: started
 
 # Root credentials come from the vault, like every other credential here. They
 # are the administrative pair used to create buckets and per-tenant users; they
