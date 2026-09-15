@@ -5,7 +5,7 @@
 # hosted tenant state, not the source of truth (ADR-0012), so it has no
 # published port - only the API reaches it, over a private podman network.
 
-# Built and staged by the deevnet-api repository's `make stage`. Bump the
+# Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
 deevnet_api_version: "v0.1.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
