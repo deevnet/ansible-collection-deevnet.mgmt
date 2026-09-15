@@ -30,20 +30,37 @@ omada_env_vars:
 omada_https_port: 8043
 
 # Host networking, so firewalld is the only gate - keep these lists complete.
-# See https://www.tp-link.com/us/support/faq/3281/
+#
+# Source: Omada, "Which Ports do Omada SDN Controller and Omada Discovery
+# Utility Use (above Controller 5.0.15)", updated 08-28-2026,
+# https://support.omadanetworks.com/us/document/13090/ - checked against the
+# ports 6.3.0.45 actually binds (its omada.properties) in CHG-0008 Step 8.
 omada_firewall_ports_tcp:
-  - 8088    # management portal (HTTP)
-  - 8043    # management portal (HTTPS)
-  - 8843    # portal HTTPS redirector
-  - 29811   # manager connection (v1)
-  - 29812
-  - 29813
-  - 29814   # discovery and adoption (v2)
-  - 27002   # device discovery and adoption
+  - 8088    # management page, HTTP
+  - 8043    # management page, HTTPS
+  - 8843    # clients' portal page, HTTPS
+  - 29811   # manage devices on v4-adapted firmware
+  - 29812   # manage devices on v4-adapted firmware
+  - 29813   # firmware upgrade for devices on v4-adapted firmware
+  - 29814   # manage devices on v5-adapted firmware
+  - 29815   # from v5.9: receives device info and packet capture files
+  - 29816   # from v5.9: remote control terminal session
+  - 29817   # communication between devices and the controller
 omada_firewall_ports_udp:
-  - 29810   # discovery and adoption (v1) - a broadcast
-  - 29814   # discovery and adoption (v2)
-  - 27001   # device discovery and adoption
+  - 29810   # device discovery - a broadcast
+  - 27001   # discovery by the Omada app on the same network
+# Deliberately not opened:
+#   8044/tcp   bound by 6.3.0.45 (omada.properties: upgrade.es.https.port) but not
+#              in Omada's port reference; open it only once a documented use
+#              needs it.
+#   19810/udp  OLT discovery; this site has no OLT.
+#   27217/tcp  the controller's MongoDB, bound to 127.0.0.1 only.
+
+# Opened by earlier versions of this list and absent from the port reference.
+# Closed on every run, so a host configured from the old list converges.
+omada_firewall_ports_retired:
+  - 29814/udp   # the reference lists 29814 as TCP only
+  - 27002/tcp   # not in the reference, and 6.3.0.45 does not bind it
 
 # First start initialises MongoDB and takes minutes, not seconds.
 omada_start_timeout: 600
