@@ -4,13 +4,16 @@
 # Owner account and the Open API client are ADR-0009 §5's manual floor, done
 # once in the browser after the first run.
 
+# Create only; never re-own. The image's entrypoint (fix_permissions) hands
+# data and logs to its own omada account (UID 508) on every start. Forcing
+# root:root here reset that on each run, leaving the running controller unable
+# to create new entries in either directory until its next restart. Found when
+# the firewall port fix was applied in CHG-0008. With no owner or mode given,
+# a missing directory is created and an existing one is left alone.
 - name: Create the controller's data directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
-    owner: root
-    group: root
-    mode: "0755"
   loop:
     - "{{ omada_data_root }}"
     - "{{ omada_data_root }}/data"
