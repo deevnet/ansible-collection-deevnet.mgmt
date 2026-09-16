@@ -17,7 +17,14 @@
 # Stage 1 enumerates guests from the PVE API rather than from inventory, because a
 # hypervisor cannot safely halt while ANY guest is running - including guests that
 # were never in inventory. Today that is vdvntm-admin-01 and vdvntm-winox, neither
-# of which appears in hosts.yml.
+# of which appears in hosts.yml. The domain VMs (ADR-0013) need no listing here for
+# the same reason: whatever is running is what gets stopped.
+#
+# Within a hypervisor, Stage 1 stops guests the way PVE itself would at node
+# shutdown: in reverse of each guest's startup order, and waiting each guest's own
+# `down` timeout. Those values are declared per VM in inventory (mgmt_vm.startup),
+# so tenant DNS (order 10) is the last guest down on dv02hyp001p01 and the Omada
+# controller gets the 150s its container stop needs.
 #
 # Deliberately NOT included, all of which stay powered:
 #   - the access switch (dv02acc001p01) - it carries the very traffic the
@@ -76,6 +83,9 @@
         validate_certs: false
         node: "{{ proxmox_node }}"
         type: qemu
+        # The startup order and shutdown timeout live in the guest config, which
+        # the default listing does not return.
+        config: current
       register: shutdown_guest_inventory
 
     # Filtering on status alone, deliberately: a PVE template cannot run, so it is
@@ -94,18 +104,68 @@
             | list
           }}
 
-    - name: Report what will be stopped on {{ proxmox_node }}
+    # PVE's own rules, from the admin guide ("Start and Shutdown Order"):
+    #   - "We use the reverse startup order for shutdown"
+    #   - "If multiple VMs have the same order defined on a host, they will
+    #     additionally be ordered by VMID in ascending order"
+    #   - "machines without a Start/Shutdown order parameter will always start
+    #     after those where the parameter is set"
+    #   - the shutdown timeout defaults to 180
+    # So the start sequence sorts on (no order, order, vmid), and shutdown is that
+    # sequence reversed: unordered guests first, then highest order first.
+    #
+    # startup is "[[order=]N][,up=N][,down=N]" - the order key is optional, so a
+    # bare leading number is an order too. The sort key is a zero-padded string
+    # because values templated into a fact's dict would otherwise sort as text.
+    - name: Order the running guests for shutdown on {{ proxmox_node }}
+      ansible.builtin.set_fact:
+        shutdown_ordered_guests: >-
+          {{
+            shutdown_ordered_guests | default([]) + [{
+              'vmid': item.vmid,
+              'name': item.name,
+              'order': shutdown_order,
+              'timeout': (shutdown_down | default(shutdown_guest_timeout | default(180), true)) | int,
+              'label': item.name ~ ' (order ' ~ (shutdown_order | default('none', true)) ~ ', '
+                       ~ (shutdown_down | default(shutdown_guest_timeout | default(180), true)) ~ 's)',
+              'key': '%d-%09d-%09d' | format(
+                (shutdown_order == '') | ternary(1, 0),
+                shutdown_order | default(0, true) | int,
+                item.vmid | int),
+            }]
+          }}
+      loop: "{{ shutdown_running_guests }}"
+      loop_control:
+        label: "{{ item.name }} (vmid {{ item.vmid }})"
+      vars:
+        shutdown_startup: >-
+          {{ ((item.config | default({})).startup | default('')).split(',')
+             | map('trim') | reject('equalto', '') | list }}
+        shutdown_order: >-
+          {{ shutdown_startup | select('match', '^(order=)?[0-9]+$')
+             | map('regex_replace', '^order=', '') | first | default('') }}
+        shutdown_down: >-
+          {{ shutdown_startup | select('match', '^down=[0-9]+$')
+             | map('regex_replace', '^down=', '') | first | default('') }}
+
+    - name: Report the shutdown sequence on {{ proxmox_node }}
       ansible.builtin.debug:
         msg: >-
           {{ proxmox_node }}:
-          {{ shutdown_running_guests | map(attribute='name') | list | join(', ')
-             | default('nothing running', true) }}
+          {{ shutdown_ordered_guests | default([]) | sort(attribute='key', reverse=true)
+             | map(attribute='label') | join(', ') | default('nothing running', true) }}
 
-    # force: false is the whole point - this posts to PVE's status/shutdown, which
-    # is an ACPI request the guest agent answers, NOT a virtual power cord. PVE
-    # falls back to a hard stop only after `timeout` seconds, so a guest that
-    # ignores ACPI still stops rather than blocking the hypervisor behind it.
-    - name: Gracefully shut down each running guest
+    # This posts to PVE's status/shutdown, which is a graceful request - through the
+    # guest agent when it is running, an ACPI powerdown otherwise - NOT a virtual
+    # power cord. `force` does not change that request; it decides what happens when
+    # `timeout` runs out. PVE's _do_vm_stop (qemu-server; read on the PVE 8 branch,
+    # stable-bookworm, and on master):
+    #   force (forceStop=1):  "VM still running - terminating now with SIGTERM"
+    #   no force:             "VM quit/powerdown failed - got timeout", VM left running
+    # Without force, one guest that ignores the request fails this play for its
+    # hypervisor. Stage 2 then skips that node, while Stages 3-5 still take the
+    # network down under it.
+    - name: Gracefully shut down each running guest, in order
       community.general.proxmox_kvm:
         api_host: "{{ ansible_host }}"
         api_user: "{{ proxmox_token_id.split('!')[0] }}"
@@ -115,11 +175,11 @@
         node: "{{ proxmox_node }}"
         vmid: "{{ item.vmid }}"
         state: stopped
-        force: false
-        timeout: "{{ shutdown_guest_timeout | default(180) }}"
-      loop: "{{ shutdown_running_guests }}"
+        force: true
+        timeout: "{{ item.timeout }}"
+      loop: "{{ shutdown_ordered_guests | default([]) | sort(attribute='key', reverse=true) }}"
       loop_control:
-        label: "{{ item.name }} (vmid {{ item.vmid }})"
+        label: "{{ item.name }} (vmid {{ item.vmid }}, {{ item.timeout }}s)"
 
     # Asserts the outcome rather than trusting the API's `changed`. The next stage
     # halts these nodes, and a guest still flushing its filesystem when its
