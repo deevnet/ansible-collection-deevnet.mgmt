@@ -35,6 +35,14 @@
     - role: data_disk
       when: mgmt_vm.data_disk is defined
 
+# Substrate secrets (ADR-0016), in the identity VM. First among the services:
+# the API reads its credentials, keys and certificate from it.
+- name: Configure OpenBao
+  hosts: openbao
+  become: true
+  roles:
+    - openbao
+
 # Tenant authoritative DNS (ADR-0004), in the identity VM (ADR-0013 §6).
 - name: Configure tenant authoritative DNS
   hosts: tenant_dns

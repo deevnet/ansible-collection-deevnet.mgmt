@@ -4,6 +4,21 @@
 # before the container first starts, and the per-tenant zone/key provisioning
 # that is ADR-0004's onboarding act.
 
+- name: Fail early if the HTTP API would answer anyone
+  ansible.builtin.assert:
+    that:
+      - powerdns_api_key | length >= 32
+      - powerdns_api_allow_from | length > 0
+    fail_msg: >-
+      vault_powerdns_api_key is set, which turns on PowerDNS's HTTP API, but it
+      is shorter than 32 characters or powerdns_api_allow_from is empty. The key
+      writes every tenant zone; it needs to be long and the webserver needs to
+      answer only the Deevnet API's host. Set both in inventory:
+        openssl rand -hex 32
+        powerdns_api_allow_from: ["<deevnet_api host>/32"]
+  when: powerdns_api_enabled | bool
+  no_log: true
+
 - name: Install the sqlite client used to seed the schema
   ansible.builtin.package:
     name: sqlite
@@ -47,10 +62,12 @@
       - "{{ powerdns_config_dir }}:/etc/powerdns:Z"
       - "{{ powerdns_db_dir }}:/var/lib/powerdns:Z"
     # Reached by the core router's Unbound (delegation) and by tenant Terraform
-    # (dynamic update), both over port 53.
-    podman_service_firewall_ports:
-      - "{{ powerdns_listen_port }}/tcp"
-      - "{{ powerdns_listen_port }}/udp"
+    # (dynamic update), both over port 53; and by the Deevnet API over the HTTP
+    # API port, when that is on. The webserver's allow-from narrows it to the
+    # API's host.
+    podman_service_firewall_ports: >-
+      {{ [powerdns_listen_port ~ '/tcp', powerdns_listen_port ~ '/udp']
+         + ([powerdns_api_port ~ '/tcp'] if powerdns_api_enabled | bool else []) }}
 
 - name: Initialise the sqlite schema on first run
   ansible.builtin.import_tasks: init_database.yml

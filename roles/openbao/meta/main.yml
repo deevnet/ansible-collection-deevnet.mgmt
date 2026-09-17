@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: openbao
+  description: OpenBao holding the substrate's runtime secrets, encryption keys and internal CA (ADR-0016)
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

@@ -1,0 +1,40 @@
+---
+# First initialisation (ADR-0016 §2). With the static seal, init returns
+# recovery keys, not unseal keys, and a root token. The root token is used for
+# this run only: it creates Ansible's AppRole, and is revoked at the end of
+# configure.yml. What the operator must keep goes to a root-only file on the
+# control node, to be moved into the vault.
+
+- name: Initialise OpenBao
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/init"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    body_format: json
+    body:
+      recovery_shares: 1
+      recovery_threshold: 1
+  register: openbao_init
+  no_log: true
+
+- name: Use the root token for this run
+  ansible.builtin.set_fact:
+    openbao_bootstrap_token: "{{ openbao_init.json.root_token }}"
+  no_log: true
+
+- name: Keep the recovery key and root token for the operator
+  delegate_to: localhost
+  become: false
+  block:
+    - name: Create the init output directory
+      ansible.builtin.file:
+        path: "{{ openbao_init_output_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Write the recovery key and root token
+      ansible.builtin.copy:
+        dest: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json"
+        content: "{{ openbao_init.json | to_nice_json }}"
+        mode: "0600"
+      no_log: true

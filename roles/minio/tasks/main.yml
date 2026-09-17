@@ -69,3 +69,11 @@
 - name: Provision the state bucket and per-tenant credentials
   ansible.builtin.import_tasks: provision_buckets.yml
   tags: [tenant-state]
+
+- name: Provision the Deevnet API's admin user
+  ansible.builtin.include_tasks:
+    file: provision_api_admin.yml
+    apply:
+      tags: [tenant-state]
+  when: minio_api_admin_secret | length > 0
+  tags: [tenant-state]

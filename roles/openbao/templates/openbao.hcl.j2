@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+# OpenBao - substrate runtime secrets (ADR-0016).
+
+ui = false
+disable_mlock = true
+
+# Integrated storage, one node. Its data is kept data (ADR-0014): snapshot it.
+storage "raft" {
+  path    = "/openbao/file"
+  node_id = "{{ inventory_hostname }}"
+}
+
+listener "tcp" {
+  address       = "{{ openbao_listen_address }}:{{ openbao_port }}"
+  tls_cert_file = "/openbao/tls/listener.pem"
+  tls_key_file  = "/openbao/tls/listener-key.pem"
+}
+
+# ADR-0016 §2: unsealed on every start by a key delivered from ansible-vault.
+seal "static" {
+  current_key_id = "{{ openbao_seal_key_id }}"
+  current_key    = "file:///openbao/secrets/seal.key"
+}
+
+api_addr     = "{{ openbao_api_url }}"
+cluster_addr = "https://{{ openbao_address }}:{{ openbao_cluster_port }}"

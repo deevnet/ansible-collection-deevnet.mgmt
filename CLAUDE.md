@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is the `deevnet.mgmt` Ansible collection for management plane services. It provides roles for centralized logging, monitoring (Grafana), and observability infrastructure. The collection supports Fedora/RHEL systems.
 
 Roles map to ADRs in `deevnet-docs`: `powerdns` (ADR-0004), `minio` (ADR-0007),
-`deevnet_api` (ADR-0012), `omada_controller` (ADR-0009, ADR-0013). `logging` and
+`deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013). `logging` and
 `grafana` are planned, not implemented.
 
 ## Rules that are easy to get wrong
@@ -35,6 +35,12 @@ Roles map to ADRs in `deevnet-docs`: `powerdns` (ADR-0004), `minio` (ADR-0007),
   content, written by the tenant's own Terraform over RFC 2136 (ADR-0004). A
   TSIG key is bound to one tenant's zones, which is what makes the namespace
   boundary a control rather than a convention.
+- **OpenBao is configured over its HTTP API with `ansible.builtin.uri`**, not
+  `community.hashi_vault`, whose modules need `hvac`, which the Builder lacks.
+  After first initialisation Ansible works through its own AppRole
+  (`vault_openbao_ansible_*`); the root token is revoked in the same run.
+- **The Deevnet API holds only its AppRole.** Its backend credentials are written
+  into OpenBao KV by the `deevnet_api` role, never into its env file.
 - **TSIG secrets are imported from the vault, not generated on the server.**
   A generated key would not survive a rebuild, and every tenant's Terraform
   would need re-issuing.

@@ -13,6 +13,10 @@
         openssl rand -hex 24
   no_log: true
 
+- name: Connect the API to OpenBao and its backends
+  ansible.builtin.import_tasks: openbao.yml
+  when: deevnet_api_site | length > 0
+
 - name: Create the database data directory
   ansible.builtin.file:
     path: "{{ item }}"
@@ -73,11 +77,14 @@
     podman_service_network: "{{ deevnet_api_network }}"
     podman_service_ports:
       - "{{ deevnet_api_listen_address }}:{{ deevnet_api_port }}:8080/tcp"
-    podman_service_env:
-      DEEVNET_API_TOKEN: "{{ deevnet_api_token }}"
-      DATABASE_URL: >-
-        postgres://{{ deevnet_api_db_user }}:{{ deevnet_api_db_password | urlencode }}@{{
-        deevnet_api_db_container_name }}:5432/{{ deevnet_api_db_name }}?sslmode=disable
+    podman_service_volumes: >-
+      {{ [deevnet_api_tls_dir ~ ':/etc/deevnet-api/tls:ro,Z'] if deevnet_api_site | length > 0 else [] }}
+    podman_service_env: >-
+      {{ {
+        'DEEVNET_API_TOKEN': deevnet_api_token,
+        'DATABASE_URL': 'postgres://' ~ deevnet_api_db_user ~ ':' ~ (deevnet_api_db_password | urlencode)
+                        ~ '@' ~ deevnet_api_db_container_name ~ ':5432/' ~ deevnet_api_db_name ~ '?sslmode=disable',
+      } | combine(deevnet_api_tenant_env | default({})) }}
     podman_service_after:
       - "{{ deevnet_api_db_container_name }}.service"
     podman_service_firewall_ports:
@@ -85,7 +92,8 @@
 
 - name: Wait for the API to report ready
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ deevnet_api_port }}/readyz"
+    url: "{{ deevnet_api_local_url }}/readyz"
+    ca_path: "{{ (deevnet_api_tls_dir ~ '/site-ca.pem') if deevnet_api_site | length > 0 else omit }}"
     status_code: [200]
   register: deevnet_api_ready
   retries: 15
@@ -94,7 +102,8 @@
 
 - name: Read the API's version
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ deevnet_api_port }}/version"
+    url: "{{ deevnet_api_local_url }}/version"
+    ca_path: "{{ (deevnet_api_tls_dir ~ '/site-ca.pem') if deevnet_api_site | length > 0 else omit }}"
     return_content: true
   register: deevnet_api_version_info
 
