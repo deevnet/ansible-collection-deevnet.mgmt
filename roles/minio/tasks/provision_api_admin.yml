@@ -1,0 +1,56 @@
+---
+# The Deevnet API's own admin user (ADR-0015 §6). The action list is what the
+# API's minio backend needs, checked against this MinIO release: create, read
+# and delete users and canned policies, and attach a policy to a user.
+#
+# MinIO rejects a Resource on admin actions ("invalid resource
+# 'arn:minio:admin:::*'"), so the statement carries none.
+
+- name: Write the Deevnet API admin policy
+  ansible.builtin.copy:
+    dest: "{{ minio_policy_dir }}/policy-{{ minio_api_admin_policy }}.json"
+    mode: '0600'
+    content: "{{ {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': minio_api_admin_actions}]} | to_nice_json }}"
+  become: true
+
+- name: Copy the Deevnet API admin policy into the container
+  ansible.builtin.command:
+    cmd: >
+      podman cp {{ minio_policy_dir }}/policy-{{ minio_api_admin_policy }}.json
+      {{ minio_container_name }}:/tmp/policy-{{ minio_api_admin_policy }}.json
+  changed_when: false
+  become: true
+
+- name: Load the Deevnet API admin policy
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc admin policy create local {{ minio_api_admin_policy }}
+      /tmp/policy-{{ minio_api_admin_policy }}.json
+  register: minio_api_pol
+  changed_when: "'created' in minio_api_pol.stdout | lower"
+  become: true
+
+# `mc admin user add` on an existing user sets its secret, so a rotated vault
+# value is applied by re-running this.
+- name: Create the Deevnet API admin user
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc admin user add local {{ minio_api_admin_user }} {{ minio_api_admin_secret }}
+  register: minio_api_user
+  changed_when: "'added successfully' in minio_api_user.stdout | lower"
+  become: true
+  no_log: true
+
+- name: Bind the admin policy to the Deevnet API user
+  ansible.builtin.command:
+    cmd: >
+      podman exec {{ minio_container_name }}
+      mc admin policy attach local {{ minio_api_admin_policy }} --user {{ minio_api_admin_user }}
+  register: minio_api_attach
+  changed_when: "'attached successfully' in minio_api_attach.stdout | lower"
+  failed_when:
+    - minio_api_attach.rc != 0
+    - "'already' not in (minio_api_attach.stderr | default('') | lower)"
+  become: true

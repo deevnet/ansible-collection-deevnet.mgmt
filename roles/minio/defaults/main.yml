@@ -42,3 +42,23 @@ minio_root_password: "{{ vault_minio_root_password | default('') }}"
 # state user - the same single list that drives its zone, key and egress.
 minio_tenants: "{{ deevnet_tenants | default([]) }}"
 minio_tenant_secrets: "{{ vault_tenant_state_keys | default({}) }}"
+
+# ADR-0015 §6: the Deevnet API creates tenants' state users and policies itself,
+# with its own admin user rather than root. Created only when its secret is in
+# the vault. The policy grants user and policy administration and nothing else;
+# that is still enough to grant any user anything, so this is a separate,
+# rotatable credential, not a confinement.
+# Generate with: openssl rand -hex 20
+minio_api_admin_user: deevnet-api
+minio_api_admin_secret: "{{ vault_minio_deevnet_api_secret | default('') }}"
+minio_api_admin_policy: deevnet-api-admin
+minio_api_admin_actions:
+  - admin:CreateUser
+  - admin:DeleteUser
+  - admin:GetUser
+  - admin:ListUsers
+  - admin:CreatePolicy
+  - admin:DeletePolicy
+  - admin:GetPolicy
+  - admin:AttachUserOrGroupPolicy
+  - admin:ListUserPolicies

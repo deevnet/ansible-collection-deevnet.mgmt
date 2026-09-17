@@ -13,6 +13,52 @@
         openssl rand -hex 24
   no_log: true
 
+- name: Build the tenant configuration
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ {} if (deevnet_api_site | length == 0) else {
+        'DEEVNET_SITE': deevnet_api_site,
+        'DEEVNET_SITE_OCTET': deevnet_api_site_octet | string,
+        'DEEVNET_ROOT_DOMAIN': deevnet_api_root_domain,
+        'DEEVNET_VRF_VNI_BASE': deevnet_api_vrf_vni_base | string,
+        'DEEVNET_VNET_VNI_BASE': deevnet_api_vnet_vni_base | string,
+        'DEEVNET_FABRIC_CONTROLLER': deevnet_api_fabric_controller,
+        'DEEVNET_FABRIC_NODE': deevnet_api_fabric_node,
+        'DEEVNET_DNS_UPDATE_SERVER': deevnet_api_dns_update_server,
+        'DEEVNET_DNS_APEX_NS': deevnet_api_dns_apex_ns,
+        'DEEVNET_DNS_UPDATE_FROM': deevnet_api_dns_update_from | join(','),
+        'DEEVNET_STATE_ENDPOINT': deevnet_api_state_endpoint,
+        'DEEVNET_STATE_BUCKET': deevnet_api_state_bucket,
+        'DEEVNET_RESOLVER_FORWARD_TO': deevnet_api_resolver_forward_to,
+        'POWERDNS_API_URL': deevnet_api_powerdns_url,
+        'POWERDNS_API_KEY': deevnet_api_powerdns_key,
+        'OPNSENSE_API_URL': deevnet_api_opnsense_url,
+        'OPNSENSE_API_KEY': deevnet_api_opnsense_key,
+        'OPNSENSE_API_SECRET': deevnet_api_opnsense_secret,
+        'OPNSENSE_INSECURE_TLS': deevnet_api_opnsense_insecure_tls | string | lower,
+        'MINIO_ADMIN_ENDPOINT': deevnet_api_minio_endpoint,
+        'MINIO_ADMIN_ACCESS_KEY': deevnet_api_minio_access_key,
+        'MINIO_ADMIN_SECRET_KEY': deevnet_api_minio_secret_key,
+        'PROXMOX_API_URL': deevnet_api_proxmox_url,
+        'PROXMOX_TOKEN_ID': deevnet_api_proxmox_token_id,
+        'PROXMOX_TOKEN_SECRET': deevnet_api_proxmox_token_secret,
+        'PROXMOX_INSECURE_TLS': deevnet_api_proxmox_insecure_tls | string | lower,
+      } }}
+  no_log: true
+
+# The API refuses to start half configured; failing here names the gap before
+# a container restart-loops on it.
+- name: Fail early if tenants are on but a value is missing
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_tenant_env | dict2items | selectattr('value', 'equalto', '') | list | length == 0
+    fail_msg: >-
+      deevnet_api_site is set, so the API serves tenants, but these are empty:
+      {{ deevnet_api_tenant_env | dict2items | selectattr('value', 'equalto', '') | map(attribute='key') | join(', ') }}.
+      Site values belong in inventory; POWERDNS_API_KEY, OPNSENSE_API_*,
+      MINIO_ADMIN_SECRET_KEY and PROXMOX_TOKEN_* come from the vault.
+  when: deevnet_api_site | length > 0
+
 - name: Create the database data directory
   ansible.builtin.file:
     path: "{{ item }}"
@@ -73,11 +119,12 @@
     podman_service_network: "{{ deevnet_api_network }}"
     podman_service_ports:
       - "{{ deevnet_api_listen_address }}:{{ deevnet_api_port }}:8080/tcp"
-    podman_service_env:
-      DEEVNET_API_TOKEN: "{{ deevnet_api_token }}"
-      DATABASE_URL: >-
-        postgres://{{ deevnet_api_db_user }}:{{ deevnet_api_db_password | urlencode }}@{{
-        deevnet_api_db_container_name }}:5432/{{ deevnet_api_db_name }}?sslmode=disable
+    podman_service_env: >-
+      {{ {
+        'DEEVNET_API_TOKEN': deevnet_api_token,
+        'DATABASE_URL': 'postgres://' ~ deevnet_api_db_user ~ ':' ~ (deevnet_api_db_password | urlencode)
+                        ~ '@' ~ deevnet_api_db_container_name ~ ':5432/' ~ deevnet_api_db_name ~ '?sslmode=disable',
+      } | combine(deevnet_api_tenant_env) }}
     podman_service_after:
       - "{{ deevnet_api_db_container_name }}.service"
     podman_service_firewall_ports:

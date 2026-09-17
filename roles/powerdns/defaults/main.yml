@@ -32,6 +32,19 @@ powerdns_listen_port: 53
 powerdns_dnsupdate_enabled: true
 powerdns_tsig_algorithm: hmac-sha256
 
+# ADR-0015 §6: the Deevnet API manages tenant zones, keys and their update
+# policy through PowerDNS's HTTP API. Its key is global to the server, which is
+# why tenants never get it and still publish over RFC 2136 with a TSIG key bound
+# to their own zones. The API is enabled only when a key is in the vault, and
+# answers only the addresses in powerdns_api_allow_from: the API's own host.
+# Generate with: openssl rand -hex 32
+powerdns_api_key: "{{ vault_powerdns_api_key | default('') }}"
+powerdns_api_enabled: "{{ powerdns_api_key | length > 0 }}"
+powerdns_api_address: "0.0.0.0"
+powerdns_api_port: 8081
+# CIDRs. Set in inventory to the Deevnet API host, e.g. ["10.20.25.20/32"].
+powerdns_api_allow_from: []
+
 # Which networks may attempt a dynamic update at all. Signature still decides
 # the outcome; this is defence in depth, not the control.
 #

@@ -34,3 +34,39 @@ deevnet_api_db_password: "{{ vault_deevnet_api_db_password | default('') }}"
 
 deevnet_api_data_root: /srv/deevnet-api
 deevnet_api_db_data_dir: "{{ deevnet_api_data_root }}/pgdata"
+
+# --- Tenants (ADR-0015) -------------------------------------------------------
+#
+# The API serves tenants when deevnet_api_site is set, and then refuses to start
+# unless every value below is too. Leave it empty and the tenant routes answer
+# 501, as the shell did. Site values come from inventory; credentials from the
+# vault. docs/api-v1.md and the README in deevnet-provisioning-api describe each.
+deevnet_api_site: ""
+deevnet_api_site_octet: "{{ deevnet_site_octet | default('') }}"
+deevnet_api_root_domain: "{{ deevnet_root_domain | default('') }}"
+deevnet_api_vrf_vni_base: ""
+deevnet_api_vnet_vni_base: ""
+deevnet_api_fabric_controller: "{{ (deevnet_tenant_fabric | default({})).controller_id | default('') }}"
+deevnet_api_fabric_node: "{{ (deevnet_tenant_fabric | default({})).node | default('') }}"
+deevnet_api_dns_update_server: ""
+deevnet_api_dns_apex_ns: ""
+deevnet_api_dns_update_from: []
+deevnet_api_state_endpoint: ""
+deevnet_api_state_bucket: tf-state
+deevnet_api_resolver_forward_to: ""
+
+deevnet_api_powerdns_url: ""
+deevnet_api_powerdns_key: "{{ vault_powerdns_api_key | default('') }}"
+deevnet_api_opnsense_url: ""
+deevnet_api_opnsense_key: ""
+deevnet_api_opnsense_secret: ""
+deevnet_api_opnsense_insecure_tls: true
+# The API's own MinIO admin user, created by the minio role - never root.
+deevnet_api_minio_endpoint: ""
+deevnet_api_minio_access_key: deevnet-api
+deevnet_api_minio_secret_key: "{{ vault_minio_deevnet_api_secret | default('') }}"
+# A token that can read SDN on the tenant hypervisor, and nothing else.
+deevnet_api_proxmox_url: ""
+deevnet_api_proxmox_token_id: "{{ vault_deevnet_api_proxmox_token_id | default('') }}"
+deevnet_api_proxmox_token_secret: "{{ vault_deevnet_api_proxmox_token_secret | default('') }}"
+deevnet_api_proxmox_insecure_tls: true
