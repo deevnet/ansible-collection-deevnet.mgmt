@@ -17,18 +17,27 @@
   ansible.builtin.import_tasks: openbao.yml
   when: deevnet_api_site | length > 0
 
-- name: Create the database data directory
+- name: Create the API data root
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ deevnet_api_data_root }}"
     state: directory
     owner: root
     group: root
     mode: "0700"
-  loop:
-    - "{{ deevnet_api_data_root }}"
-    # The image's entrypoint starts as root and hands this to its postgres
-    # account on first init, so root ownership here is correct.
-    - "{{ deevnet_api_db_data_dir }}"
+  become: true
+
+# Owned by the image's postgres account, not root. The entrypoint re-execs as
+# postgres before it chowns PGDATA and swallows the failure (`|| :`), so a
+# root-owned directory here does not get corrected - it just leaves the server
+# unable to open its own global/pg_filenode.map, which reads as a connection
+# failure rather than a permission one.
+- name: Create the database data directory
+  ansible.builtin.file:
+    path: "{{ deevnet_api_db_data_dir }}"
+    state: directory
+    owner: "{{ deevnet_api_db_uid }}"
+    group: "{{ deevnet_api_db_gid }}"
+    mode: "0700"
   become: true
 
 - name: Run the API database
