@@ -34,7 +34,20 @@ powerdns_tsig_algorithm: hmac-sha256
 
 # Which networks may attempt a dynamic update at all. Signature still decides
 # the outcome; this is defence in depth, not the control.
-powerdns_dnsupdate_from: "{{ deevnet_vlans.management.subnet }}"
+#
+# These are the zones that run tenant Terraform and that the zone policy lets
+# reach Platform, where this server lives (ADR-0013):
+#   - management: the Builder
+#   - trusted: operator laptops (ADR-0012 s7)
+#   - tenant_transit: tenant workloads and on-site CI, which arrive SNATed by
+#     the fabric exit node, so the source is the transit network, never a
+#     tenant subnet (ADR-0001, ADR-0003)
+# Management alone was enough while the server sat on management; after the
+# move to Platform it refused every update from a tenant workload.
+powerdns_dnsupdate_from:
+  - "{{ deevnet_vlans.management.subnet }}"
+  - "{{ deevnet_vlans.trusted.subnet }}"
+  - "{{ deevnet_vlans.tenant_transit.subnet }}"
 
 # ADR-0005: the zone apex is substrate-owned. The NS target must be a name that
 # has an address record - `tdns` is an Unbound host ALIAS, so it resolves as a
