@@ -47,6 +47,9 @@ openbao_seal_key_id: "{{ vault_openbao_seal_key_id | default('seal-1') }}"
 # pin it through the copy fetched to the control node.
 openbao_tls_days: 3650
 openbao_ca_local_path: "{{ playbook_dir }}/../.openbao/{{ inventory_hostname }}-listener.pem"
+# The site CA this instance issues from, fetched to the control node so other
+# roles can hand it to whatever has to trust the API, the state store or DNS.
+openbao_site_ca_local: "{{ playbook_dir }}/../.openbao/site-ca.pem"
 
 # First initialisation writes the recovery key, the root token and Ansible's
 # AppRole credentials here, on the control node, root-readable only. Move them
