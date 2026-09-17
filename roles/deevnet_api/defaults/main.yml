@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.1.0"
+deevnet_api_version: "v0.2.3"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -64,6 +64,19 @@ deevnet_api_minio_endpoint: ""
 deevnet_api_proxmox_url: ""
 deevnet_api_enrollment_ttl: 72h
 
+# Workloads (ADR-0015 §12). A workload's identity is derived, never chosen: the
+# ordinal comes from the registry, then the VMID from this band and the MAC from
+# the site's namespace - the same scheme the vm_identity allocator uses for
+# substrate VMs, so the two can never mint the same address.
+deevnet_api_tenant_vmid_base: 2000
+deevnet_api_mac_namespace: "{{ deevnet_mac_namespace | default('') }}"
+# The newest template whose name starts with this is cloned, which is the rule
+# the proxmox_vm role already follows.
+deevnet_api_template_prefix: "fedora-server-"
+deevnet_api_tenant_storage: local-lvm
+deevnet_api_tenant_disk: scsi0
+deevnet_api_tenant_ciuser: "{{ proxmox_vm_ciuser | default('a_autoprov') }}"
+
 # The exit node's egress agent (ADR-0015 §7). It reads GET /v1/fabric/egress
 # and nothing else, so the hypervisor holds no operator credential. Optional:
 # empty leaves that route operator-only. The same value goes to the agent, from
@@ -96,3 +109,7 @@ deevnet_api_tls_ttl: 2160h
 deevnet_api_tls_renew_before: 2592000
 # The distroless image runs as nonroot, uid 65532; it reads its key file.
 deevnet_api_container_uid: 65532
+
+# The postgres image's own account, which must own PGDATA on the host.
+deevnet_api_db_uid: 999
+deevnet_api_db_gid: 999
