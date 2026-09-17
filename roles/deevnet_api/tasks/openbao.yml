@@ -234,6 +234,16 @@
       DEEVNET_API_TLS_KEY: /etc/deevnet-api/tls/api-key.pem
   no_log: true
 
+# Added separately because it is optional: an empty value would fail the
+# all-values-present assert below, and the API is content without it - the
+# egress list is then operator-only.
+- name: Add the egress agent's token when there is one
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({'DEEVNET_AGENT_TOKEN': deevnet_api_agent_token}) }}
+  when: deevnet_api_agent_token | length > 0
+  no_log: true
+
 - name: Fail early if a site value is missing
   ansible.builtin.assert:
     that:

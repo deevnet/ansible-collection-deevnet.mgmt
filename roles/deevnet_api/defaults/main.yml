@@ -64,6 +64,12 @@ deevnet_api_minio_endpoint: ""
 deevnet_api_proxmox_url: ""
 deevnet_api_enrollment_ttl: 72h
 
+# The exit node's egress agent (ADR-0015 §7). It reads GET /v1/fabric/egress
+# and nothing else, so the hypervisor holds no operator credential. Optional:
+# empty leaves that route operator-only. The same value goes to the agent, from
+# group_vars/all so both hosts see it.
+deevnet_api_agent_token: "{{ vault_deevnet_egress_agent_token | default('') }}"
+
 # OpenBao (ADR-0016). The address the API and this role use, and the listener
 # certificate the openbao role fetched to the control node.
 deevnet_api_openbao_addr: ""
