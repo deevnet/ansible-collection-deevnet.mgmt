@@ -72,11 +72,15 @@
     label: "{{ item.zone }} <- key {{ item.key }}"
   become: true
 
+# set-meta replaces every ALLOW-DNSUPDATE-FROM row for the zone, so a network
+# dropped from the list is removed from the server too. Each range is its own
+# argument; pdnsutil stores one row per value.
 - name: Restrict which networks may attempt an update
   ansible.builtin.command:
     cmd: >
       podman exec {{ powerdns_container_name }}
-      pdnsutil set-meta {{ item }} ALLOW-DNSUPDATE-FROM {{ powerdns_dnsupdate_from }}
+      pdnsutil set-meta {{ item }} ALLOW-DNSUPDATE-FROM
+      {{ ([powerdns_dnsupdate_from] if powerdns_dnsupdate_from is string else powerdns_dnsupdate_from) | join(' ') }}
   loop: "{{ powerdns_tenant_zone_names }}"
   become: true
 
