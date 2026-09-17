@@ -156,7 +156,7 @@
   become: true
   notify: restart deevnet-api
 
-- name: Check whether the API certificate needs issuing
+- name: Check whether the API certificate is still valid for long enough
   ansible.builtin.command:
     argv: [openssl, x509, -checkend, "{{ deevnet_api_tls_renew_before }}", -noout, -in, "{{ deevnet_api_tls_dir }}/api.pem"]
   register: deevnet_api_cert_check
@@ -165,8 +165,37 @@
   check_mode: false
   become: true
 
+# Expiry is not the only reason to reissue. A rebuilt OpenBao generates a NEW
+# PKI root under the same common name, so the certificate on the host stays
+# valid for its full term and verifies against nothing: everyone else - the
+# tenants, the egress agent, the Builder - has been handed the new CA. Checking
+# the issuer is what catches that. It happened on 2026-09-17.
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/{{ deevnet_api_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}" }
+  register: deevnet_api_current_ca
+  delegate_to: localhost
+  become: false
+
+- name: Read the site CA the host holds
+  ansible.builtin.slurp:
+    src: "{{ deevnet_api_tls_dir }}/site-ca.pem"
+  register: deevnet_api_host_ca
+  failed_when: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    deevnet_api_cert_wanted: >-
+      {{ deevnet_api_cert_check.rc != 0
+         or deevnet_api_host_ca.content is not defined
+         or (deevnet_api_host_ca.content | b64decode | trim)
+            != (deevnet_api_current_ca.json.data.certificate | trim) }}
+
 - name: Issue the API certificate from the site CA
-  when: deevnet_api_cert_check.rc != 0
+  when: deevnet_api_cert_wanted | bool
   block:
     - name: Request the certificate
       ansible.builtin.uri:

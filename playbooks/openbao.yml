@@ -1,0 +1,18 @@
+---
+# OpenBao on its own (ADR-0016).
+#
+# site.yml reaches this host for tenant DNS as well, and the powerdns role still
+# loops over the inventory tenant registry, which disagrees with the API about
+# tenant indexes until CHG-0010 step 11 retires it. So administering OpenBao -
+# rotating a credential, adding an engine, rebuilding it - runs from here rather
+# than from site.yml with a --limit.
+#
+# The first run on empty storage initialises: it writes the recovery key and
+# Ansible's AppRole to .openbao/<host>-init.json on the control node. Those
+# values exist nowhere else. Encrypt, commit and PUSH them before deleting that
+# file - see docs/runbook/building-recovery/vault-operations.
+- name: Configure OpenBao
+  hosts: openbao
+  become: true
+  roles:
+    - openbao

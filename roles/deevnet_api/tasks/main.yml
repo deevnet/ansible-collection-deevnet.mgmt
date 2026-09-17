@@ -99,6 +99,14 @@
     podman_service_firewall_ports:
       - "{{ deevnet_api_port }}/tcp"
 
+# The TLS material notifies a restart, and handlers would otherwise run after
+# the readiness wait below - so a reissued certificate leaves the container
+# serving the old one while the wait verifies against the new CA and fails. It
+# is the reissue that makes this visible; a first deploy creates the container
+# afterwards anyway.
+- name: Restart now if the certificate or the environment changed
+  ansible.builtin.meta: flush_handlers
+
 - name: Wait for the API to report ready
   ansible.builtin.uri:
     url: "{{ deevnet_api_local_url }}/readyz"
