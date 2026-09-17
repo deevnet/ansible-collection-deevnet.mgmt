@@ -1,0 +1,115 @@
+---
+# OpenBao around the shared podman_service role (ADR-0016). OpenBao's own steps:
+# the seal key, the listener certificate, first initialisation, and the
+# engines, policies and AppRoles the substrate uses.
+
+- name: Fail early without a seal key
+  ansible.builtin.assert:
+    that:
+      - openbao_seal_key | length > 0
+      - (openbao_seal_key | b64decode(encoding='latin-1') | length) == 32
+    fail_msg: >-
+      vault_openbao_seal_key must be base64 of exactly 32 bytes. OpenBao unseals
+      itself with it on every start (ADR-0016 §2); without it the server would
+      stay sealed after the first restart. Generate one and add it to the vault:
+        head -c 32 /dev/urandom | base64
+  no_log: true
+
+- name: Create OpenBao directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openbao_uid }}"
+    group: "{{ openbao_gid }}"
+    mode: "0700"
+  loop:
+    - "{{ openbao_data_root }}"
+    - "{{ openbao_config_dir }}"
+    - "{{ openbao_storage_dir }}"
+    - "{{ openbao_secrets_dir }}"
+    - "{{ openbao_tls_dir }}"
+  become: true
+
+- name: Write the seal key
+  ansible.builtin.copy:
+    dest: "{{ openbao_secrets_dir }}/seal.key"
+    content: "{{ openbao_seal_key }}"
+    owner: "{{ openbao_uid }}"
+    group: "{{ openbao_gid }}"
+    mode: "0400"
+  no_log: true
+  diff: false
+  become: true
+  notify: restart openbao
+
+- name: Issue the listener certificate
+  ansible.builtin.import_tasks: tls.yml
+
+- name: Write the OpenBao configuration
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_config_dir }}/openbao.hcl"
+    owner: "{{ openbao_uid }}"
+    group: "{{ openbao_gid }}"
+    mode: "0400"
+  become: true
+  notify: restart openbao
+
+- name: Run the OpenBao container
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ openbao_container_name }}"
+    podman_service_description: "OpenBao - substrate secrets (ADR-0016)"
+    podman_service_image: "{{ openbao_image_name }}:{{ openbao_image_tag }}"
+    podman_service_tarball: "{{ openbao_tarball }}"
+    podman_service_ports:
+      - "{{ openbao_listen_address }}:{{ openbao_port }}:{{ openbao_port }}/tcp"
+    podman_service_volumes:
+      - "{{ openbao_config_dir }}:/openbao/config:Z"
+      - "{{ openbao_storage_dir }}:/openbao/file:Z"
+      - "{{ openbao_secrets_dir }}:/openbao/secrets:Z"
+      - "{{ openbao_tls_dir }}:/openbao/tls:Z"
+    # The entrypoint's chown needs root, which the image does not run as; the
+    # directories are owned to match instead.
+    podman_service_create_args: ["--entrypoint", "bao"]
+    podman_service_command: ["server", "-config=/openbao/config/openbao.hcl"]
+    # Reached by the Deevnet API (Platform) and by Ansible from the control node
+    # (management -> platform). Its authentication and policies are the control.
+    podman_service_firewall_ports:
+      - "{{ openbao_port }}/tcp"
+
+- name: Apply a pending restart before talking to OpenBao
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for OpenBao to answer
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+  register: openbao_seal_status
+  retries: 30
+  delay: 2
+  until: openbao_seal_status.status is defined and openbao_seal_status.status == 200
+
+- name: Fetch the listener certificate to the control node
+  ansible.builtin.fetch:
+    src: "{{ openbao_tls_dir }}/listener.pem"
+    dest: "{{ openbao_ca_local_path }}"
+    flat: true
+  become: true
+
+- name: Initialise OpenBao on first run
+  ansible.builtin.import_tasks: init.yml
+  when: not openbao_seal_status.json.initialized
+
+- name: Confirm OpenBao unsealed itself
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+  register: openbao_unsealed
+  retries: 15
+  delay: 2
+  until: openbao_unsealed.json is defined and not openbao_unsealed.json.sealed
+
+- name: Configure engines, policies and AppRoles
+  ansible.builtin.import_tasks: configure.yml

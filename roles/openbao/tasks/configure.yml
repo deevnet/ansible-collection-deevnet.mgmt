@@ -1,0 +1,192 @@
+---
+# Engines, policies and AppRoles (ADR-0016 §3, §5). Every call is read, then
+# written only if missing, or is a write OpenBao treats as idempotent: policy
+# PUT, AppRole role POST, Transit key POST and PKI role POST all succeed on an
+# existing object. Enabling a mount twice does not (400, "path is already in
+# use"), so mounts are listed first.
+
+- name: Log in as Ansible
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    body_format: json
+    body:
+      role_id: "{{ openbao_ansible_role_id }}"
+      secret_id: "{{ openbao_ansible_secret_id }}"
+  register: openbao_login
+  when: openbao_bootstrap_token is not defined
+  no_log: true
+
+- name: Use a token for this run
+  ansible.builtin.set_fact:
+    openbao_token: >-
+      {{ openbao_bootstrap_token if openbao_bootstrap_token is defined
+         else openbao_login.json.auth.client_token }}
+  no_log: true
+
+- name: List secrets engines
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts"
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+  register: openbao_mounts
+
+- name: Enable secrets engines
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item.path }}"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: "{{ item.body }}"
+    status_code: [200, 204]
+  loop:
+    - { path: "{{ openbao_kv_mount }}", body: { type: kv, options: { version: "2" } } }
+    - { path: transit, body: { type: transit } }
+    - { path: "{{ openbao_pki_mount }}", body: { type: pki, config: { max_lease_ttl: "{{ openbao_pki_ttl }}" } } }
+  when: (item.path ~ '/') not in openbao_mounts.json
+  loop_control:
+    label: "{{ item.path }}"
+  changed_when: true
+
+- name: List auth methods
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/auth"
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+  register: openbao_auths
+
+- name: Enable AppRole
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/auth/approle"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: { type: approle }
+    status_code: [200, 204]
+  when: "'approle/' not in openbao_auths.json"
+  changed_when: true
+
+- name: Check for the CA
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    status_code: [200, 204]
+  register: openbao_ca
+
+# A PKI mount with no CA answers 204 on ca/pem.
+- name: Generate the site CA
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/root/generate/internal"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body:
+      common_name: "{{ openbao_pki_common_name }}"
+      ttl: "{{ openbao_pki_ttl }}"
+  when: openbao_ca.status == 204
+  changed_when: true
+
+- name: Write the Platform certificate role
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/roles/{{ openbao_pki_role }}"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body:
+      allowed_domains: "{{ openbao_pki_role_domains }}"
+      allow_subdomains: true
+      allow_ip_sans: true
+      max_ttl: "{{ openbao_pki_role_max_ttl }}"
+    status_code: [200, 204]
+  changed_when: false
+
+- name: Create the Transit key for tenant secrets
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/transit/keys/{{ openbao_transit_key }}"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    status_code: [200, 204]
+  changed_when: false
+
+- name: Write policies
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item.key }}"
+    method: PUT
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: { policy: "{{ item.value }}" }
+    status_code: [200, 204]
+  loop: "{{ openbao_policies | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+
+- name: Write AppRoles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/approle/role/{{ item.key }}"
+    method: POST
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: "{{ item.value }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_approles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+
+- name: Hand Ansible its AppRole and retire the root token
+  when: openbao_bootstrap_token is defined
+  block:
+    - name: Read Ansible's role ID
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/auth/approle/role/ansible/role-id"
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+      register: openbao_ansible_role
+
+    - name: Issue Ansible's secret ID
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/auth/approle/role/ansible/secret-id"
+        method: POST
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+      register: openbao_ansible_secret
+      no_log: true
+
+    - name: Add Ansible's AppRole to the init output
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        dest: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json"
+        content: >-
+          {{ openbao_init.json | combine({
+               'vault_openbao_ansible_role_id': openbao_ansible_role.json.data.role_id,
+               'vault_openbao_ansible_secret_id': openbao_ansible_secret.json.data.secret_id,
+               'note': 'Move vault_openbao_ansible_* and recovery_keys_b64 into the vault, then delete this file. The root token below is already revoked.'
+             }) | to_nice_json }}
+        mode: "0600"
+      no_log: true
+
+    - name: Revoke the root token
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/auth/token/revoke-self"
+        method: POST
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        status_code: [200, 204]
+      changed_when: true
+
+    - name: Stop here until the vault holds Ansible's AppRole
+      ansible.builtin.debug:
+        msg: >-
+          OpenBao is initialised. {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json
+          holds the recovery key and Ansible's AppRole: move them into the vault
+          (vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id) and delete the file.

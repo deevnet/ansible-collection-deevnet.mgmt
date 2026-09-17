@@ -1,0 +1,244 @@
+---
+# The API's side of ADR-0016, run when tenants are served:
+#   1. write the backend credentials into the API's KV secret
+#   2. give the API its AppRole, reusing the secret ID it already holds
+#   3. issue its TLS certificate from the site CA, when missing or near expiry
+#   4. build its environment: site values, OpenBao coordinates, TLS paths
+# Calls to OpenBao run on the control node against the pinned listener
+# certificate, as Ansible's own AppRole.
+
+- name: Fail early if OpenBao or a backend credential is missing
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_openbao_addr | length > 0
+      - deevnet_api_openbao_ca_local | length > 0
+      - deevnet_api_openbao_ansible_role_id | length > 0
+      - deevnet_api_openbao_ansible_secret_id | length > 0
+      - deevnet_api_backends | dict2items | selectattr('value', 'equalto', '') | list | length == 0
+      - deevnet_api_backends.keys() | list | length > 0
+    fail_msg: >-
+      deevnet_api_site is set, so the API serves tenants, which needs OpenBao
+      (deevnet_api_openbao_addr and the listener certificate the openbao role
+      fetches, vault_openbao_ansible_role_id / _secret_id) and every field of
+      deevnet_api_backends. Empty fields:
+      {{ deevnet_api_backends | dict2items | selectattr('value', 'equalto', '') | map(attribute='key') | join(', ') }}
+  no_log: true
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ deevnet_api_openbao_ansible_role_id }}"
+      secret_id: "{{ deevnet_api_openbao_ansible_secret_id }}"
+  register: deevnet_api_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the token for this run
+  ansible.builtin.set_fact:
+    deevnet_api_bao_token: "{{ deevnet_api_bao_login.json.auth.client_token }}"
+  no_log: true
+
+# --- 1. Backend credentials --------------------------------------------------
+
+- name: Read the API's KV secret
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/{{ deevnet_api_openbao_kv_mount }}/data/{{ deevnet_api_openbao_kv_path }}"
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
+    status_code: [200, 404]
+  register: deevnet_api_kv
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# Written only when it differs, so KV versions record real changes.
+- name: Write the API's KV secret
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/{{ deevnet_api_openbao_kv_mount }}/data/{{ deevnet_api_openbao_kv_path }}"
+    method: POST
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
+    body_format: json
+    body: { data: "{{ deevnet_api_backends }}" }
+  when: >-
+    deevnet_api_kv.status == 404
+    or deevnet_api_kv.json.data.data != deevnet_api_backends
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  notify: restart deevnet-api
+  no_log: true
+
+# --- 2. AppRole --------------------------------------------------------------
+
+- name: Read the API's role ID
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/role/{{ deevnet_api_openbao_approle }}/role-id"
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
+  register: deevnet_api_role_id
+  delegate_to: localhost
+  become: false
+
+- name: Read the secret ID the API already holds
+  ansible.builtin.slurp:
+    src: "{{ podman_service_env_dir | default('/etc/deevnet/env') }}/{{ deevnet_api_container_name }}.env"
+  register: deevnet_api_env_file
+  failed_when: false
+  become: true
+  no_log: true
+
+- name: Pick out the held secret ID
+  ansible.builtin.set_fact:
+    deevnet_api_held_secret_id: >-
+      {{ ((deevnet_api_env_file.content | default('') | b64decode).splitlines()
+          | select('match', '^OPENBAO_SECRET_ID=') | first | default('=')).split('=', 1)[1] }}
+  no_log: true
+
+- name: Check the held secret ID still logs in
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ deevnet_api_role_id.json.data.role_id }}"
+      secret_id: "{{ deevnet_api_held_secret_id }}"
+    status_code: [200, 400, 403]
+  register: deevnet_api_held_login
+  when: deevnet_api_held_secret_id | length > 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Issue a secret ID for the API
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/role/{{ deevnet_api_openbao_approle }}/secret-id"
+    method: POST
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
+  register: deevnet_api_new_secret_id
+  when: deevnet_api_held_secret_id | length == 0 or deevnet_api_held_login.status | default(0) != 200
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  no_log: true
+
+- name: Settle the API's secret ID
+  ansible.builtin.set_fact:
+    deevnet_api_secret_id: >-
+      {{ deevnet_api_new_secret_id.json.data.secret_id
+         if (deevnet_api_new_secret_id is not skipped and deevnet_api_new_secret_id.json is defined)
+         else deevnet_api_held_secret_id }}
+  no_log: true
+
+# --- 3. TLS ------------------------------------------------------------------
+
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ deevnet_api_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Place the OpenBao listener certificate
+  ansible.builtin.copy:
+    src: "{{ deevnet_api_openbao_ca_local }}"
+    dest: "{{ deevnet_api_tls_dir }}/openbao-ca.pem"
+    mode: "0644"
+  become: true
+  notify: restart deevnet-api
+
+- name: Check whether the API certificate needs issuing
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ deevnet_api_tls_renew_before }}", -noout, -in, "{{ deevnet_api_tls_dir }}/api.pem"]
+  register: deevnet_api_cert_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+- name: Issue the API certificate from the site CA
+  when: deevnet_api_cert_check.rc != 0
+  block:
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ deevnet_api_openbao_addr }}/v1/{{ deevnet_api_openbao_pki_mount }}/issue/{{ deevnet_api_openbao_pki_role }}"
+        method: POST
+        ca_path: "{{ deevnet_api_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ deevnet_api_tls_common_name }}"
+          ip_sans: "{{ deevnet_api_tls_ip }},127.0.0.1"
+          ttl: "{{ deevnet_api_tls_ttl }}"
+      register: deevnet_api_cert
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write the certificate, key and site CA
+      ansible.builtin.copy:
+        dest: "{{ deevnet_api_tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: api.pem, content: "{{ deevnet_api_cert.json.data.certificate }}", owner: root, mode: "0644" }
+        - { name: api-key.pem, content: "{{ deevnet_api_cert.json.data.private_key }}", owner: "{{ deevnet_api_container_uid }}", mode: "0400" }
+        - { name: site-ca.pem, content: "{{ deevnet_api_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: restart deevnet-api
+
+# --- 4. Environment ------------------------------------------------------------
+
+- name: Build the tenant configuration
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env:
+      DEEVNET_SITE: "{{ deevnet_api_site }}"
+      DEEVNET_SITE_OCTET: "{{ deevnet_api_site_octet | string }}"
+      DEEVNET_ROOT_DOMAIN: "{{ deevnet_api_root_domain }}"
+      DEEVNET_VRF_VNI_BASE: "{{ deevnet_api_vrf_vni_base | string }}"
+      DEEVNET_VNET_VNI_BASE: "{{ deevnet_api_vnet_vni_base | string }}"
+      DEEVNET_FABRIC_CONTROLLER: "{{ deevnet_api_fabric_controller }}"
+      DEEVNET_FABRIC_NODE: "{{ deevnet_api_fabric_node }}"
+      DEEVNET_DNS_UPDATE_SERVER: "{{ deevnet_api_dns_update_server }}"
+      DEEVNET_DNS_APEX_NS: "{{ deevnet_api_dns_apex_ns }}"
+      DEEVNET_DNS_UPDATE_FROM: "{{ deevnet_api_dns_update_from | join(',') }}"
+      DEEVNET_STATE_ENDPOINT: "{{ deevnet_api_state_endpoint }}"
+      DEEVNET_STATE_BUCKET: "{{ deevnet_api_state_bucket }}"
+      DEEVNET_RESOLVER_FORWARD_TO: "{{ deevnet_api_resolver_forward_to }}"
+      DEEVNET_ENROLLMENT_TTL: "{{ deevnet_api_enrollment_ttl }}"
+      POWERDNS_API_URL: "{{ deevnet_api_powerdns_url }}"
+      OPNSENSE_API_URL: "{{ deevnet_api_opnsense_url }}"
+      MINIO_ADMIN_ENDPOINT: "{{ deevnet_api_minio_endpoint }}"
+      PROXMOX_API_URL: "{{ deevnet_api_proxmox_url }}"
+      OPENBAO_ADDR: "{{ deevnet_api_openbao_addr }}"
+      OPENBAO_CACERT: /etc/deevnet-api/tls/openbao-ca.pem
+      OPENBAO_ROLE_ID: "{{ deevnet_api_role_id.json.data.role_id }}"
+      OPENBAO_SECRET_ID: "{{ deevnet_api_secret_id }}"
+      OPENBAO_KV_MOUNT: "{{ deevnet_api_openbao_kv_mount }}"
+      OPENBAO_KV_PATH: "{{ deevnet_api_openbao_kv_path }}"
+      DEEVNET_API_TLS_CERT: /etc/deevnet-api/tls/api.pem
+      DEEVNET_API_TLS_KEY: /etc/deevnet-api/tls/api-key.pem
+  no_log: true
+
+- name: Fail early if a site value is missing
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_tenant_env | dict2items | selectattr('value', 'equalto', '') | list | length == 0
+    fail_msg: >-
+      deevnet_api_site is set, but these are empty:
+      {{ deevnet_api_tenant_env | dict2items | selectattr('value', 'equalto', '') | map(attribute='key') | join(', ') }}.
+      They belong in inventory (group_vars/deevnet_api).

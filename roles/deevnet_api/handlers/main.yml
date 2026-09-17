@@ -1,0 +1,7 @@
+---
+# The container reads its KV secret, certificate and key at start.
+- name: restart deevnet-api
+  ansible.builtin.service:
+    name: "{{ deevnet_api_container_name }}"
+    state: restarted
+  become: true

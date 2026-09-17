@@ -1,0 +1,106 @@
+---
+# OpenBao - the substrate's runtime secrets (ADR-0016), in the identity VM.
+#
+# What it holds now: the Deevnet API's backend credentials (KV), the key that
+# encrypts tenant secrets in the API's database (Transit), the site's internal
+# CA (PKI), and single-use enrollment tokens (response wrapping). ansible-vault
+# stays the root of trust for what OpenBao cannot hold about itself: the seal
+# key and the credential Ansible configures it with.
+
+openbao_image_name: "quay.io/openbao/openbao"
+openbao_image_tag: "2.6.2"
+openbao_tarball: "openbao/openbao-{{ openbao_image_tag }}.tar"
+openbao_container_name: openbao
+
+openbao_data_root: /srv/openbao
+openbao_config_dir: "{{ openbao_data_root }}/config"
+openbao_storage_dir: "{{ openbao_data_root }}/data"
+openbao_secrets_dir: "{{ openbao_data_root }}/secrets"
+openbao_tls_dir: "{{ openbao_data_root }}/tls"
+
+# The image runs as `openbao` (uid 100, gid 1000). Its entrypoint would chown
+# its volumes, which fails unless it runs as root; the directories are owned to
+# match instead, and the entrypoint is bypassed.
+openbao_uid: 100
+openbao_gid: 1000
+
+openbao_port: 8200
+openbao_cluster_port: 8201
+openbao_listen_address: "0.0.0.0"
+# What clients call it by. The listener certificate names both, and the IP.
+openbao_fqdn: "{{ inventory_hostname }}.{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
+openbao_alias_fqdn: "bao.{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
+openbao_address: "{{ env.interfaces.eth0.ip }}"
+openbao_api_url: "https://{{ openbao_address }}:{{ openbao_port }}"
+# What this role calls, on the VM itself. The listener certificate names
+# 127.0.0.1, so it is verified against the certificate rather than skipped.
+openbao_local_url: "https://127.0.0.1:{{ openbao_port }}"
+
+# ADR-0016 §2: a 32-byte key, base64, from the vault. OpenBao unseals itself
+# with it on every start. Generate with: head -c 32 /dev/urandom | base64
+# Rotating it: add the old one as openbao_seal_previous_key with its id.
+openbao_seal_key: "{{ vault_openbao_seal_key | default('') }}"
+openbao_seal_key_id: "{{ vault_openbao_seal_key_id | default('seal-1') }}"
+
+# The listener's own certificate is self-signed by this role: OpenBao is the CA
+# for everything else, but it has to answer TLS before its PKI exists. Clients
+# pin it through the copy fetched to the control node.
+openbao_tls_days: 3650
+openbao_ca_local_path: "{{ playbook_dir }}/../.openbao/{{ inventory_hostname }}-listener.pem"
+
+# First initialisation writes the recovery key, the root token and Ansible's
+# AppRole credentials here, on the control node, root-readable only. Move them
+# into the vault and delete the file; the root token is revoked before the run
+# ends (ADR-0016 §2).
+openbao_init_output_dir: "{{ playbook_dir }}/../.openbao"
+
+# After initialisation, Ansible works through its own AppRole.
+openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+
+# ADR-0016 §3
+openbao_kv_mount: deevnet-api
+openbao_transit_key: tenant-secrets
+openbao_pki_mount: pki
+openbao_pki_ttl: 87600h
+openbao_pki_common_name: "Deevnet {{ deevnet_substrate }} internal CA"
+# Certificates for Platform services, e.g. api.mobile.deevnet.net.
+openbao_pki_role: platform
+openbao_pki_role_domains:
+  - "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
+openbao_pki_role_max_ttl: 2160h
+
+# Policies, as HCL, by name. Written verbatim.
+openbao_policies:
+  # The Deevnet API: read its backend credentials, use its Transit key, get a
+  # certificate for itself, and wrap and unwrap enrollment records.
+  deevnet-api: |
+    path "{{ openbao_kv_mount }}/data/backends" { capabilities = ["read"] }
+    path "transit/encrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
+    path "transit/decrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
+    path "{{ openbao_pki_mount }}/issue/{{ openbao_pki_role }}" { capabilities = ["update"] }
+    path "sys/wrapping/wrap" { capabilities = ["update"] }
+  # Ansible after bootstrap: configure mounts, auth, policies and roles, write
+  # the API's backend credentials, issue certificates. Not root: it cannot read
+  # other tokens, generate a root, or change the seal.
+  ansible: |
+    path "sys/mounts" { capabilities = ["read"] }
+    path "sys/mounts/*" { capabilities = ["create", "read", "update"] }
+    path "sys/auth" { capabilities = ["read"] }
+    path "sys/auth/*" { capabilities = ["create", "read", "update", "sudo"] }
+    path "sys/policies/acl/*" { capabilities = ["create", "read", "update"] }
+    path "auth/approle/role/*" { capabilities = ["create", "read", "update"] }
+    path "{{ openbao_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
+    path "transit/keys/*" { capabilities = ["create", "read", "update"] }
+    path "{{ openbao_pki_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
+
+# AppRoles, by name.
+openbao_approles:
+  deevnet-api:
+    token_policies: [deevnet-api]
+    token_ttl: 1h
+    token_max_ttl: 24h
+  ansible:
+    token_policies: [ansible]
+    token_ttl: 30m
+    token_max_ttl: 2h

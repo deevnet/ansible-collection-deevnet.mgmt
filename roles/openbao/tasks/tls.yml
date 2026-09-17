@@ -1,0 +1,48 @@
+---
+# The listener's own certificate, self-signed. OpenBao is the CA for the other
+# Platform services (ADR-0016 §3), but it must answer TLS before its PKI
+# exists. Clients pin this certificate. Regenerated only when it is missing.
+
+- name: Check for the listener certificate
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_dir }}/listener.pem"
+  register: openbao_listener_cert
+  become: true
+
+- name: Generate the listener key and certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -newkey
+      - ec
+      - -pkeyopt
+      - ec_paramgen_curve:prime256v1
+      - -nodes
+      - -days
+      - "{{ openbao_tls_days }}"
+      - -subj
+      - "/CN={{ openbao_fqdn }}"
+      - -addext
+      - "subjectAltName=DNS:{{ openbao_fqdn }},DNS:{{ openbao_alias_fqdn }},IP:{{ openbao_address }},IP:127.0.0.1"
+      - -addext
+      - "basicConstraints=critical,CA:TRUE"
+      - -keyout
+      - "{{ openbao_tls_dir }}/listener-key.pem"
+      - -out
+      - "{{ openbao_tls_dir }}/listener.pem"
+  when: not openbao_listener_cert.stat.exists
+  become: true
+  notify: restart openbao
+
+- name: Own the listener files for the container
+  ansible.builtin.file:
+    path: "{{ openbao_tls_dir }}/{{ item.name }}"
+    owner: "{{ openbao_uid }}"
+    group: "{{ openbao_gid }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { name: listener.pem, mode: "0444" }
+    - { name: listener-key.pem, mode: "0400" }
+  become: true

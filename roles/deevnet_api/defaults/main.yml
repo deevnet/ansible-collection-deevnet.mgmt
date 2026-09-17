@@ -14,6 +14,9 @@ deevnet_api_container_name: deevnet-api
 
 deevnet_api_listen_address: "0.0.0.0"
 deevnet_api_port: 8080
+# TLS whenever tenants are served; the certificate names 127.0.0.1 too, so the
+# role's own checks verify it.
+deevnet_api_local_url: "{{ 'https' if deevnet_api_site | length > 0 else 'http' }}://127.0.0.1:{{ deevnet_api_port }}"
 
 # The shared bearer token of the API shell. Per-tenant credentials replace it
 # (ADR-0012 §9). Generate with: openssl rand -hex 32
@@ -39,8 +42,9 @@ deevnet_api_db_data_dir: "{{ deevnet_api_data_root }}/pgdata"
 #
 # The API serves tenants when deevnet_api_site is set, and then refuses to start
 # unless every value below is too. Leave it empty and the tenant routes answer
-# 501, as the shell did. Site values come from inventory; credentials from the
-# vault. docs/api-v1.md and the README in deevnet-provisioning-api describe each.
+# 501, as the shell did. Site values come from inventory. Credentials reach the
+# API through OpenBao (ADR-0016): this role writes them into its KV secret, and
+# the container holds only the API's AppRole.
 deevnet_api_site: ""
 deevnet_api_site_octet: "{{ deevnet_site_octet | default('') }}"
 deevnet_api_root_domain: "{{ deevnet_root_domain | default('') }}"
@@ -54,19 +58,35 @@ deevnet_api_dns_update_from: []
 deevnet_api_state_endpoint: ""
 deevnet_api_state_bucket: tf-state
 deevnet_api_resolver_forward_to: ""
-
 deevnet_api_powerdns_url: ""
-deevnet_api_powerdns_key: "{{ vault_powerdns_api_key | default('') }}"
 deevnet_api_opnsense_url: ""
-deevnet_api_opnsense_key: ""
-deevnet_api_opnsense_secret: ""
-deevnet_api_opnsense_insecure_tls: true
-# The API's own MinIO admin user, created by the minio role - never root.
 deevnet_api_minio_endpoint: ""
-deevnet_api_minio_access_key: deevnet-api
-deevnet_api_minio_secret_key: "{{ vault_minio_deevnet_api_secret | default('') }}"
-# A token that can read SDN on the tenant hypervisor, and nothing else.
 deevnet_api_proxmox_url: ""
-deevnet_api_proxmox_token_id: "{{ vault_deevnet_api_proxmox_token_id | default('') }}"
-deevnet_api_proxmox_token_secret: "{{ vault_deevnet_api_proxmox_token_secret | default('') }}"
-deevnet_api_proxmox_insecure_tls: true
+deevnet_api_enrollment_ttl: 72h
+
+# OpenBao (ADR-0016). The address the API and this role use, and the listener
+# certificate the openbao role fetched to the control node.
+deevnet_api_openbao_addr: ""
+deevnet_api_openbao_ca_local: ""
+# Ansible's AppRole, from the vault, which writes the KV secret and issues the
+# API's certificate.
+deevnet_api_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+deevnet_api_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+deevnet_api_openbao_kv_mount: deevnet-api
+deevnet_api_openbao_kv_path: backends
+deevnet_api_openbao_approle: deevnet-api
+deevnet_api_openbao_pki_mount: pki
+deevnet_api_openbao_pki_role: platform
+
+# The KV secret's fields, as the API reads them. Set in inventory from the vault;
+# every value must be non-empty. token_hmac_key is base64 of at least 32 bytes.
+deevnet_api_backends: {}
+
+# TLS from the site CA. Reissued when missing or within renew_before of expiry.
+deevnet_api_tls_dir: "{{ deevnet_api_data_root }}/tls"
+deevnet_api_tls_common_name: "api.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+deevnet_api_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
+deevnet_api_tls_ttl: 2160h
+deevnet_api_tls_renew_before: 2592000
+# The distroless image runs as nonroot, uid 65532; it reads its key file.
+deevnet_api_container_uid: 65532

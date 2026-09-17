@@ -1,0 +1,6 @@
+---
+- name: restart openbao
+  ansible.builtin.service:
+    name: "{{ openbao_container_name }}"
+    state: restarted
+  become: true

@@ -2,3 +2,6 @@
 ansible_collections/
 *.tar.gz
 .deps.stamp
+
+# OpenBao init output and pinned listener certificates (roles/openbao). Never commit.
+.openbao/
