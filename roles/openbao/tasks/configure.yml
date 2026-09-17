@@ -90,6 +90,23 @@
   when: openbao_ca.status == 204
   changed_when: true
 
+# Clients need the CA to trust what it signs: the API, the state store and
+# PowerDNS. Fetched to the control node so other roles can place it.
+- name: Fetch the site CA to the control node
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
+    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    return_content: true
+  register: openbao_ca_pem
+
+- name: Write the site CA on the control node
+  delegate_to: localhost
+  become: false
+  ansible.builtin.copy:
+    dest: "{{ openbao_site_ca_local }}"
+    content: "{{ openbao_ca_pem.content }}"
+    mode: "0644"
+
 - name: Write the Platform certificate role
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/roles/{{ openbao_pki_role }}"
