@@ -58,6 +58,7 @@ deevnet_api_dns_update_from: []
 deevnet_api_state_endpoint: ""
 deevnet_api_state_bucket: tf-state
 deevnet_api_resolver_forward_to: ""
+deevnet_api_workload_resolver: ""
 deevnet_api_powerdns_url: ""
 deevnet_api_opnsense_url: ""
 deevnet_api_minio_endpoint: ""
