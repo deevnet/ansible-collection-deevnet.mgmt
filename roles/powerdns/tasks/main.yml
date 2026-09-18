@@ -1,8 +1,15 @@
 ---
 # PowerDNS around the shared podman_service role. The steps here are the
-# DNS-specific ones: free :53, the config file, a schema seeded from the image
-# before the container first starts, and the per-tenant zone/key provisioning
-# that is ADR-0004's onboarding act.
+# DNS-specific ones: free :53, the config file, and a schema seeded from the
+# image before the container first starts.
+#
+# This role runs the SERVER. It does not create zones, keys or records: a
+# tenant's zones, its TSIG key and its update ACL are created by the Deevnet API
+# when the tenant is admitted (ADR-0015), and its records are the tenant's own,
+# written over RFC 2136. Provisioning zones from inventory was how ADR-0004
+# onboarding worked until CHG-0010 step 11 retired it, and the two could not both
+# own the same objects - inventory indexes and API indexes drift, and the loser is
+# whichever ran last.
 
 - name: Fail early if the HTTP API would answer anyone
   ansible.builtin.assert:
@@ -82,7 +89,3 @@
     port: "{{ powerdns_listen_port }}"
     host: 127.0.0.1
     timeout: 60
-
-- name: Provision tenant zones and TSIG keys
-  ansible.builtin.import_tasks: provision_zones.yml
-  tags: [tenant-dns]

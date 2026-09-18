@@ -72,14 +72,3 @@ powerdns_apex_ttl: 3600
 # one value is correct for every zone.
 powerdns_soa_rname: "hostmaster.@"
 powerdns_soa_timers: "10800 3600 604800 3600"
-
-# Tenant zones are derived from the site registry, never listed here.
-# For tenant `t` index `n` (ADR-0002 / ADR-0004):
-#   forward  t.<substrate>.<root>
-#   reverse  {128+n}.<site_octet>.10.in-addr.arpa
-powerdns_tenants: "{{ deevnet_tenants | default([]) }}"
-
-# Per-tenant TSIG secrets, keyed by tenant name. Supplied from the vault so the
-# server is reproducible: rebuilding it re-imports the same keys and every
-# tenant's Terraform keeps working without re-issuing credentials.
-powerdns_tsig_secrets: "{{ vault_tenant_tsig_keys | default({}) }}"
