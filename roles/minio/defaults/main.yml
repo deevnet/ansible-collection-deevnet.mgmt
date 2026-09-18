@@ -37,12 +37,6 @@ minio_state_bucket: tf-state
 minio_root_user: "{{ vault_minio_root_user | default('') }}"
 minio_root_password: "{{ vault_minio_root_password | default('') }}"
 
-# Tenants that should be issued a scoped state credential. Defaults to the
-# substrate tenant registry, so onboarding a tenant there is what creates its
-# state user - the same single list that drives its zone, key and egress.
-minio_tenants: "{{ deevnet_tenants | default([]) }}"
-minio_tenant_secrets: "{{ vault_tenant_state_keys | default({}) }}"
-
 # ADR-0015 §6: the Deevnet API creates tenants' state users and policies itself,
 # with its own admin user rather than root. Created only when its secret is in
 # the vault. The policy grants user and policy administration and nothing else;
