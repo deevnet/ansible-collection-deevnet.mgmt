@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.2.6"
+deevnet_api_version: "v0.3.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -77,6 +77,25 @@ deevnet_api_template_prefix: "fedora-server-"
 deevnet_api_tenant_storage: local-lvm
 deevnet_api_tenant_disk: scsi0
 deevnet_api_tenant_ciuser: "{{ proxmox_vm_ciuser | default('a_autoprov') }}"
+
+# Tenant Wi-Fi keys (ADR-0012 §3, CHG-0013). Optional: leave the URL empty and
+# the API issues none and its wifi-keys routes refuse with a reason. That is not
+# a degraded state - a site with no wireless controller is a legitimate site -
+# which is why these are NOT in the block above that must be complete.
+#
+# The trust classes are PROJECTED FROM INVENTORY, not decided here: deevnet_vlans
+# stays the only declaration of a segment's SSID and VLAN (ADR-0009). Every
+# segment that declares wifi_security: ppsk becomes one entry, so unskipping a
+# segment in omada-wireless.yml and serving keys for it cannot drift apart.
+deevnet_api_omada_url: ""
+deevnet_api_iot_trust_classes: >-
+  {%- set out = [] -%}
+  {%- for key, seg in (deevnet_vlans | default({})).items() -%}
+  {%- if (seg.wifi_security | default('psk')) == 'ppsk' -%}
+  {%- set _ = out.append(key ~ '=' ~ seg.wifi_ssid ~ ':' ~ (seg.vlan_id | string)) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ out | join(',') }}
 
 # The exit node's egress agent (ADR-0015 §7). It reads GET /v1/fabric/egress
 # and nothing else, so the hypervisor holds no operator credential. Optional:

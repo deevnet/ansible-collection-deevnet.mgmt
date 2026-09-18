@@ -280,6 +280,31 @@
   when: deevnet_api_agent_token | length > 0
   no_log: true
 
+- name: Add the wireless controller when this site issues Wi-Fi keys
+  # Added separately, and only when set, for the same reason as the agent token
+  # above: the assert below requires every value in this dict to be non-empty,
+  # so adding an empty OMADA_API_URL unconditionally would fail every deploy at
+  # a site that has no wireless controller (ADR-0012 §3).
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'OMADA_API_URL': deevnet_api_omada_url,
+           'DEEVNET_IOT_TRUST_CLASSES': deevnet_api_iot_trust_classes}) }}
+  when: deevnet_api_omada_url | length > 0
+
+- name: Refuse a wireless controller with no trust class to serve
+  # An API that could reach the controller but served no class would accept the
+  # configuration and then refuse every tenant's key, which is a harder failure
+  # to read than this one.
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_iot_trust_classes | length > 0
+    fail_msg: >-
+      deevnet_api_omada_url is set, but no segment in deevnet_vlans declares
+      wifi_security: ppsk, so there is no trust class to issue keys for.
+    quiet: true
+  when: deevnet_api_omada_url | length > 0
+
 - name: Fail early if a site value is missing
   ansible.builtin.assert:
     that:
