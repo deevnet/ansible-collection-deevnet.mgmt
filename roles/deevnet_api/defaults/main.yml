@@ -103,6 +103,42 @@ deevnet_api_iot_trust_classes: >-
 # group_vars/all so both hosts see it.
 deevnet_api_agent_token: "{{ vault_deevnet_egress_agent_token | default('') }}"
 
+# --- The broker account writer (ADR-0012 §3, §7; CHG-0016) -------------------
+# Where the API sends one request to create a tenant's MQTT broker account.
+#
+# This is port 22 on the messaging VM, not a database port. The broker's auth
+# database is published to 127.0.0.1 there and is not reachable from any
+# network; sshd runs one program pinned to the API's key with command= and
+# restrict, and that program writes the account over the loopback port.
+#
+# Optional, like the wireless controller above: empty leaves the broker-account
+# routes refusing with a reason, which is what a site with no broker gets.
+deevnet_api_broker_writer_addr: ""
+deevnet_api_broker_writer_user: deevnet-writer
+
+# The host key the API pins. There is no insecure fallback in the API - an
+# unpinnable host is a startup failure - because what a spoofed host would be
+# handed is a request to create an MQTT account, and a plausible reply is
+# enough to make the API believe an account exists that does not.
+#
+# Read from the messaging host at deploy time rather than frozen in inventory:
+# a rebuilt VM gets a new host key, and a stale pinned value would leave the
+# API refusing to talk to the host Ansible had just finished building. Set this
+# to pin a specific key instead.
+#
+# The trust here is Ansible's: this reads the key over the SSH session Ansible
+# has already authenticated. That is the same trust every other secret this
+# role moves already rests on, and it is worth saying rather than implying.
+deevnet_api_broker_host_key: ""
+deevnet_api_broker_host_key_file: /etc/ssh/ssh_host_ed25519_key.pub
+deevnet_api_broker_host: "{{ (groups['mqtt_brokers'] | default([])) | first | default('') }}"
+
+# Bounds. A tenant's terraform apply is holding the other end, so neither may
+# be unbounded: the first covers reaching the host, the second the whole
+# exchange once connected.
+deevnet_api_broker_connect_timeout: 10s
+deevnet_api_broker_session_timeout: 30s
+
 # OpenBao (ADR-0016). The address the API and this role use, and the listener
 # certificate the openbao role fetched to the control node.
 deevnet_api_openbao_addr: ""

@@ -215,6 +215,18 @@ vernemq_writer_statement_timeout: 5
 # Ansible reaches this host over exactly the port being restricted.
 vernemq_ssh_restrict: false
 vernemq_ssh_allowed_sources: []
+
 # Named separately from the list so the play can assert it is IN the list.
 # Declaring it twice is deliberate: the assert is the point.
-vernemq_ssh_control_node: ""
+#
+# Derived from the LIVE CONNECTION rather than named in inventory, because the
+# assert is about the address this host actually sees Ansible arrive from - and
+# that is not always the one inventory believes. A second interface, a route
+# change or a NAT anywhere in between makes them differ, inventory cannot know
+# which, and the cost of the difference is a console session. sshd puts the
+# answer in the environment of the session asking the question, so the honest
+# value is free.
+#
+# Requires gathered facts, which the site play does. Empty when facts were
+# skipped, and the assert then refuses rather than guessing.
+vernemq_ssh_control_node: "{{ (ansible_env.SSH_CLIENT | default('')).split() | first | default('', true) }}"

@@ -27,6 +27,10 @@
       Ansible reaches this host over exactly the port being restricted, and
       leaving it out costs console access to put right. Both sources go in from
       the first apply - never the API first and the control node second.
+
+      vernemq_ssh_control_node defaults to the address THIS HOST sees the
+      control node arrive from (ansible_env.SSH_CLIENT). Empty here means facts
+      were not gathered for this play.
     quiet: true
 
 - name: Permit the named sources to sshd

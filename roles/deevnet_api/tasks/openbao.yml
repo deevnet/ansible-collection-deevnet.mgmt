@@ -292,6 +292,69 @@
            'DEEVNET_IOT_TRUST_CLASSES': deevnet_api_iot_trust_classes}) }}
   when: deevnet_api_omada_url | length > 0
 
+# --- The broker account writer (CHG-0016) ------------------------------------
+
+- name: Read the messaging host's SSH host key
+  # The API pins this, and has no insecure fallback: an unpinnable host is a
+  # startup failure, because a spoofed host would be handed a request to create
+  # an MQTT account and a plausible reply is enough to be believed.
+  #
+  # Read now rather than frozen in inventory. A rebuilt messaging VM gets a new
+  # host key, and a stale pinned value would leave the API refusing to talk to
+  # the host Ansible had just built - a failure that would present as broker
+  # accounts timing out inside a tenant's own apply.
+  #
+  # delegate_to reaches the messaging host over management -> iot_backend,
+  # which the zone policy already passes. The trust is Ansible's own
+  # authenticated session, the same one every other secret here travels over.
+  ansible.builtin.slurp:
+    src: "{{ deevnet_api_broker_host_key_file }}"
+  delegate_to: "{{ deevnet_api_broker_host }}"
+  register: deevnet_api_broker_hostkey_read
+  when:
+    - deevnet_api_broker_writer_addr | length > 0
+    - deevnet_api_broker_host_key | length == 0
+    - deevnet_api_broker_host | length > 0
+
+- name: Settle on the host key to pin
+  ansible.builtin.set_fact:
+    deevnet_api_broker_host_key_pinned: >-
+      {{ deevnet_api_broker_host_key if deevnet_api_broker_host_key | length > 0
+         else (deevnet_api_broker_hostkey_read.content | default('') | b64decode | trim) }}
+  when: deevnet_api_broker_writer_addr | length > 0
+
+- name: Refuse a broker writer with no host key to pin
+  # Without this the API would fail at startup with a message about a key,
+  # which is a worse place to find out: the container would be restarting and
+  # the reason would be a line in its log rather than here, next to the host
+  # the key was supposed to come from.
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_broker_host_key_pinned | length > 0
+      - deevnet_api_broker_host_key_pinned is search('^(ssh|ecdsa)-')
+    fail_msg: >-
+      deevnet_api_broker_writer_addr is set, but no host key could be read from
+      {{ deevnet_api_broker_host | default('no host in mqtt_brokers') }}
+      ({{ deevnet_api_broker_host_key_file }}). The API pins this key and will
+      not connect without it.
+    quiet: true
+  when: deevnet_api_broker_writer_addr | length > 0
+
+- name: Add the broker account writer when this site has a broker
+  # Added separately, and only when set, for the same reason as the wireless
+  # controller above: the assert below requires every value to be non-empty, so
+  # adding these unconditionally would fail every deploy at a site with no
+  # broker (ADR-0012 §3).
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'DEEVNET_BROKER_WRITER_ADDR': deevnet_api_broker_writer_addr,
+           'DEEVNET_BROKER_WRITER_USER': deevnet_api_broker_writer_user,
+           'DEEVNET_BROKER_HOST_KEY': deevnet_api_broker_host_key_pinned,
+           'DEEVNET_BROKER_CONNECT_TIMEOUT': deevnet_api_broker_connect_timeout,
+           'DEEVNET_BROKER_SESSION_TIMEOUT': deevnet_api_broker_session_timeout}) }}
+  when: deevnet_api_broker_writer_addr | length > 0
+
 - name: Refuse a wireless controller with no trust class to serve
   # An API that could reach the controller but served no class would accept the
   # configuration and then refuse every tenant's key, which is a harder failure
