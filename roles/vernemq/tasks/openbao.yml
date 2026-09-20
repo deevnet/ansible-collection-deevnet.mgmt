@@ -1,0 +1,137 @@
+---
+# The broker's TLS material, from the site CA in OpenBao (ADR-0016).
+#
+# ADR-0012 §8 requires devices to authenticate "with a username and password,
+# over TLS", so this is not optional decoration: without a certificate the
+# broker has no listener at all, because the only listener the template
+# declares is the TLS one.
+#
+# Calls to OpenBao run on the CONTROL NODE against the pinned listener
+# certificate, as Ansible's own AppRole - the messaging VM has no path to
+# OpenBao and must not need one.
+
+- name: Fail early if OpenBao is not configured
+  ansible.builtin.assert:
+    that:
+      - vernemq_openbao_addr | length > 0
+      - vernemq_openbao_ca_local | length > 0
+      - vernemq_openbao_ansible_role_id | length > 0
+      - vernemq_openbao_ansible_secret_id | length > 0
+    fail_msg: >-
+      The broker serves TLS only, so it needs a certificate from the site CA:
+      vernemq_openbao_addr, the listener certificate the openbao role fetches
+      to the control node, and vault_openbao_ansible_role_id / _secret_id.
+  no_log: true
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ vernemq_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ vernemq_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ vernemq_openbao_ansible_role_id }}"
+      secret_id: "{{ vernemq_openbao_ansible_secret_id }}"
+  register: vernemq_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the token for this run
+  ansible.builtin.set_fact:
+    vernemq_bao_token: "{{ vernemq_bao_login.json.auth.client_token }}"
+  no_log: true
+
+# The broker reads certfile and keyfile at every handshake, as uid
+# vernemq_uid inside the container. This directory is mounted into the BROKER
+# ONLY. Do not mount it into anything else with :Z - a private SELinux label
+# applied by a second container relabels it and the broker silently loses
+# access to its own key, which presents as TLS handshakes failing with nothing
+# in any log while the listener still reports running.
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ vernemq_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Check whether the broker certificate is still valid for long enough
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ vernemq_tls_renew_before }}", -noout, -in, "{{ vernemq_tls_dir }}/broker.pem"]
+  register: vernemq_cert_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Expiry is not the only reason to reissue, and this is the expensive lesson
+# from 2026-09-17 (INC-0003): a rebuilt OpenBao generates a NEW PKI root under
+# the same common name, so the certificate on the host stays valid for its full
+# term and verifies against nothing, while every client has been handed the new
+# CA. Comparing the issuer is what catches that.
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ vernemq_openbao_addr }}/v1/{{ vernemq_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ vernemq_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ vernemq_bao_token }}"}
+  register: vernemq_current_ca
+  delegate_to: localhost
+  become: false
+
+- name: Read the site CA the host holds
+  ansible.builtin.slurp:
+    src: "{{ vernemq_tls_dir }}/site-ca.pem"
+  register: vernemq_host_ca
+  failed_when: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    vernemq_cert_wanted: >-
+      {{ vernemq_cert_check.rc != 0
+         or vernemq_host_ca.content is not defined
+         or (vernemq_host_ca.content | b64decode | trim)
+            != (vernemq_current_ca.json.data.certificate | trim) }}
+
+- name: Issue the broker certificate from the site CA
+  when: vernemq_cert_wanted | bool
+  block:
+    # The IP SAN matters as much as the name here. A device is flashed with
+    # whatever its tenant was told to use, and a tenant workload dials the
+    # broker by name, but the reachability checks and any hand probe use the
+    # address - a certificate valid for only one of the two is a support call.
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ vernemq_openbao_addr }}/v1/{{ vernemq_openbao_pki_mount }}/issue/{{ vernemq_openbao_pki_role }}"
+        method: POST
+        ca_path: "{{ vernemq_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ vernemq_bao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ vernemq_tls_common_name }}"
+          alt_names: "{{ vernemq_tls_alt_names | join(',') }}"
+          ip_sans: "{{ vernemq_tls_ip }}"
+          ttl: "{{ vernemq_tls_ttl }}"
+      register: vernemq_cert
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write the certificate, key and site CA
+      ansible.builtin.copy:
+        dest: "{{ vernemq_tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: broker.pem, content: "{{ vernemq_cert.json.data.certificate }}", owner: root, mode: "0644" }
+        - { name: broker-key.pem, content: "{{ vernemq_cert.json.data.private_key }}", owner: "{{ vernemq_uid }}", mode: "0400" }
+        - { name: site-ca.pem, content: "{{ vernemq_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: restart vernemq

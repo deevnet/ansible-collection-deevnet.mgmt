@@ -1,0 +1,71 @@
+# {{ ansible_managed }}
+# VerneMQ configuration (ADR-0012 §8). Rendered from inventory; inventory owns
+# configuration and the broker applies it (ADR-0009).
+#
+# Every key below is a cuttlefish mapping from the release's own schemas:
+# vmq_server.schema, vmq_diversity.schema and files/vmq.schema at tag
+# {{ vernemq_version }}. Do not invent keys - an unknown one stops the broker at boot.
+
+# --- Node identity -----------------------------------------------------------
+# The node's real address, not VerneMQ@127.0.0.1. A node that has state and is
+# then renamed loses it, so the name a cluster would use is set from the start
+# (ADR-0012 §8, "the broker must be able to cluster later").
+nodename = {{ vernemq_nodename }}
+distributed_cookie = {{ vernemq_cookie }}
+
+# --- Listeners ---------------------------------------------------------------
+# TLS only. There is deliberately no listener.tcp line: a plaintext MQTT port
+# on the segment that accepts inbound from devices would make the password the
+# only thing protecting the session, in clear.
+#
+# The PER-LISTENER form (listener.ssl.<name>.<key>), not the bare
+# listener.ssl.<key>. Both exist in the schema, but the bare form also matches
+# the listener.ssl.$name pattern, so `vernemq config effective` reports
+# phantom listeners named "cafile" and "certfile". The named form is what was
+# tested.
+#
+# cafile is REQUIRED even though this listener asks for no client certificate.
+# Leave it out and ranch refuses the listener outright -
+#   Failed to start Ranch listener ... {options,{cacertfile,undefined}}
+# - which is written ONLY to /vernemq/log/error.log. The console stays clean,
+# the node answers `vernemq ping` with pong, and the port simply never opens.
+listener.ssl.default = {{ vernemq_listen_address }}:{{ vernemq_tls_port }}
+listener.ssl.default.cafile = /vernemq/etc/tls/site-ca.pem
+listener.ssl.default.certfile = /vernemq/etc/tls/broker.pem
+listener.ssl.default.keyfile = /vernemq/etc/tls/broker-key.pem
+listener.ssl.default.tls_version = {{ vernemq_tls_version }}
+# Devices prove themselves with a username and password over the TLS channel.
+# Client certificates are a later layer (ADR-0012 §8 keeps identity and PKI
+# out of v1), so the listener does not demand one.
+listener.ssl.default.require_certificate = {{ 'on' if vernemq_require_certificate else 'off' }}
+
+allow_anonymous = {{ 'on' if vernemq_allow_anonymous else 'off' }}
+
+# --- Authentication and authorisation ----------------------------------------
+# The database-backed plugin. The two file-based plugins that ship on by
+# default are turned off: an account in a local password file would be one the
+# API does not know about and cannot revoke.
+plugins.vmq_diversity = on
+plugins.vmq_passwd = off
+plugins.vmq_acl = off
+
+vmq_diversity.auth_postgres.enabled = on
+# The script path is deliberately NOT set: VerneMQ's bundled
+# auth/postgres.lua is correct and was verified against this schema over TLS.
+# A replacement was written once, to work around a defect that turned out not
+# to exist, and it denied valid credentials. Do not reintroduce one.
+vmq_diversity.postgres.host = {{ vernemq_db_container_name }}
+vmq_diversity.postgres.port = {{ vernemq_db_port }}
+vmq_diversity.postgres.user = {{ vernemq_db_reader_user }}
+vmq_diversity.postgres.password = {{ vernemq_db_reader_password }}
+vmq_diversity.postgres.database = {{ vernemq_db_name }}
+# crypt: Postgres hashes and verifies with pgcrypto, rather than the broker
+# spending its own cores on bcrypt for every connect.
+vmq_diversity.postgres.password_hash_method = {{ vernemq_password_hash_method }}
+# The database is a container on this host's private podman network, so the
+# hop never leaves the machine and needs no TLS of its own.
+vmq_diversity.postgres.ssl = off
+
+# --- Storage and logs --------------------------------------------------------
+log.console = console
+log.console.level = {{ vernemq_log_level }}

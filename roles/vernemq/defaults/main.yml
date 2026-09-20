@@ -1,0 +1,147 @@
+---
+# VerneMQ - the device message broker on IoT Backend (ADR-0012 §8, ADR-0013 §1).
+#
+# Replaces the `mosquitto` role and `dv02mqt001v01`, which ADR-0012 §8
+# supersedes. Runs as two containers in the messaging VM: the broker, and the
+# PostgreSQL auth database it reads its accounts from.
+#
+# The API is NEVER in a device's path. It writes accounts into the database at
+# provisioning time and the broker authenticates from that database at connect
+# (ADR-0012 §8). So an API outage stops provisioning, never devices.
+#
+# The image is built from source by deevnet-container-image-factory, because
+# VerneMQ's 2.2.0 release notes put its binary packages and Docker images under
+# the VerneMQ EULA while the source is Apache-2.0.
+
+vernemq_version: "2.2.0"
+vernemq_image: "localhost/deevnet-vernemq:{{ vernemq_version }}"
+vernemq_tarball: "vernemq/vernemq-{{ vernemq_version }}.tar"
+vernemq_container_name: vernemq
+
+# The release runs as uid/gid 999 in the image (groupadd -r / useradd -r).
+# Directories bind-mounted into it must be owned by that id, not by root.
+vernemq_uid: 999
+vernemq_gid: 999
+
+vernemq_data_root: /srv/vernemq
+vernemq_data_dir: "{{ vernemq_data_root }}/data"
+vernemq_log_dir: "{{ vernemq_data_root }}/log"
+vernemq_etc_dir: "{{ vernemq_data_root }}/etc"
+vernemq_tls_dir: "{{ vernemq_data_root }}/tls"
+
+# A private podman network. The broker reaches the database by container name;
+# the database publishes no port, so nothing off this host can reach it except
+# through the rule below.
+vernemq_network: vernemq
+
+# --- Listeners ---------------------------------------------------------------
+# TLS from the start (ADR-0012 §8: "Devices authenticate with a username and
+# password, over TLS"). There is NO plaintext listener: the site CA exists now,
+# so the plaintext bring-up step the `mosquitto` role took - made before there
+# was a CA - is not repeated. A device that cannot verify the CA must be given
+# the CA, not a plaintext port.
+vernemq_tls_port: 8883
+vernemq_listen_address: "0.0.0.0"
+
+# Mutual TLS is off: devices prove themselves with a username and password over
+# the TLS channel. Per-device certificates are a later layer, deliberately
+# (ADR-0012 §8 keeps "identity and PKI" out of v1).
+vernemq_require_certificate: false
+vernemq_tls_version: tlsv1.2
+
+# An unauthenticated broker on a segment whose whole job is accepting inbound
+# from Medium-trust devices is not a broker, it is an open relay.
+vernemq_allow_anonymous: false
+
+# --- Clustering --------------------------------------------------------------
+# The Erlang node name, and this is NOT the VM's address - tested, and the
+# reasoning is worth keeping because the obvious choice is wrong.
+#
+# The broker runs in a container on a private podman network, so the VM's
+# address does not exist inside it. Setting nodename to it leaves a node that
+# serves MQTT perfectly while every `vmq-admin` call answers
+#   Node 'VerneMQ@10.20.35.20' not responding to pings.
+# That breaks this role's own readiness check and every operational command,
+# and it does so silently, because the broker itself is fine.
+#
+# On clustering (ADR-0012 §8: "v1 is one node, but the broker must be able to
+# cluster later"). This does not foreclose it, but it is not free either:
+# cluster members address each other by node name, so a second node means
+# giving the broker a routable identity - host networking, or a routable
+# container network - and `vmq-admin cluster` exposes only show, join and
+# leave. There is NO rename sub-command, so changing the name of a node that
+# already holds state is not a supported operation and would mean rebuilding
+# it. That is a decision for the change record that adds the second node, not
+# something to guess at now; what this record owes it is a working first node
+# and an honest note about the cost.
+vernemq_nodename: "VerneMQ@127.0.0.1"
+# Shared by every node of a future cluster, so it is a real secret rather than
+# the stock 'vmq'. Erlang distribution authenticates with nothing else.
+vernemq_cookie: "{{ vault_vernemq_cookie | default('') }}"
+
+# --- Auth database -----------------------------------------------------------
+# Beside the broker, not beside the API (ADR-0012 §7, open question 5): it
+# fate-shares with the broker, so losing or patching the provisioning VM never
+# affects devices.
+vernemq_db_image_name: docker.io/library/postgres
+vernemq_db_image_tag: "17.11"
+vernemq_db_tarball: "postgres/postgres-17.11.tar"
+vernemq_db_container_name: vernemq-db
+vernemq_db_data_dir: "{{ vernemq_data_root }}/db"
+vernemq_db_name: vernemq
+vernemq_db_port: 5432
+# The postgres image's own uid/gid. See the deevnet_api role for why this
+# matters: the entrypoint swallows its chown failure and the server then cannot
+# open its own files, which reads as a connection error rather than a
+# permission one.
+vernemq_db_uid: 999
+vernemq_db_gid: 999
+
+# The superuser, used only to create the schema and the two roles below.
+vernemq_db_admin_user: postgres
+vernemq_db_admin_password: "{{ vault_vernemq_db_admin_password | default('') }}"
+
+# The broker's own credential is READ-ONLY on the ACL table (ADR-0012 open
+# question 5: "Only the API writes it, and the broker's credential is
+# read-only"). A broker that could write its own ACLs would be able to grant
+# itself anything if it were ever compromised.
+vernemq_db_reader_user: vernemq
+vernemq_db_reader_password: "{{ vault_vernemq_db_reader_password | default('') }}"
+
+# The Deevnet API's credential, which writes accounts. Created here because the
+# database is here; the API is given it separately.
+vernemq_db_writer_user: deevnet_api
+vernemq_db_writer_password: "{{ vault_vernemq_db_writer_password | default('') }}"
+
+# Server-side hashing (the schema's default). The alternative, client-side
+# bcrypt, makes the BROKER compute the hash on every connect, and ADR-0012 §8
+# quotes the cost: "if verifying a password with bcrypt takes 0.5 seconds then
+# on a single threaded core 2 verifications/second are possible". Postgres does
+# it instead, with crypt()/gen_salt('bf') from pgcrypto - the same blowfish, on
+# the machine that is not routing messages.
+vernemq_password_hash_method: crypt
+
+# --- TLS from the site CA (ADR-0016) -----------------------------------------
+vernemq_openbao_addr: ""
+vernemq_openbao_ca_local: ""
+vernemq_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+vernemq_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+vernemq_openbao_pki_mount: pki
+# The `platform` PKI role is reused rather than a new one added: it already
+# allows subdomains of the site domain, which covers this host. The name reads
+# as the Platform SEGMENT, which this host is not on, so a dedicated
+# iot_backend role would be more honest - worth doing if per-zone constraints
+# are ever wanted, and not worth a change to the OpenBao role before then.
+vernemq_openbao_pki_role: platform
+vernemq_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+# The service name tenants and devices are told to use, beside the host's own.
+# A device is flashed with whatever its tenant was given, so the certificate
+# has to be valid for that name and not only for the host it happens to run on.
+vernemq_tls_alt_names:
+  - "mqtt.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+vernemq_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
+vernemq_tls_ttl: 2160h
+vernemq_tls_renew_before: 2592000
+
+# Broker log level: info, or debug when chasing something.
+vernemq_log_level: info

@@ -1,0 +1,260 @@
+---
+# VerneMQ and its auth database, in the messaging VM (ADR-0012 §7, §8).
+#
+# Two containers on a private podman network: the broker, and the PostgreSQL
+# database it reads its accounts from. The database is here rather than beside
+# the API on purpose - it fate-shares with the broker, so losing or patching
+# the provisioning VM never affects devices (ADR-0012 open question 5).
+
+- name: Fail early if the broker's secrets are missing
+  ansible.builtin.assert:
+    that:
+      - vernemq_cookie | length >= 20
+      - vernemq_db_admin_password | length >= 16
+      - vernemq_db_reader_password | length >= 16
+      - vernemq_db_writer_password | length >= 16
+    fail_msg: >-
+      vault_vernemq_cookie and the three database passwords must be in the
+      vault. The cookie is the ONLY thing authenticating Erlang distribution
+      between future cluster nodes, so the stock value 'vmq' is not acceptable
+      even on one node - it is set now because renaming or re-cookie-ing a node
+      that already holds state is the expensive way to find that out. Generate
+      them with:
+        openssl rand -hex 16   # cookie
+        openssl rand -hex 24   # each password
+  no_log: true
+
+- name: Issue the broker's TLS material from the site CA
+  ansible.builtin.import_tasks: openbao.yml
+
+- name: Create the broker data root
+  ansible.builtin.file:
+    path: "{{ vernemq_data_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+# data/ must be WRITABLE: cuttlefish renders vernemq.conf into
+# data/generated.configs at every boot, and a read-only data directory stops
+# the node before it logs anything useful. log/ holds error.log, which is the
+# only place a refused listener is reported - keep it off the container's
+# ephemeral layer so a recreate does not destroy the evidence.
+- name: Create the broker directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vernemq_uid }}"
+    group: "{{ vernemq_gid }}"
+    mode: "0750"
+  loop:
+    - "{{ vernemq_data_dir }}"
+    - "{{ vernemq_log_dir }}"
+    - "{{ vernemq_etc_dir }}"
+  become: true
+
+- name: Create the database data directory
+  ansible.builtin.file:
+    path: "{{ vernemq_db_data_dir }}"
+    state: directory
+    owner: "{{ vernemq_db_uid }}"
+    group: "{{ vernemq_db_gid }}"
+    mode: "0700"
+  become: true
+
+- name: Run the auth database
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ vernemq_db_container_name }}"
+    podman_service_description: "VerneMQ auth database (PostgreSQL)"
+    podman_service_image: "{{ vernemq_db_image_name }}:{{ vernemq_db_image_tag }}"
+    podman_service_tarball: "{{ vernemq_db_tarball }}"
+    # No published port. The broker reaches it by container name on this
+    # network, and the API reaches it over the narrow platform -> iot_backend
+    # rule, which is declared in inventory rather than opened here.
+    podman_service_network: "{{ vernemq_network }}"
+    podman_service_network_create: true
+    podman_service_volumes:
+      - "{{ vernemq_db_data_dir }}:/var/lib/postgresql/data:Z"
+    podman_service_env:
+      POSTGRES_DB: "{{ vernemq_db_name }}"
+      POSTGRES_USER: "{{ vernemq_db_admin_user }}"
+      POSTGRES_PASSWORD: "{{ vernemq_db_admin_password }}"
+    podman_service_stop_timeout: 60
+
+- name: Wait for the database to accept connections
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - "{{ vernemq_db_container_name }}"
+      - pg_isready
+      - --username={{ vernemq_db_admin_user }}
+      - --dbname={{ vernemq_db_name }}
+  register: vernemq_db_ready
+  changed_when: false
+  retries: 30
+  delay: 2
+  until: vernemq_db_ready.rc == 0
+  become: true
+
+# The table and the pgcrypto extension are VerneMQ's, quoted from the plugin's
+# own source. Applying it is idempotent (IF NOT EXISTS throughout), so this
+# runs every time and converges rather than being guarded by a flag file.
+- name: Apply the auth schema
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - --interactive
+      - "{{ vernemq_db_container_name }}"
+      - psql
+      - --username={{ vernemq_db_admin_user }}
+      - --dbname={{ vernemq_db_name }}
+      - --set=ON_ERROR_STOP=1
+      - --quiet
+    stdin: "{{ lookup('ansible.builtin.file', 'schema.sql') }}"
+  register: vernemq_schema
+  changed_when: false
+  become: true
+
+# Two roles, deliberately asymmetric (ADR-0012 open question 5: "Only the API
+# writes it, and the broker's credential is read-only"). A broker that could
+# write its own ACLs could grant itself anything if it were ever compromised,
+# and it has no reason to: the API provisions, the broker reads.
+#
+# CREATE ROLE has no IF NOT EXISTS, hence the DO block. ALTER runs regardless
+# so a rotated password in the vault actually reaches the database.
+- name: Create the database roles
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - --interactive
+      - "{{ vernemq_db_container_name }}"
+      - psql
+      - --username={{ vernemq_db_admin_user }}
+      - --dbname={{ vernemq_db_name }}
+      - --set=ON_ERROR_STOP=1
+      - --quiet
+    stdin: |
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ vernemq_db_reader_user }}') THEN
+          CREATE ROLE {{ vernemq_db_reader_user }} LOGIN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ vernemq_db_writer_user }}') THEN
+          CREATE ROLE {{ vernemq_db_writer_user }} LOGIN;
+        END IF;
+      END $$;
+      ALTER ROLE {{ vernemq_db_reader_user }} PASSWORD '{{ vernemq_db_reader_password }}';
+      ALTER ROLE {{ vernemq_db_writer_user }} PASSWORD '{{ vernemq_db_writer_password }}';
+
+      GRANT CONNECT ON DATABASE {{ vernemq_db_name }} TO {{ vernemq_db_reader_user }}, {{ vernemq_db_writer_user }};
+      GRANT USAGE ON SCHEMA public TO {{ vernemq_db_reader_user }}, {{ vernemq_db_writer_user }};
+
+      -- The broker reads. It never writes.
+      REVOKE ALL ON vmq_auth_acl FROM {{ vernemq_db_reader_user }};
+      GRANT SELECT ON vmq_auth_acl TO {{ vernemq_db_reader_user }};
+
+      -- The Deevnet API provisions accounts.
+      GRANT SELECT, INSERT, UPDATE, DELETE ON vmq_auth_acl TO {{ vernemq_db_writer_user }};
+  register: vernemq_roles
+  changed_when: false
+  become: true
+  no_log: true
+
+- name: Render the broker configuration
+  ansible.builtin.template:
+    src: vernemq.conf.j2
+    dest: "{{ vernemq_etc_dir }}/vernemq.conf"
+    owner: root
+    group: "{{ vernemq_gid }}"
+    mode: "0640"
+  become: true
+  notify: restart vernemq
+
+- name: Run the broker
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ vernemq_container_name }}"
+    podman_service_description: "VerneMQ device message broker (ADR-0012 §8)"
+    podman_service_image: "{{ vernemq_image }}"
+    podman_service_tarball: "{{ vernemq_tarball }}"
+    podman_service_network: "{{ vernemq_network }}"
+    podman_service_ports:
+      - "{{ vernemq_listen_address }}:{{ vernemq_tls_port }}:{{ vernemq_tls_port }}/tcp"
+    # The config is mounted as a FILE so the image's own /vernemq/etc contents
+    # survive. tls is mounted into this container and nothing else: a second
+    # container mounting it with :Z would relabel it and leave the broker
+    # unable to read its own key, which fails handshakes silently.
+    podman_service_volumes:
+      - "{{ vernemq_etc_dir }}/vernemq.conf:/vernemq/etc/vernemq.conf:ro,Z"
+      - "{{ vernemq_tls_dir }}:/vernemq/etc/tls:ro,Z"
+      - "{{ vernemq_data_dir }}:/vernemq/data:Z"
+      - "{{ vernemq_log_dir }}:/vernemq/log:Z"
+    podman_service_after:
+      - "{{ vernemq_db_container_name }}.service"
+    podman_service_firewall_ports:
+      - "{{ vernemq_tls_port }}/tcp"
+    podman_service_stop_timeout: 60
+
+# A reissued certificate or a re-rendered config must reach the broker before
+# the checks below, or they verify the previous process.
+- name: Restart now if the certificate or the configuration changed
+  ansible.builtin.meta: flush_handlers
+
+# Readiness is the LISTENER, not the node. `vernemq ping` answers pong well
+# before the mqtts acceptor binds, and a listener that ranch refused - for a
+# missing cafile, say - leaves a node that pings happily and serves nothing.
+- name: Wait for the TLS listener to be running
+  ansible.builtin.command:
+    argv: [podman, exec, "{{ vernemq_container_name }}", /vernemq/bin/vmq-admin, listener, show]
+  register: vernemq_listeners
+  changed_when: false
+  failed_when: false
+  retries: 45
+  delay: 4
+  until: vernemq_listeners.stdout is defined and vernemq_listeners.stdout is search('mqtts.*running')
+  become: true
+
+- name: Confirm the broker is serving TLS
+  ansible.builtin.assert:
+    that: vernemq_listeners.stdout is search('mqtts.*running')
+    fail_msg: >-
+      The mqtts listener is not running. The console will not say why - look in
+      {{ vernemq_log_dir }}/error.log, which is where ranch reports a listener
+      it refused (a missing or unreadable cafile, certfile or keyfile is the
+      usual cause, and the node still answers ping while serving nothing).
+    quiet: true
+
+# The auth plugin loading is not the same as the auth plugin working: a broker
+# with no accounts and a broker whose database is unreachable look identical
+# from outside. Asking the database how many accounts it holds distinguishes
+# "nothing provisioned yet" from "the broker cannot see them".
+- name: Read the account count
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - "{{ vernemq_db_container_name }}"
+      - psql
+      - --username={{ vernemq_db_admin_user }}
+      - --dbname={{ vernemq_db_name }}
+      - --tuples-only
+      - --no-align
+      - --command=SELECT count(*) FROM vmq_auth_acl
+  register: vernemq_accounts
+  changed_when: false
+  become: true
+
+- name: Report what the broker is serving
+  ansible.builtin.debug:
+    msg: >-
+      VerneMQ {{ vernemq_version }} serving TLS on
+      {{ vernemq_tls_common_name }}:{{ vernemq_tls_port }};
+      {{ vernemq_accounts.stdout | trim }} account(s) in the registry.
+      {{ 'No accounts yet - the Deevnet API provisions them (ADR-0012 §3).'
+         if (vernemq_accounts.stdout | trim) == '0' else '' }}
