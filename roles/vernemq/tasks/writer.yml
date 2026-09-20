@@ -1,0 +1,139 @@
+---
+# The broker account writer (CHG-0016 option C, mechanism C1).
+#
+# Design: architecture/substrate/control-plane/broker-account-writer.
+#
+# Runs only when a public key is declared. Everything here is skipped
+# otherwise, so the capability does not exist until someone names who may use
+# it.
+
+- name: Fail early if the writer is half-declared
+  ansible.builtin.assert:
+    that:
+      - vernemq_writer_from | length > 0
+    fail_msg: >-
+      vernemq_writer_public_key is set but vernemq_writer_from is not. The key
+      must be pinned to a source address: from= is what keeps a stolen key
+      unusable from anywhere else, and it is the half of this that survives a
+      firewall mistake.
+    quiet: true
+
+# The shell is /bin/sh and MUST be a real one. sshd runs a forced command
+# through the account's login shell, so /sbin/nologin blocks the only thing
+# this account exists to do - it answers "This account is currently not
+# available" and the forced command never runs.
+#
+# Nothing is lost by it. The key carries command= and restrict, so it cannot
+# ask for a shell; the account is locked, so there is no password to log in
+# with; and from= pins where the key may be used. The shell is how sshd
+# executes, not a way in.
+- name: Create the writer's account
+  ansible.builtin.user:
+    name: "{{ vernemq_writer_user }}"
+    home: "{{ vernemq_writer_home }}"
+    shell: /bin/sh
+    password: "!"
+    system: true
+    create_home: true
+  become: true
+
+- name: Create the writer's configuration directory
+  ansible.builtin.file:
+    path: "{{ vernemq_writer_config | dirname }}"
+    state: directory
+    owner: root
+    group: "{{ vernemq_writer_user }}"
+    mode: "0750"
+  become: true
+
+# Pushed from the control node, like every image on this host: IoT Backend has
+# no route back to the artifact server.
+- name: Install the writer
+  ansible.builtin.copy:
+    src: "{{ vernemq_writer_binary_store }}/{{ vernemq_writer_binary }}"
+    dest: "{{ vernemq_writer_path }}"
+    owner: root
+    group: root
+    # Executable by anyone, writable by root only. The program is not a secret
+    # and its safety does not rest on who can read it - it rests on who holds
+    # the key that causes sshd to run it.
+    mode: "0755"
+  become: true
+
+# A template with literal JSON, not to_nice_json over a dict. Ansible
+# stringifies a templated scalar, so `port: "{{ vernemq_db_port | int }}"`
+# renders as "5432" and the writer refuses it - which is how this was found.
+# Numbers written unquoted in the template stay numbers.
+- name: Write the writer's configuration
+  ansible.builtin.template:
+    src: broker-account.json.j2
+    dest: "{{ vernemq_writer_config }}"
+    owner: root
+    group: "{{ vernemq_writer_user }}"
+    mode: "0640"
+    validate: "python3 -c \"import json,sys; json.load(open('%s'))\""
+  become: true
+
+# The one secret on this host that is not the broker's. Readable by the
+# writer's account and nothing else, so a compromise of any other service on
+# the VM does not hand over the database.
+- name: Write the writer's database password
+  ansible.builtin.copy:
+    dest: "{{ vernemq_writer_password_file }}"
+    content: "{{ vernemq_db_writer_password }}\n"
+    owner: "{{ vernemq_writer_user }}"
+    group: "{{ vernemq_writer_user }}"
+    mode: "0400"
+  become: true
+  no_log: true
+
+- name: Create the writer's .ssh directory
+  ansible.builtin.file:
+    path: "{{ vernemq_writer_home }}/.ssh"
+    state: directory
+    owner: "{{ vernemq_writer_user }}"
+    group: "{{ vernemq_writer_user }}"
+    mode: "0700"
+  become: true
+
+# Every restriction on this line is a requirement, not a preference. A key
+# installed without them is a general login to this host.
+#
+#   command=  pins the key to one program. The client's requested command is
+#             ignored, and the program never reads SSH_ORIGINAL_COMMAND -
+#             reading it would turn a fixed program into a dispatcher.
+#   restrict  is DEFAULT-DENY: no pty, no agent, no port or X11 forwarding, no
+#             user-rc, and it keeps denying options OpenSSH has not added yet.
+#             Preferred to a list of no-* options, which only enumerate what
+#             was known when someone wrote them.
+#   from=     binds the key to the API's address.
+- name: Pin the API's key to the writer
+  ansible.posix.authorized_key:
+    user: "{{ vernemq_writer_user }}"
+    key: "{{ vernemq_writer_public_key }}"
+    key_options: 'command="{{ vernemq_writer_path }}",restrict,from="{{ vernemq_writer_from }}"'
+    exclusive: true
+    manage_dir: false
+  become: true
+
+- name: Confirm the writer can reach the database
+  ansible.builtin.command:
+    argv: [sudo, -u, "{{ vernemq_writer_user }}", "{{ vernemq_writer_path }}"]
+    stdin: '{"version":1,"op":"delete","tenant":"probe","account":"never-created"}'
+  register: vernemq_writer_probe
+  changed_when: false
+  failed_when: false
+  become: true
+
+# A delete of a row that was never created is a success, so this exercises the
+# whole path - config, password file, loopback port, pg_hba, the role's
+# privileges - without creating anything or needing cleanup.
+- name: Report the writer's health
+  ansible.builtin.assert:
+    that:
+      - vernemq_writer_probe.rc == 0
+      - (vernemq_writer_probe.stdout | from_json).ok | bool
+    fail_msg: >-
+      The writer could not complete a no-op request:
+      {{ (vernemq_writer_probe.stdout | default('') | trim) or vernemq_writer_probe.stderr | default('no output') }}
+    success_msg: "The writer reached the database and answered a no-op request."

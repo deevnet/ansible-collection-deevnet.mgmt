@@ -102,9 +102,17 @@
     # podman_service_firewall_ports - that opens a port to the whole zone, which
     # is exactly what must not happen here. The rich rules below are the only
     # accept for this port.
-    podman_service_ports: >-
-      {{ [env.interfaces.eth0.ip ~ ':' ~ vernemq_db_port ~ ':5432/tcp']
-         if vernemq_db_allowed_sources | length > 0 else [] }}
+    # LOOPBACK ONLY, and that is the security property, not a detail.
+    # Nothing off this host has a route to 127.0.0.1, so PostgreSQL is not
+    # reachable from the network - which is what CHG-0016 exists to guarantee.
+    # podman would call this a published port; it is, in podman's sense, and it
+    # is not network-published in any sense that matters here.
+    #
+    # Never the segment address. A port published there is reachable by every
+    # device on VLAN 30, because iot -> iot_backend is a zone-level pass and a
+    # firewalld rich rule does not filter a published podman port.
+    podman_service_ports:
+      - "127.0.0.1:{{ vernemq_db_port }}:5432/tcp"
     podman_service_env:
       POSTGRES_DB: "{{ vernemq_db_name }}"
       POSTGRES_USER: "{{ vernemq_db_admin_user }}"
@@ -132,9 +140,10 @@
 # runs every time and converges rather than being guarded by a flag file.
 # Discovered, not hardcoded: a network recreate can change the subnet, and a
 # stale value would lock the broker out of its own database.
-- name: Read the container network's subnet
+- name: Read the container network's subnet and gateway
   ansible.builtin.command:
-    argv: [podman, network, inspect, "{{ vernemq_network }}", "--format", "{{ '{{' }} (index .Subnets 0).Subnet {{ '}}' }}"]
+    argv: [podman, network, inspect, "{{ vernemq_network }}", "--format",
+           "{{ '{{' }} (index .Subnets 0).Subnet {{ '}}' }} {{ '{{' }} (index .Subnets 0).Gateway {{ '}}' }}"]
   register: vernemq_net
   changed_when: false
   become: true
@@ -147,7 +156,8 @@
     group: "{{ vernemq_db_gid }}"
     mode: "0600"
   vars:
-    vernemq_db_podman_subnet: "{{ vernemq_net.stdout | trim }}"
+    vernemq_db_podman_subnet: "{{ vernemq_net.stdout.split() | first }}"
+    vernemq_db_gateway: "{{ vernemq_net.stdout.split() | last }}"
   become: true
   register: vernemq_hba
 
@@ -308,13 +318,22 @@
   changed_when: false
   become: true
 
+- name: Deploy the broker account writer
+  ansible.builtin.import_tasks: writer.yml
+  when: vernemq_writer_public_key | length > 0
+
+- name: Restrict sshd to named sources
+  ansible.builtin.import_tasks: ssh_restrict.yml
+  when: vernemq_ssh_restrict | bool
+
 - name: Report what the broker is serving
   ansible.builtin.debug:
     msg: >-
-      {{ 'Database port ' ~ vernemq_db_port ~ ' published, permitted from '
-          ~ (vernemq_db_allowed_sources | join(', '))
-         if vernemq_db_allowed_sources | length > 0
-         else 'Database port not published; reachable only by the broker.' }}
+      Database on 127.0.0.1:{{ vernemq_db_port }} - loopback only, not reachable
+      from the network.
+      {{ 'Account writer installed, pinned to ' ~ vernemq_writer_from
+         if vernemq_writer_public_key | length > 0
+         else 'No account writer: no public key declared.' }}
       VerneMQ {{ vernemq_version }} serving TLS on
       {{ vernemq_tls_common_name }}:{{ vernemq_tls_port }};
       {{ vernemq_accounts.stdout | trim }} account(s) in the registry.

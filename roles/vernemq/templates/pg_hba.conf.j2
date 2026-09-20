@@ -6,13 +6,19 @@
 # reached the port and spoken the PostgreSQL protocol; what it cannot do is
 # authenticate. The packet filter is a separate mechanism and a separate file.
 #
-# It works at all only because podman does not masquerade published-port
-# traffic on this host: the container sees the caller's real address. That was
-# measured, not assumed - a connection from the Builder appeared in the
-# container's own /proc/net/tcp as 10.20.99.95. If a future podman release
-# starts masquerading, every external client collapses to the gateway address
-# and these rules stop distinguishing anyone. The lifecycle tests in CHG-0016
-# are what would catch that.
+# Two podman behaviours matter here and they are NOT the same, which is worth
+# stating because assuming either would produce a wrong rule:
+#
+#   - Traffic from ANOTHER host through a published port keeps its real source
+#     address. Measured: a connection from the Builder appeared in the
+#     container's own /proc/net/tcp as 10.20.99.95.
+#   - Traffic from THIS host to a loopback-published port is SNATed to the
+#     podman gateway. Measured: it arrived as 10.89.0.1.
+#
+# Under option C nothing off this host reaches the port at all, so the first
+# behaviour is not load-bearing; it would become so if a port were ever
+# published on the segment again. The second IS load-bearing, because it is how
+# the writer is recognised. The lifecycle tests in CHG-0016 cover both.
 #
 # Order matters: the first matching line wins, and there is no fallthrough.
 # An address with no line is refused, so the absence of a rule is the denial.
@@ -32,10 +38,19 @@ host    all          all           ::1/128                scram-sha-256
 # read-only role; see the GRANTs in the role's main.yml.
 host    {{ vernemq_db_name }}  {{ vernemq_db_reader_user }}  {{ vernemq_db_podman_subnet }}  scram-sha-256
 
-# The Deevnet API, from Platform. The only address off this host that may
-# authenticate at all.
-{% for src in vernemq_db_allowed_sources %}
-host    {{ vernemq_db_name }}  {{ vernemq_db_writer_user }}  {{ src }}  scram-sha-256
-{% endfor %}
+# The broker account writer, which runs ON THIS HOST and reaches the database
+# through the loopback-published port (CHG-0016 option C).
+#
+# The address is the podman GATEWAY, not the subnet, and the difference is the
+# point. A host-local connection to 127.0.0.1 is SNATed to the gateway on its
+# way into the container, so the gateway address means "a process on this
+# host". A container on the network presents as its own address and cannot
+# reach this line - so this permits the writer without also permitting
+# anything the broker's network happens to be running.
+#
+# Measured, not assumed: a loopback connection arrived as {{ vernemq_db_gateway }}.
+# Note the asymmetry with external traffic, which podman does NOT rewrite - see
+# the note at the top of this file.
+host    {{ vernemq_db_name }}  {{ vernemq_db_writer_user }}  {{ vernemq_db_gateway }}/32  scram-sha-256
 
 # Everything else: no line, therefore refused.
