@@ -15,6 +15,26 @@
 # verification below uses a NEW connection from the control node rather than
 # assuming this one proves anything.
 
+# The address this host sees the control node arrive from, which is what the
+# assert below is really about.
+#
+# become: false is the whole point. The play runs as root, and sudo's env_reset
+# strips SSH_CLIENT, so ansible_env does not carry it under become - measured
+# here, after an earlier version of this role derived it from ansible_env and
+# the assert correctly refused with an empty value. The connection user's own
+# environment is the only place the answer survives.
+- name: Ask this host what address the control node arrives from
+  ansible.builtin.command: sh -c 'echo "$SSH_CLIENT"'
+  become: false
+  changed_when: false
+  register: vernemq_ssh_client_raw
+  when: vernemq_ssh_control_node | length == 0
+
+- name: Settle on the control node's address
+  ansible.builtin.set_fact:
+    vernemq_ssh_control_node: "{{ (vernemq_ssh_client_raw.stdout | default('')).split() | first | default('', true) }}"
+  when: vernemq_ssh_control_node | length == 0
+
 - name: Refuse to lock the control node out
   ansible.builtin.assert:
     that:
@@ -28,9 +48,9 @@
       leaving it out costs console access to put right. Both sources go in from
       the first apply - never the API first and the control node second.
 
-      vernemq_ssh_control_node defaults to the address THIS HOST sees the
-      control node arrive from (ansible_env.SSH_CLIENT). Empty here means facts
-      were not gathered for this play.
+      vernemq_ssh_control_node is derived from the address THIS HOST sees the
+      control node arrive from ($SSH_CLIENT, read as the connection user
+      because become strips it). Empty here means that read returned nothing.
     quiet: true
 
 - name: Permit the named sources to sshd
