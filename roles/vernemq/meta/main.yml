@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: vernemq
+  description: VerneMQ device message broker and its auth database (ADR-0012 §8)

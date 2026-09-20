@@ -79,13 +79,15 @@
 # tenant service: MQTT clients always dial the broker, so its segment must
 # accept inbound, and the tenant fabric has no inbound path by design.
 #
-# The group is empty until the messaging VM's broker is built (ADR-0012 §8
-# replaces mosquitto with VerneMQ), so this play currently matches no host.
+# The group is held empty until the vault carries the broker's secrets, for
+# the same reason openbao's was: the role refuses to run without them, and a
+# member here would stop every site.yml run on that host. Adding
+# dv02msg001v01 to mqtt_brokers IS the deploy step (CHG-0015).
 - name: Configure the MQTT broker
   hosts: mqtt_brokers
   become: true
   roles:
-    - mosquitto
+    - vernemq
 
 # Observability tooling is not chosen yet. It lands in the substrate
 # observability VM (substrate_observability) and the tenant observability VM

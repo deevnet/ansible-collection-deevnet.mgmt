@@ -1,0 +1,6 @@
+---
+- name: restart vernemq
+  ansible.builtin.systemd:
+    name: "{{ vernemq_container_name }}"
+    state: restarted
+  become: true
