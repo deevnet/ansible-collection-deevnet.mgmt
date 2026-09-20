@@ -1,0 +1,89 @@
+---
+# Restrict sshd on this host to named sources (CHG-0016).
+#
+# Worth doing on its own merits: iot -> iot_backend is a zone-level pass, so
+# every device on VLAN 30 can reach port 22 here today. This closes an exposure
+# that predates the writer.
+#
+# It is also the one filter on this host that is PROVEN to work. sshd is host
+# INPUT traffic, where a firewalld rich rule does what it says - as against a
+# published container port, where it does nothing at all.
+#
+# The whole file is built around one fact: firewalld affects NEW connections,
+# not established ones. Ansible's own session survives the restriction, so if
+# the rules are wrong the still-live session can put them back. That is why the
+# verification below uses a NEW connection from the control node rather than
+# assuming this one proves anything.
+
+- name: Refuse to lock the control node out
+  ansible.builtin.assert:
+    that:
+      - vernemq_ssh_allowed_sources | length > 0
+      - vernemq_ssh_control_node | length > 0
+      - vernemq_ssh_control_node in vernemq_ssh_allowed_sources
+    fail_msg: >-
+      vernemq_ssh_control_node ({{ vernemq_ssh_control_node | default('unset') }})
+      must be listed in vernemq_ssh_allowed_sources before sshd is restricted.
+      Ansible reaches this host over exactly the port being restricted, and
+      leaving it out costs console access to put right. Both sources go in from
+      the first apply - never the API first and the control node second.
+
+      vernemq_ssh_control_node defaults to the address THIS HOST sees the
+      control node arrive from (ansible_env.SSH_CLIENT). Empty here means facts
+      were not gathered for this play.
+    quiet: true
+
+- name: Permit the named sources to sshd
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="ipv4" source address="{{ item }}"
+      service name="ssh" accept
+    zone: "{{ vernemq_db_firewalld_zone }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ vernemq_ssh_allowed_sources }}"
+  become: true
+
+- name: Close sshd to everyone else, then prove the control node still gets in
+  become: true
+  block:
+    # Only now, and only after the accepts above are live. The order is the
+    # whole safety property: the general allow goes last, not first.
+    - name: Remove the blanket ssh allow
+      ansible.posix.firewalld:
+        service: ssh
+        zone: "{{ vernemq_db_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: disabled
+
+    # A NEW connection, from the control node, not this one. The session
+    # running these tasks is established and would survive even a rule that
+    # locks everyone out, so it proves nothing.
+    - name: Open a new connection from the control node
+      ansible.builtin.wait_for:
+        host: "{{ env.interfaces.eth0.ip }}"
+        port: 22
+        timeout: 15
+      delegate_to: localhost
+      become: false
+
+  rescue:
+    - name: Put the blanket allow back
+      ansible.posix.firewalld:
+        service: ssh
+        zone: "{{ vernemq_db_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Say what happened
+      ansible.builtin.fail:
+        msg: >-
+          Restricting sshd left the control node unable to open a new
+          connection, so the blanket allow has been put back and this host is
+          reachable again. The rich rules are still in place and are safe; what
+          is wrong is the source list. Check vernemq_ssh_allowed_sources
+          against the address this host actually sees the control node arrive
+          from - a NATed or second-interface address is the usual cause.

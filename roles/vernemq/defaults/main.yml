@@ -122,23 +122,17 @@ vernemq_db_writer_password: "{{ vault_vernemq_db_writer_password | default('') }
 vernemq_password_hash_method: crypt
 
 # --- Reaching the auth database from off this host ---------------------------
-# The Deevnet API writes accounts into the database (ADR-0012 §7, CHG-0016), so
-# the port has to be reachable from Platform. Nothing else may reach it.
+# Nothing does, and that is the design (CHG-0016 option C).
 #
-# A zone rule cannot express that. `iot -> iot_backend` is a zone-level pass,
-# because it is how a device reaches the broker at all, so a port published on
-# this segment is reachable from every device on VLAN 30 whatever the
-# platform -> iot_backend rule says. The zone rule states the intent; this host
-# enforces the part the zone rule cannot see. See
-# standards/network-segmentation "Reachability and Permission".
+# The database is published to 127.0.0.1 only, so it is not reachable from the
+# network at all: there is no address to filter and no authentication to
+# attempt from off this host. The account writer runs here and reaches it over
+# that loopback port.
 #
-# THE PORT IS PUBLISHED ONLY WHEN A SOURCE IS DECLARED. An empty list means the
-# database keeps no published port at all and is reachable only by the broker,
-# over the private podman network. You cannot open this port without saying who
-# may use it, which is the one ordering mistake worth designing out: publishing
-# first and restricting afterwards leaves it open to the whole segment in
-# between.
-vernemq_db_allowed_sources: []
+# A port on the SEGMENT address was tried and withdrawn. It cannot be confined:
+# iot -> iot_backend is a zone-level pass, and a firewalld rich rule does not
+# filter a published podman port - publishing is DNAT plus forward and never
+# reaches the INPUT chain the rule sits on. Do not reintroduce one.
 vernemq_db_firewalld_zone: public
 
 # The host's private container network, as pg_hba sees the broker coming from.
@@ -171,3 +165,68 @@ vernemq_tls_renew_before: 2592000
 
 # Broker log level: info, or debug when chasing something.
 vernemq_log_level: info
+
+# --- The broker account writer (CHG-0016 option C, mechanism C1) -------------
+# A single program invoked by sshd as a forced command. The Deevnet API opens
+# an SSH connection with a key pinned to it, writes one request as JSON, and
+# reads one response. It is how an account reaches the database without the
+# database being reachable from the network.
+#
+# NOTHING IS INSTALLED UNTIL A KEY IS DECLARED. An empty public key means no
+# account, no binary, no authorized_keys entry - the same shape as the database
+# port: you cannot install the capability without naming who may use it.
+vernemq_writer_public_key: ""
+
+# The address the key may be used from, pinned in authorized_keys with from=.
+# Belt to the firewall's braces: it survives a firewall mistake, and a stolen
+# key is not usable from anywhere else.
+vernemq_writer_from: ""
+
+vernemq_writer_user: deevnet-writer
+vernemq_writer_home: /var/lib/deevnet-writer
+vernemq_writer_path: /usr/local/bin/deevnet-broker-account
+vernemq_writer_config: /etc/deevnet/broker-account.json
+vernemq_writer_password_file: /etc/deevnet/broker-account.pgpass
+
+# Staged by the API repository's `make stage-writer`, read from the control
+# node like every other artifact. Pushed, not pulled: IoT Backend has no route
+# to the artifact server.
+vernemq_writer_binary_store: /srv/deevnet-http/binaries/deevnet-broker-account
+vernemq_writer_binary: deevnet-broker-account-latest
+
+# Bounds, in seconds. A tenant's terraform apply is holding the other end of
+# this, so nothing may hang: the first bounds the whole invocation, the second
+# stops the database working on a statement nobody is waiting for any more.
+vernemq_writer_timeout: 10
+vernemq_writer_statement_timeout: 5
+
+# --- Restricting sshd on this host -------------------------------------------
+# sshd here is host INPUT traffic, which is the one path where a firewalld rich
+# rule is PROVEN to work on this host - as against a published container port,
+# where it does nothing (CHG-0016). So unlike the database port, this really
+# can be confined by the firewall.
+#
+# It is worth doing on its own merits: iot -> iot_backend is a zone-level pass,
+# so every device on VLAN 30 can reach port 22 here today. Restricting it
+# closes an exposure that predates the writer.
+#
+# OFF BY DEFAULT, and gated deliberately, because getting it wrong costs
+# console access. The control node must be in the list or the play refuses:
+# Ansible reaches this host over exactly the port being restricted.
+vernemq_ssh_restrict: false
+vernemq_ssh_allowed_sources: []
+
+# Named separately from the list so the play can assert it is IN the list.
+# Declaring it twice is deliberate: the assert is the point.
+#
+# Derived from the LIVE CONNECTION rather than named in inventory, because the
+# assert is about the address this host actually sees Ansible arrive from - and
+# that is not always the one inventory believes. A second interface, a route
+# change or a NAT anywhere in between makes them differ, inventory cannot know
+# which, and the cost of the difference is a console session. sshd puts the
+# answer in the environment of the session asking the question, so the honest
+# value is free.
+#
+# Requires gathered facts, which the site play does. Empty when facts were
+# skipped, and the assert then refuses rather than guessing.
+vernemq_ssh_control_node: "{{ (ansible_env.SSH_CLIENT | default('')).split() | first | default('', true) }}"

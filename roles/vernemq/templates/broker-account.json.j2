@@ -1,0 +1,12 @@
+{{ '{' }}
+  "_comment": "{{ ansible_managed }}",
+
+  "host": "127.0.0.1",
+  "port": {{ vernemq_db_port | int }},
+  "database": "{{ vernemq_db_name }}",
+  "user": "{{ vernemq_db_writer_user }}",
+  "password_file": "{{ vernemq_writer_password_file }}",
+
+  "timeout_seconds": {{ vernemq_writer_timeout | int }},
+  "statement_timeout_seconds": {{ vernemq_writer_statement_timeout | int }}
+{{ '}' }}
