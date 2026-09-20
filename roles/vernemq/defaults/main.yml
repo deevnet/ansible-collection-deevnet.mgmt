@@ -219,14 +219,17 @@ vernemq_ssh_allowed_sources: []
 # Named separately from the list so the play can assert it is IN the list.
 # Declaring it twice is deliberate: the assert is the point.
 #
-# Derived from the LIVE CONNECTION rather than named in inventory, because the
-# assert is about the address this host actually sees Ansible arrive from - and
-# that is not always the one inventory believes. A second interface, a route
-# change or a NAT anywhere in between makes them differ, inventory cannot know
-# which, and the cost of the difference is a console session. sshd puts the
-# answer in the environment of the session asking the question, so the honest
-# value is free.
+# Left empty: the role derives it from the LIVE CONNECTION rather than taking
+# it from inventory, because the assert is about the address this host actually
+# sees Ansible arrive from - and that is not always the one inventory believes.
+# A second interface, a route change or a NAT anywhere in between makes them
+# differ, inventory cannot know which, and the cost of the difference is a
+# console session.
 #
-# Requires gathered facts, which the site play does. Empty when facts were
-# skipped, and the assert then refuses rather than guessing.
-vernemq_ssh_control_node: "{{ (ansible_env.SSH_CLIENT | default('')).split() | first | default('', true) }}"
+# Set this to override the derivation and pin an address.
+#
+# It is NOT derived from ansible_env. The site play runs with become, and
+# sudo's env_reset strips SSH_CLIENT, so the gathered fact is absent exactly
+# where it is needed - measured on this host, not assumed. ssh_restrict.yml
+# asks the connection user instead.
+vernemq_ssh_control_node: ""
