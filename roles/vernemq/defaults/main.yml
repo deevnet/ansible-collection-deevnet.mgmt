@@ -121,6 +121,32 @@ vernemq_db_writer_password: "{{ vault_vernemq_db_writer_password | default('') }
 # the machine that is not routing messages.
 vernemq_password_hash_method: crypt
 
+# --- Reaching the auth database from off this host ---------------------------
+# The Deevnet API writes accounts into the database (ADR-0012 §7, CHG-0016), so
+# the port has to be reachable from Platform. Nothing else may reach it.
+#
+# A zone rule cannot express that. `iot -> iot_backend` is a zone-level pass,
+# because it is how a device reaches the broker at all, so a port published on
+# this segment is reachable from every device on VLAN 30 whatever the
+# platform -> iot_backend rule says. The zone rule states the intent; this host
+# enforces the part the zone rule cannot see. See
+# standards/network-segmentation "Reachability and Permission".
+#
+# THE PORT IS PUBLISHED ONLY WHEN A SOURCE IS DECLARED. An empty list means the
+# database keeps no published port at all and is reachable only by the broker,
+# over the private podman network. You cannot open this port without saying who
+# may use it, which is the one ordering mistake worth designing out: publishing
+# first and restricting afterwards leaves it open to the whole segment in
+# between.
+vernemq_db_allowed_sources: []
+vernemq_db_firewalld_zone: public
+
+# The host's private container network, as pg_hba sees the broker coming from.
+# Discovered at run time rather than hardcoded, because a network recreate can
+# change it and a stale value here would lock the broker out of its own
+# database. This default is only a fallback for a check-mode run.
+vernemq_db_podman_subnet: "10.89.0.0/16"
+
 # --- TLS from the site CA (ADR-0016) -----------------------------------------
 vernemq_openbao_addr: ""
 vernemq_openbao_ca_local: ""

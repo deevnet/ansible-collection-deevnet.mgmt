@@ -1,0 +1,41 @@
+# {{ ansible_managed }}
+# The auth database's own view of who may connect (CHG-0016).
+#
+# This is defence in depth, NOT the control that satisfies ADR-0012 §7's
+# "nothing else can reach the database". A client refused here has still
+# reached the port and spoken the PostgreSQL protocol; what it cannot do is
+# authenticate. The packet filter is a separate mechanism and a separate file.
+#
+# It works at all only because podman does not masquerade published-port
+# traffic on this host: the container sees the caller's real address. That was
+# measured, not assumed - a connection from the Builder appeared in the
+# container's own /proc/net/tcp as 10.20.99.95. If a future podman release
+# starts masquerading, every external client collapses to the gateway address
+# and these rules stop distinguishing anyone. The lifecycle tests in CHG-0016
+# are what would catch that.
+#
+# Order matters: the first matching line wins, and there is no fallthrough.
+# An address with no line is refused, so the absence of a rule is the denial.
+
+# TYPE  DATABASE     USER          ADDRESS                METHOD
+
+# The container's own unix socket. Trust, because reaching it already means
+# root on this host - the role's own schema and role tasks come this way, via
+# podman exec. Tightening this would buy nothing and break the deploy.
+local   all          all                                  trust
+
+# Loopback inside the container.
+host    all          all           127.0.0.1/32           scram-sha-256
+host    all          all           ::1/128                scram-sha-256
+
+# The broker, from this host's private container network. It holds the
+# read-only role; see the GRANTs in the role's main.yml.
+host    {{ vernemq_db_name }}  {{ vernemq_db_reader_user }}  {{ vernemq_db_podman_subnet }}  scram-sha-256
+
+# The Deevnet API, from Platform. The only address off this host that may
+# authenticate at all.
+{% for src in vernemq_db_allowed_sources %}
+host    {{ vernemq_db_name }}  {{ vernemq_db_writer_user }}  {{ src }}  scram-sha-256
+{% endfor %}
+
+# Everything else: no line, therefore refused.

@@ -63,6 +63,26 @@
     mode: "0700"
   become: true
 
+# NO PACKET FILTER HERE, AND THAT IS THE FINDING, NOT AN OMISSION.
+#
+# A firewalld rich rule does not filter a published podman port: publishing is
+# DNAT plus forward, so the packet never reaches the INPUT chain a rich rule
+# sits on. Measured, not reasoned about - with the rule in place, 5432 answered
+# from a host that was not an allowed source.
+#
+# A firewalld policy object, which is the mechanism that does filter forwarded
+# traffic, was tried twice - egress-zone trusted and egress-zone ANY - and
+# filtered nothing either. netavark's forward chain runs at priority 0 against
+# firewalld's +10, and firewalld's zone membership for the container network is
+# by SOURCE address while egress matching is by outgoing interface, so the
+# policy never matched the traffic.
+#
+# Hand-ordered nftables would work and is deliberately not done: it would put a
+# security control in a table podman owns and rewrites, where a container
+# recreate is enough to silently remove it.
+#
+# So the port is not published at all, and pg_hba below is the service-level
+# control. See CHG-0016.
 - name: Run the auth database
   ansible.builtin.include_role:
     name: deevnet.mgmt.podman_service
@@ -78,6 +98,13 @@
     podman_service_network_create: true
     podman_service_volumes:
       - "{{ vernemq_db_data_dir }}:/var/lib/postgresql/data:Z"
+    # Published only when a source is declared, and deliberately NOT added to
+    # podman_service_firewall_ports - that opens a port to the whole zone, which
+    # is exactly what must not happen here. The rich rules below are the only
+    # accept for this port.
+    podman_service_ports: >-
+      {{ [env.interfaces.eth0.ip ~ ':' ~ vernemq_db_port ~ ':5432/tcp']
+         if vernemq_db_allowed_sources | length > 0 else [] }}
     podman_service_env:
       POSTGRES_DB: "{{ vernemq_db_name }}"
       POSTGRES_USER: "{{ vernemq_db_admin_user }}"
@@ -103,6 +130,37 @@
 # The table and the pgcrypto extension are VerneMQ's, quoted from the plugin's
 # own source. Applying it is idempotent (IF NOT EXISTS throughout), so this
 # runs every time and converges rather than being guarded by a flag file.
+# Discovered, not hardcoded: a network recreate can change the subnet, and a
+# stale value would lock the broker out of its own database.
+- name: Read the container network's subnet
+  ansible.builtin.command:
+    argv: [podman, network, inspect, "{{ vernemq_network }}", "--format", "{{ '{{' }} (index .Subnets 0).Subnet {{ '}}' }}"]
+  register: vernemq_net
+  changed_when: false
+  become: true
+
+- name: Restrict who may authenticate to the database
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ vernemq_db_data_dir }}/pg_hba.conf"
+    owner: "{{ vernemq_db_uid }}"
+    group: "{{ vernemq_db_gid }}"
+    mode: "0600"
+  vars:
+    vernemq_db_podman_subnet: "{{ vernemq_net.stdout | trim }}"
+  become: true
+  register: vernemq_hba
+
+# A reload, not a restart: pg_hba is re-read on SIGHUP and existing sessions
+# keep their connections. The broker's pool is not disturbed.
+- name: Reload the database so the new rules take effect
+  ansible.builtin.command:
+    argv: [podman, exec, "{{ vernemq_db_container_name }}", psql, -U, "{{ vernemq_db_admin_user }}",
+           -d, "{{ vernemq_db_name }}", -tAc, "SELECT pg_reload_conf()"]
+  when: vernemq_hba.changed
+  changed_when: true
+  become: true
+
 - name: Apply the auth schema
   ansible.builtin.command:
     argv:
@@ -253,6 +311,10 @@
 - name: Report what the broker is serving
   ansible.builtin.debug:
     msg: >-
+      {{ 'Database port ' ~ vernemq_db_port ~ ' published, permitted from '
+          ~ (vernemq_db_allowed_sources | join(', '))
+         if vernemq_db_allowed_sources | length > 0
+         else 'Database port not published; reachable only by the broker.' }}
       VerneMQ {{ vernemq_version }} serving TLS on
       {{ vernemq_tls_common_name }}:{{ vernemq_tls_port }};
       {{ vernemq_accounts.stdout | trim }} account(s) in the registry.
