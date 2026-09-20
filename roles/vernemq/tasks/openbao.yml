@@ -10,6 +10,26 @@
 # certificate, as Ansible's own AppRole - the messaging VM has no path to
 # OpenBao and must not need one.
 
+# Which of these is missing, by NAME. The assert below carries no_log, because
+# an AppRole id is half of a credential and an assert can echo what it was
+# given - but that makes a failure say only "assertion failed", which is no
+# help at all when four variables could be the cause. This names them without
+# touching a value, and it exists because the first run of this role failed
+# here and the message said nothing.
+- name: Report which OpenBao settings are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing OpenBao settings:
+      {{ ['vernemq_openbao_addr'] if vernemq_openbao_addr | length == 0 else [] }}
+      {{ ['vernemq_openbao_ca_local'] if vernemq_openbao_ca_local | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_role_id'] if vernemq_openbao_ansible_role_id | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_secret_id'] if vernemq_openbao_ansible_secret_id | length == 0 else [] }}
+  when: >-
+    vernemq_openbao_addr | length == 0
+    or vernemq_openbao_ca_local | length == 0
+    or vernemq_openbao_ansible_role_id | length == 0
+    or vernemq_openbao_ansible_secret_id | length == 0
+
 - name: Fail early if OpenBao is not configured
   ansible.builtin.assert:
     that:
@@ -18,9 +38,10 @@
       - vernemq_openbao_ansible_role_id | length > 0
       - vernemq_openbao_ansible_secret_id | length > 0
     fail_msg: >-
-      The broker serves TLS only, so it needs a certificate from the site CA:
-      vernemq_openbao_addr, the listener certificate the openbao role fetches
-      to the control node, and vault_openbao_ansible_role_id / _secret_id.
+      The broker serves TLS only, so it needs a certificate from the site CA.
+      See the task above for which setting is missing. vernemq_openbao_addr and
+      vernemq_openbao_ca_local belong in the mqtt_brokers group vars; the
+      AppRole id and secret come from the vault.
   no_log: true
 
 - name: Log in to OpenBao as Ansible
