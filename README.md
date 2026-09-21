@@ -21,7 +21,7 @@ Management-plane workloads are **Ansible-only by design** — they carry no Terr
 | `minio` | Tenant Terraform state store (ADR-0007), in the provisioning VM |
 | `deevnet_api` | The Deevnet API and its PostgreSQL database (ADR-0012), in the provisioning VM |
 | `omada_controller` | The site's Omada controller (ADR-0009), in the network management VM |
-| `mosquitto` | MQTT broker (to be replaced by VerneMQ in the messaging VM, ADR-0012 §8) |
+| `vernemq` | The device message broker and its auth database (ADR-0012 §8), in the messaging VM |
 
 Services are grouped into domain VMs on the management hypervisor, each on exactly one segment
 (ADR-0013): network management and substrate observability on management; provisioning, identity
