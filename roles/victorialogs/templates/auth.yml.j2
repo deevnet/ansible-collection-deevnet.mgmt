@@ -12,21 +12,10 @@
 #     its own partition.
 #   - There is NO unauthorized_user and NO default_url. A request without a
 #     known token, or on a path no entry matches, is refused.
-#   - Ingest users may only /insert/, and the read user may only /select/.
+#   - The read user may only /select/. There are no ingest users: ADR-0027
+#     makes the store tenants-only, and tenant users arrive with tenant tokens.
 
 users:
-{% for host in groups[victorialogs_vmauth_ingest_group] | sort %}
-  # {{ host }}: journal upload, substrate partition only.
-  - name: "ingest-{{ host }}"
-    bearer_token: "{{ hostvars[host].vault_log_ingest_token }}"
-    url_map:
-      - src_paths: ["/insert/.*"]
-        url_prefix: "{{ victorialogs_vmauth_backend }}"
-        headers:
-          - "AccountID: {{ victorialogs_vmauth_substrate_account }}"
-          - "ProjectID: {{ victorialogs_vmauth_substrate_project }}"
-{% endfor %}
-
   # The operator: read only, the substrate partition. One entry per partition
   # is the design (ADR-0022, Q1: no cross-tenant query), but routing between
   # partitions is the tenant-token change's to build, so the role refuses more
