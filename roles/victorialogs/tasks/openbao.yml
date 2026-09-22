@@ -1,0 +1,155 @@
+---
+# The log store's TLS material, from the site CA in OpenBao (ADR-0016).
+#
+# Adapted from the vernemq role's openbao.yml. Both listeners use it: vmauth's
+# public HTTPS port, where every bearer token arrives, and VictoriaLogs' syslog
+# listener. Neither has a plaintext form, so without a certificate this host
+# serves nothing.
+#
+# Calls to OpenBao run on the CONTROL NODE against the pinned listener
+# certificate, as Ansible's own AppRole - this VM has no path to OpenBao and
+# must not need one.
+
+# Which of these is missing, by NAME. The assert below carries no_log, because
+# an AppRole id is half of a credential and an assert can echo what it was
+# given - but that makes a failure say only "assertion failed", which is no
+# help at all when four variables could be the cause. This names them without
+# touching a value, and it exists because the first run of this role failed
+# here and the message said nothing.
+- name: Report which OpenBao settings are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing OpenBao settings:
+      {{ ['victorialogs_openbao_addr'] if victorialogs_openbao_addr | length == 0 else [] }}
+      {{ ['victorialogs_openbao_ca_local'] if victorialogs_openbao_ca_local | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_role_id'] if victorialogs_openbao_ansible_role_id | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_secret_id'] if victorialogs_openbao_ansible_secret_id | length == 0 else [] }}
+  when: >-
+    victorialogs_openbao_addr | length == 0
+    or victorialogs_openbao_ca_local | length == 0
+    or victorialogs_openbao_ansible_role_id | length == 0
+    or victorialogs_openbao_ansible_secret_id | length == 0
+
+- name: Fail early if OpenBao is not configured
+  ansible.builtin.assert:
+    that:
+      - victorialogs_openbao_addr | length > 0
+      - victorialogs_openbao_ca_local | length > 0
+      - victorialogs_openbao_ansible_role_id | length > 0
+      - victorialogs_openbao_ansible_secret_id | length > 0
+    fail_msg: >-
+      The log store serves TLS only, so it needs a certificate from the site CA.
+      See the task above for which setting is missing. victorialogs_openbao_addr and
+      victorialogs_openbao_ca_local belong in the observability_store group vars;
+      the AppRole id and secret come from the vault.
+  no_log: true
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ victorialogs_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ victorialogs_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ victorialogs_openbao_ansible_role_id }}"
+      secret_id: "{{ victorialogs_openbao_ansible_secret_id }}"
+  register: victorialogs_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the token for this run
+  ansible.builtin.set_fact:
+    victorialogs_bao_token: "{{ victorialogs_bao_login.json.auth.client_token }}"
+  no_log: true
+
+# Both containers mount this directory, so it is mounted :z (SHARED label),
+# never :Z. A private label applied by the second container relabels it away
+# from the first, which then fails its handshakes with nothing in any log - the
+# vernemq role's warning, and the reason it mounts its TLS directory into one
+# container only. Both images run as root, so the key is root-owned 0400.
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ victorialogs_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Check whether the certificate is still valid for long enough
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ victorialogs_tls_renew_before }}", -noout, -in, "{{ victorialogs_tls_dir }}/cert.pem"]
+  register: victorialogs_cert_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Expiry is not the only reason to reissue, and this is the expensive lesson
+# from 2026-09-17 (INC-0003): a rebuilt OpenBao generates a NEW PKI root under
+# the same common name, so the certificate on the host stays valid for its full
+# term and verifies against nothing, while every client has been handed the new
+# CA. Comparing the issuer is what catches that.
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ victorialogs_openbao_addr }}/v1/{{ victorialogs_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ victorialogs_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ victorialogs_bao_token }}"}
+  register: victorialogs_current_ca
+  delegate_to: localhost
+  become: false
+
+- name: Read the site CA the host holds
+  ansible.builtin.slurp:
+    src: "{{ victorialogs_tls_dir }}/site-ca.pem"
+  register: victorialogs_host_ca
+  failed_when: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    victorialogs_cert_wanted: >-
+      {{ victorialogs_cert_check.rc != 0
+         or victorialogs_host_ca.content is not defined
+         or (victorialogs_host_ca.content | b64decode | trim)
+            != (victorialogs_current_ca.json.data.certificate | trim) }}
+
+- name: Issue the log store certificate from the site CA
+  when: victorialogs_cert_wanted | bool
+  block:
+    # The IP SAN matters as much as the name: journal-upload dials the name,
+    # while the network devices and any hand probe use the address.
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ victorialogs_openbao_addr }}/v1/{{ victorialogs_openbao_pki_mount }}/issue/{{ victorialogs_openbao_pki_role }}"
+        method: POST
+        ca_path: "{{ victorialogs_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ victorialogs_bao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ victorialogs_tls_common_name }}"
+          alt_names: "{{ victorialogs_tls_alt_names | join(',') }}"
+          ip_sans: "{{ victorialogs_tls_ip }}"
+          ttl: "{{ victorialogs_tls_ttl }}"
+      register: victorialogs_cert
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write the certificate, key and site CA
+      ansible.builtin.copy:
+        dest: "{{ victorialogs_tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: cert.pem, content: "{{ victorialogs_cert.json.data.certificate }}", owner: root, mode: "0644" }
+        - { name: key.pem, content: "{{ victorialogs_cert.json.data.private_key }}", owner: root, mode: "0400" }
+        - { name: site-ca.pem, content: "{{ victorialogs_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: restart log store

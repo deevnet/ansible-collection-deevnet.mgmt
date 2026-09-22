@@ -1,0 +1,224 @@
+---
+# The central log store in the observability store VM (ADR-0022, CHG-0018).
+#
+# VictoriaLogs stores; vmauth, in front, is the only thing another host can
+# reach over HTTP. Both run with host networking - see defaults/main.yml for
+# why that is a security property here.
+
+# --- Refuse to start in a state that would be wrong ----------------------------
+
+- name: Refuse to put the store on the OS disk
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.mounts | selectattr('mount', 'equalto', '/srv') | list | length == 1
+    fail_msg: >-
+      /srv is not a mountpoint on {{ inventory_hostname }}. The store's data
+      belongs on the data disk, not the OS disk (ADR-0022 §1). Declare
+      mgmt_vm.data_disk for this host and run site.yml --tags vms first.
+    quiet: true
+
+- name: Refuse more than one operator partition until routing exists
+  ansible.builtin.assert:
+    that: victorialogs_vmauth_operator_partitions | length == 1
+    fail_msg: >-
+      Reading more than one partition with one token needs a routing rule
+      between them, which the tenant-token change builds. Until then the
+      operator token reads the substrate partition only.
+    quiet: true
+
+- name: Refuse an open syslog listener
+  ansible.builtin.assert:
+    that: victorialogs_syslog_sources | length > 0
+    fail_msg: >-
+      victorialogs_syslog_sources is empty. The syslog listener has no
+      authentication, so the source list is its ONLY control; an empty list
+      would mean opening it to every zone that reaches Platform, tenants
+      included. Set it in the observability_store group vars.
+    quiet: true
+
+# Which tokens are missing, by HOST NAME, never by value. The assert after it
+# carries no_log and so can only say "assertion failed".
+- name: Report which log tokens are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing or short (< 32 chars) tokens:
+      {{ groups[victorialogs_vmauth_ingest_group]
+         | reject('in', groups[victorialogs_vmauth_ingest_group]
+                        | map('extract', hostvars)
+                        | selectattr('vault_log_ingest_token', 'defined')
+                        | selectattr('vault_log_ingest_token', 'match', '^.{32,}$')
+                        | map(attribute='inventory_hostname') | list)
+         | list }}
+      {{ ['vault_victorialogs_operator_read_token']
+         if victorialogs_vmauth_operator_read_token | length < 32 else [] }}
+
+- name: Fail early if any token is missing, short or shared
+  ansible.builtin.assert:
+    that:
+      - victorialogs_vmauth_operator_read_token | length >= 32
+      - _ingest | length == groups[victorialogs_vmauth_ingest_group] | length
+      - _ingest | select('match', '^.{32,}$') | list | length == _ingest | length
+      # Every token distinct, the operator's included: a shared token would
+      # make one host's revocation revoke another, and a read token equal to an
+      # ingest token would let a shipping host read the store.
+      - (_ingest + [victorialogs_vmauth_operator_read_token]) | unique | length
+        == _ingest | length + 1
+    fail_msg: >-
+      A log token is missing, shorter than 32 characters, or not unique. The
+      task above names which hosts lack one. Tokens live in the vault: one
+      vault_log_ingest_token per host in {{ victorialogs_vmauth_ingest_group }}
+      (host_vars/<host>/vault.yml), and vault_victorialogs_operator_read_token
+      in group_vars/observability_store/vault.yml. Generate each with
+      `openssl rand -hex 32`, then vault, commit and push before running this.
+    quiet: true
+  vars:
+    _ingest: >-
+      {{ groups[victorialogs_vmauth_ingest_group]
+         | map('extract', hostvars)
+         | selectattr('vault_log_ingest_token', 'defined')
+         | map(attribute='vault_log_ingest_token') | list }}
+  no_log: true
+
+# --- TLS, then directories and configuration -----------------------------------
+
+- name: Issue the log store's TLS material from the site CA
+  ansible.builtin.import_tasks: openbao.yml
+
+- name: Create the store's directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ victorialogs_data_root }}"
+    - "{{ victorialogs_data_dir }}"
+    - "{{ victorialogs_etc_dir }}"
+  become: true
+
+- name: Write vmauth's users
+  ansible.builtin.template:
+    src: auth.yml.j2
+    dest: "{{ victorialogs_etc_dir }}/auth.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  no_log: true
+  notify: restart vmauth
+
+# --- The two containers --------------------------------------------------------
+
+- name: Run VictoriaLogs
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ victorialogs_container_name }}"
+    podman_service_description: "VictoriaLogs, the central log store (ADR-0022)"
+    podman_service_image: "{{ victorialogs_image }}"
+    podman_service_tarball: "{{ victorialogs_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ victorialogs_data_dir }}:/victoria-logs-data:Z"
+      - "{{ victorialogs_tls_dir }}:/tls:ro,z"
+    podman_service_command:
+      - "-httpListenAddr={{ victorialogs_http_listen }}"
+      - "-storageDataPath=/victoria-logs-data"
+      - "-retentionPeriod={{ victorialogs_retention_period }}"
+      - "-retention.maxDiskUsagePercent={{ victorialogs_max_disk_usage_percent }}"
+      - "-syslog.listenAddr.tcp=:{{ victorialogs_syslog_port }}"
+      - "-syslog.tls"
+      - "-syslog.tlsCertFile=/tls/cert.pem"
+      - "-syslog.tlsKeyFile=/tls/key.pem"
+      # Whatever the sender claims, syslog lands in the substrate partition.
+      - "-syslog.tenantID.tcp={{ victorialogs_vmauth_substrate_account }}:{{ victorialogs_vmauth_substrate_project }}"
+      # The hostname field in a syslog line is whatever the sender wrote; the
+      # remote address is the one attribution this path can trust.
+      - "-syslog.useRemoteIP.tcp=true"
+    podman_service_stop_timeout: 60
+    # No podman_service_firewall_ports: that opens a port to the whole zone.
+    # The syslog port is opened below, per source, and nothing else is.
+
+- name: Run vmauth
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ victorialogs_vmauth_container_name }}"
+    podman_service_description: "vmauth, the authenticating proxy in front of the log store (ADR-0022 §3)"
+    podman_service_image: "{{ victorialogs_vmauth_image }}"
+    podman_service_tarball: "{{ victorialogs_vmauth_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ victorialogs_etc_dir }}/auth.yml:/etc/vmauth/auth.yml:ro,Z"
+      - "{{ victorialogs_tls_dir }}:/tls:ro,z"
+    # Two listeners, paired by position (vmauth docs, "Security"): the public
+    # one with TLS and no internal routes, and a loopback one with the internal
+    # routes and no TLS.
+    podman_service_command:
+      - "-auth.config=/etc/vmauth/auth.yml"
+      - "-httpListenAddr=0.0.0.0:{{ victorialogs_vmauth_port }},"
+      - "-httpInternalListenAddr=,{{ victorialogs_vmauth_internal_listen }}"
+      - "-tls=true,false"
+      - "-tlsCertFile=/tls/cert.pem"
+      - "-tlsKeyFile=/tls/key.pem"
+    podman_service_after:
+      - "{{ victorialogs_container_name }}.service"
+    podman_service_firewall_ports:
+      - "{{ victorialogs_vmauth_port }}/tcp"
+
+# --- The syslog listener: named sources only ------------------------------------
+# Host INPUT traffic (host networking), so these rich rules filter it. CHG-0018's
+# verification measures that from a source that is not listed.
+
+- name: Admit the named sources to the syslog listener
+  ansible.posix.firewalld:
+    rich_rule: >-
+      rule family="ipv4" source address="{{ item }}"
+      port port="{{ victorialogs_syslog_port }}" protocol="tcp" accept
+    zone: "{{ victorialogs_firewalld_zone }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ victorialogs_syslog_sources }}"
+  become: true
+
+- name: Restart now if the certificate or vmauth's users changed
+  ansible.builtin.meta: flush_handlers
+
+# --- Readiness -------------------------------------------------------------------
+
+- name: Wait for VictoriaLogs to report healthy
+  ansible.builtin.uri:
+    url: "http://{{ victorialogs_http_listen }}/health"
+  register: victorialogs_health
+  retries: 30
+  delay: 2
+  until: victorialogs_health.status == 200
+  become: true
+
+- name: Wait for vmauth to report healthy on its internal listener
+  ansible.builtin.uri:
+    url: "http://{{ victorialogs_vmauth_internal_listen }}/health"
+  register: victorialogs_vmauth_health
+  retries: 30
+  delay: 2
+  until: victorialogs_vmauth_health.status == 200
+  become: true
+
+# A token-less request must be REFUSED. This is a self-check from the host, over
+# the public listener; it is not a substitute for CHG-0018's tests from other
+# segments.
+- name: Confirm vmauth refuses a request with no token
+  ansible.builtin.uri:
+    url: "https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }}/select/logsql/query?query=*"
+    ca_path: "{{ victorialogs_tls_dir }}/site-ca.pem"
+    status_code: [401]
+  become: true
+
+- name: Report what the store is serving
+  ansible.builtin.debug:
+    msg:
+      - "vmauth: https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }} ({{ groups[victorialogs_vmauth_ingest_group] | length }} ingest users, 1 operator read user)"
+      - "syslog/TLS: {{ victorialogs_tls_ip }}:{{ victorialogs_syslog_port }} -> (0, 0), from {{ victorialogs_syslog_sources | join(', ') }}"
+      - "VictoriaLogs: {{ victorialogs_http_listen }} (loopback only), retention {{ victorialogs_retention_period }}, disk cap {{ victorialogs_max_disk_usage_percent }}%"

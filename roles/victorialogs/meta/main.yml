@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: victorialogs
+  description: The site's central log store, VictoriaLogs behind vmauth (ADR-0022)

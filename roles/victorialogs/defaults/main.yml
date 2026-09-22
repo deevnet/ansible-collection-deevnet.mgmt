@@ -1,0 +1,113 @@
+---
+# victorialogs - the site's one log store, on Platform (ADR-0022, CHG-0018).
+#
+# Two containers in the observability store VM: VictoriaLogs, which stores and
+# partitions by (AccountID, ProjectID), and vmauth in front of it, which is the
+# only thing any other host can reach. VictoriaLogs "doesn't perform per-tenant
+# authorization"; vmauth does, by mapping a bearer token to a partition.
+#
+# BOTH RUN WITH HOST NETWORKING, and that is a security property, not a style.
+# The syslog listener has no authentication, so its only control is a firewalld
+# rule admitting the network devices and hypervisors - and CHG-0016 measured
+# that a firewalld rule does not filter a published podman port (DNAT plus
+# forward never reaches INPUT). With host networking the listeners are host
+# listeners, which firewalld does filter, and "bound to 127.0.0.1" means what
+# it says.
+
+victorialogs_version: "v1.52.0"
+victorialogs_image: "docker.io/victoriametrics/victoria-logs:{{ victorialogs_version }}"
+victorialogs_tarball: "victoria-logs/victoria-logs-{{ victorialogs_version }}.tar"
+victorialogs_container_name: victorialogs
+
+# vmauth ships on the VictoriaMetrics release line, not VictoriaLogs'.
+victorialogs_vmauth_version: "v1.152.0"
+victorialogs_vmauth_image: "docker.io/victoriametrics/vmauth:{{ victorialogs_vmauth_version }}"
+victorialogs_vmauth_tarball: "vmauth/vmauth-{{ victorialogs_vmauth_version }}.tar"
+victorialogs_vmauth_container_name: vmauth
+
+# On the data disk, never the OS disk (ADR-0022 §1). /srv is the data_disk
+# mount on this VM; the role refuses to run if it is not a mountpoint.
+victorialogs_data_root: /srv/victorialogs
+victorialogs_data_dir: "{{ victorialogs_data_root }}/data"
+victorialogs_etc_dir: "{{ victorialogs_data_root }}/etc"
+victorialogs_tls_dir: "{{ victorialogs_data_root }}/tls"
+
+# --- VictoriaLogs --------------------------------------------------------------
+# LOOPBACK ONLY. Its HTTP API writes and reads any partition for whoever names
+# it in a header; nothing off this host may reach it except through vmauth.
+victorialogs_http_listen: "127.0.0.1:9428"
+
+# One period and one disk cap for the whole store (ADR-0022 §6). Per-tenant
+# retention and quotas do not exist in VictoriaLogs. The disk cap drops the
+# OLDEST data when crossed, so a full disk shortens history rather than
+# stopping ingest. It and -retention.maxDiskSpaceUsageBytes are mutually
+# exclusive.
+victorialogs_retention_period: 30d
+victorialogs_max_disk_usage_percent: 80
+
+# The one unauthenticated ingest path: RFC 5424 syslog over TLS, fixed to the
+# substrate partition (0:0) whatever the sender claims. For the network devices
+# and the hypervisors, which cannot present a token (ADR-0022 §5). 6514 is the
+# registered port for syslog over TLS. A plaintext UDP listener is added only
+# if a device turns out not to support TLS, and that device is named here when
+# it is.
+victorialogs_syslog_port: 6514
+
+# Who may reach the syslog listener. Set in inventory; the role refuses an
+# empty list rather than open the port to everyone.
+victorialogs_syslog_sources: []
+
+# --- vmauth --------------------------------------------------------------------
+# The public listener, TLS only. 8427 is vmauth's own port; 443 is left free
+# for Grafana (ADR-0024), which lands on this VM too.
+victorialogs_vmauth_port: 8427
+
+# Internal routes - /metrics, /flags, /debug/pprof and /-/reload - on their own
+# LOOPBACK listener, off the public one (vmauth docs, "Security"; available
+# from v1.111.0). The public listener is the one tenants will reach.
+victorialogs_vmauth_internal_listen: "127.0.0.1:8426"
+
+# Where vmauth sends everything. Loopback, because of host networking.
+victorialogs_vmauth_backend: "http://{{ victorialogs_http_listen }}/"
+
+# Every ingest user writes the substrate partition only. Tenant partitions are
+# the tenant-token change's, not this one's.
+victorialogs_vmauth_substrate_account: 0
+victorialogs_vmauth_substrate_project: 0
+
+# One ingest user per host in this group, each with the token from that host's
+# own host_vars/<host>/vault.yml (vault_log_ingest_token). A host can then be
+# revoked alone. The Builder is deliberately not in it (ADR-0022 §5).
+victorialogs_vmauth_ingest_group: log_shippers
+
+# The operator's read token (group_vars/observability_store/vault.yml).
+victorialogs_vmauth_operator_read_token: "{{ vault_victorialogs_operator_read_token | default('') }}"
+
+# Partitions the operator's token may read, one url_map entry each. VictoriaLogs
+# cannot query across tenants, so the operator reads one partition at a time
+# (ADR-0022, Q1). Only the substrate partition exists in CHG-0018.
+victorialogs_vmauth_operator_partitions:
+  - {account: 0, project: 0}
+
+# --- TLS, from the site CA in OpenBao (ADR-0016) ---------------------------------
+# Used on the CONTROL NODE, as in the vernemq role: this VM needs no path to
+# OpenBao. The address, the pinned listener CA and Ansible's AppRole are set in
+# inventory for the observability_store group.
+victorialogs_openbao_addr: ""
+victorialogs_openbao_ca_local: ""
+victorialogs_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+victorialogs_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+victorialogs_openbao_pki_mount: pki
+victorialogs_openbao_pki_role: platform
+
+# The name and the address: shippers dial the name, probes and the network
+# devices use the address.
+victorialogs_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+victorialogs_tls_alt_names: []
+victorialogs_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
+victorialogs_tls_ttl: 2160h
+# Reissue when fewer than this many seconds remain (30 days).
+victorialogs_tls_renew_before: 2592000
+
+# The zone the syslog rich rules go in: eth0's zone on this VM.
+victorialogs_firewalld_zone: public
