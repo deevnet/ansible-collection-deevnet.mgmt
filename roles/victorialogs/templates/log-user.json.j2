@@ -1,0 +1,8 @@
+{
+  "_comment": "{{ ansible_managed }} - the log store's user writer (ADR-0027, CHG-0020)",
+  "base": "{{ victorialogs_base_file }}",
+  "users_dir": "{{ victorialogs_users_dir }}",
+  "auth_file": "{{ victorialogs_auth_dir }}/auth.yml",
+  "reload_url": "http://{{ victorialogs_vmauth_internal_listen }}/-/reload",
+  "timeout_seconds": {{ victorialogs_writer_timeout }}
+}

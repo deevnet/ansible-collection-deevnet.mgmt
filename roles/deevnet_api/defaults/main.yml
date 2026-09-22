@@ -139,6 +139,44 @@ deevnet_api_broker_host: "{{ (groups['mqtt_brokers'] | default([])) | first | de
 deevnet_api_broker_connect_timeout: 10s
 deevnet_api_broker_session_timeout: 30s
 
+# --- The log store's user writer (ADR-0027, CHG-0020) ---------------------------
+# The API issues each tenant a pair of log tokens and writes the matching vmauth
+# users through a program on the observability store, reached the same way as
+# the broker's writer: one request to a forced command, key pinned with
+# command=, restrict and from=.
+#
+# Two differences from the broker's, both worth knowing:
+#   - The store is on Platform, the API's own segment, so this path crosses no
+#     zone rule. The broker's crosses platform -> iot_backend and needed one.
+#   - What crosses is the tenant's tokens themselves, not a hash. vmauth
+#     compares the bearer token it was configured with, so there is no one-way
+#     form to send.
+#
+# Optional: empty means the site has no log store, and a tenant there simply
+# gets no log tokens.
+deevnet_api_log_writer_addr: >-
+  {{ (hostvars[(groups['observability_store'] | default([])) | first | default('')].env.interfaces.eth0.ip ~ ':22')
+     if (groups['observability_store'] | default([])) | length > 0 else '' }}
+deevnet_api_log_writer_user: deevnet-logwriter
+
+# What a tenant is TOLD to ship logs to, which is not where the writer lives:
+# the writer is reached over SSH, the endpoint is vmauth's HTTPS port. By name,
+# because that is what the certificate carries.
+deevnet_api_log_endpoint: >-
+  {{ ('https://' ~ ((groups['observability_store'] | default([])) | first | default('')) ~ '.' ~
+      deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':8427')
+     if (groups['observability_store'] | default([])) | length > 0 else '' }}
+
+# Pinned at deploy time from the store itself, for the same reasons as the
+# broker's: a rebuilt VM gets a new key, and a stale pin would leave the API
+# refusing to talk to the host Ansible had just built.
+deevnet_api_log_host_key: ""
+deevnet_api_log_host_key_file: /etc/ssh/ssh_host_ed25519_key.pub
+deevnet_api_log_host: "{{ (groups['observability_store'] | default([])) | first | default('') }}"
+
+deevnet_api_log_connect_timeout: 10s
+deevnet_api_log_session_timeout: 30s
+
 # OpenBao (ADR-0016). The address the API and this role use, and the listener
 # certificate the openbao role fetched to the control node.
 deevnet_api_openbao_addr: ""

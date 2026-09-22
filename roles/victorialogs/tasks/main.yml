@@ -55,16 +55,11 @@
     - "{{ victorialogs_etc_dir }}"
   become: true
 
-- name: Write vmauth's users
-  ansible.builtin.template:
-    src: auth.yml.j2
-    dest: "{{ victorialogs_etc_dir }}/auth.yml"
-    owner: root
-    group: root
-    mode: "0600"
-  become: true
-  no_log: true
-  notify: restart vmauth
+# vmauth's users, and the program that writes them. auth.yml is RENDERED by
+# that program from this role's base.json and the API's per-tenant files, so
+# neither author can drop the other's users (ADR-0027, CHG-0020).
+- name: Install the user writer and render the store's users
+  ansible.builtin.import_tasks: writer.yml
 
 # --- The two containers --------------------------------------------------------
 
@@ -102,13 +97,17 @@
     podman_service_tarball: "{{ victorialogs_vmauth_tarball }}"
     podman_service_network: host
     podman_service_volumes:
-      - "{{ victorialogs_etc_dir }}/auth.yml:/etc/vmauth/auth.yml:ro,Z"
+      # The DIRECTORY, not the file: the writer renames a new file into place
+      # and a file mount would pin the container to the old inode. :z (shared),
+      # not :Z, because the writer on the host must keep writing here.
+      - "{{ victorialogs_auth_dir }}:/etc/vmauth:ro,z"
       - "{{ victorialogs_tls_dir }}:/tls:ro,z"
     # Two listeners, paired by position (vmauth docs, "Security"): the public
     # one with TLS and no internal routes, and a loopback one with the internal
     # routes and no TLS.
     podman_service_command:
       - "-auth.config=/etc/vmauth/auth.yml"
+      - "-configCheckInterval={{ victorialogs_vmauth_config_check_interval }}"
       - "-httpListenAddr=0.0.0.0:{{ victorialogs_vmauth_port }},"
       - "-httpInternalListenAddr=,{{ victorialogs_vmauth_internal_listen }}"
       - "-tls=true,false"
@@ -144,7 +143,7 @@
        | select('search', 'port=\"' ~ victorialogs_retired_syslog_port ~ '\"') | list }}
   become: true
 
-- name: Restart now if the certificate or vmauth's users changed
+- name: Restart now if the certificate changed
   ansible.builtin.meta: flush_handlers
 
 # --- Readiness -------------------------------------------------------------------
@@ -165,6 +164,16 @@
   retries: 30
   delay: 2
   until: victorialogs_vmauth_health.status == 200
+  become: true
+
+# The second render, now that vmauth is running: same inputs, same output, and
+# this one reloads. A configuration written but not reloaded is a user the
+# store does not honour yet, which is the ambiguity the API must never be left
+# with.
+- name: Render the store's users again, and reload
+  ansible.builtin.command:
+    argv: [sudo, -u, "{{ victorialogs_writer_user }}", "{{ victorialogs_writer_path }}", --render]
+  changed_when: false
   become: true
 
 # A token-less request must be REFUSED. This is a self-check from the host, over

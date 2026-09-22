@@ -47,6 +47,12 @@ victorialogs_http_listen: "127.0.0.1:9428"
 victorialogs_retention_period: 30d
 victorialogs_max_disk_usage_percent: 80
 
+# How often vmauth re-reads its configuration on its own. The writer asks for a
+# reload after every change, so this is a backstop for a reload that failed:
+# the store catches up within this interval instead of serving a stale user
+# list until someone notices.
+victorialogs_vmauth_config_check_interval: 30s
+
 # NO SYSLOG LISTENER. ADR-0027 makes the store tenants-only, so the one
 # unauthenticated ingest path is gone (CHG-0019). The port below is kept only so
 # the role can remove rules left from ADR-0022's listener.
@@ -101,3 +107,54 @@ victorialogs_tls_renew_before: 2592000
 
 # The zone the syslog rich rules go in: eth0's zone on this VM.
 victorialogs_firewalld_zone: public
+
+# --- The user writer (ADR-0027, CHG-0020) ---------------------------------------
+# The Deevnet API issues each tenant its log tokens and writes the matching
+# vmauth users here, over a forced SSH command. The program is installed
+# always, because this role renders auth.yml with it; the SSH access exists
+# only once a public key is declared.
+#
+# THE FILE HAS TWO AUTHORS AND NEITHER OWNS IT. This role owns base.json; the
+# writer owns users.d/<tenant>.json; the program renders auth.yml from both.
+# Do not template auth.yml here again: that is what would drop every tenant's
+# users on the next play.
+victorialogs_users_dir: "{{ victorialogs_etc_dir }}/users.d"
+victorialogs_base_file: "{{ victorialogs_etc_dir }}/base.json"
+
+# The rendered file lives in a directory of its OWN, and the container mounts
+# that DIRECTORY rather than the file.
+#
+# This is not tidiness. The writer replaces auth.yml by writing a temporary
+# file and renaming it, which is what makes a reader see either the old file
+# or the new one and never half of one. A rename creates a new inode, and a
+# bind mount of a FILE follows the inode - so a container mounting auth.yml
+# directly would go on reading the file it started with, for ever, and every
+# reload would appear to do nothing. Mounting the directory means the path is
+# resolved again each time vmauth opens it.
+#
+# It also keeps base.json and users.d out of the container: they hold the same
+# tokens, but there is no reason for vmauth to see the inputs as well as the
+# output.
+victorialogs_auth_dir: "{{ victorialogs_data_root }}/auth"
+
+victorialogs_writer_user: deevnet-logwriter
+victorialogs_writer_home: /var/lib/deevnet-logwriter
+victorialogs_writer_path: /usr/local/bin/deevnet-log-user
+victorialogs_writer_config: /etc/deevnet/log-user.json
+victorialogs_writer_timeout: 10
+
+# Staged by the API repo's `make stage-log-writer`, and pushed from the control
+# node like the images.
+victorialogs_writer_binary_store: /srv/deevnet-http/binaries/deevnet-log-user
+victorialogs_writer_binary: deevnet-log-user-latest
+
+# The API's public key, and the address it may use it from. Empty means the
+# capability does not exist: nothing can ask this host to write a user.
+victorialogs_writer_public_key: ""
+victorialogs_writer_from: ""
+
+# The MQTT bridge's single token (ADR-0027 §4). Empty until the bridge exists,
+# and then no bridge user is rendered at all. One token for every tenant: its
+# url_map entries are what confine it, one per tenant, selected by the tenant
+# header it sets per message.
+victorialogs_bridge_token: "{{ vault_victorialogs_bridge_token | default('') }}"

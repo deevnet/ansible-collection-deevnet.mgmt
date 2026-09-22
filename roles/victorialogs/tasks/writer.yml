@@ -1,0 +1,150 @@
+---
+# The log store's user writer (ADR-0027, CHG-0020).
+#
+# The Deevnet API issues each tenant a pair of log tokens and writes the
+# matching vmauth users here, the same way CHG-0016 made it write broker
+# accounts. This file installs the program and, when a key is declared, the
+# forced command that lets the API run it.
+#
+# NEITHER SIDE OWNS auth.yml. This role owns base.json - the backend, the
+# operator's token and the bridge's - and the writer owns one file per tenant
+# under users.d/. The program renders auth.yml from both, so an Ansible run
+# cannot drop a tenant's users and a writer run cannot drop the operator's.
+#
+# The program is installed even when no key is declared, because it is also
+# what this role uses to render the file.
+
+- name: Create the writer's account
+  ansible.builtin.user:
+    name: "{{ victorialogs_writer_user }}"
+    home: "{{ victorialogs_writer_home }}"
+    # A real shell, for the same reason as the broker's writer: sshd runs a
+    # forced command through the account's login shell, and /sbin/nologin
+    # answers "This account is currently not available" instead. The key
+    # carries command= and restrict, so it cannot ask for a shell.
+    shell: /bin/sh
+    password: "!"
+    system: true
+    create_home: true
+  become: true
+
+- name: Create the writer's configuration directory
+  ansible.builtin.file:
+    path: "{{ victorialogs_writer_config | dirname }}"
+    state: directory
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    mode: "0750"
+  become: true
+
+# Pushed from the control node like everything else on this host.
+- name: Install the writer
+  ansible.builtin.copy:
+    src: "{{ victorialogs_writer_binary_store }}/{{ victorialogs_writer_binary }}"
+    dest: "{{ victorialogs_writer_path }}"
+    owner: root
+    group: root
+    # Executable by anyone, writable by root only: the program is not a secret,
+    # and its safety rests on who holds the key that makes sshd run it.
+    mode: "0755"
+  become: true
+
+# Only the rendered file lives here, and it is what the container mounts. The
+# writer renames a new file into place, so it must be able to write the
+# DIRECTORY, not just the file.
+- name: Create the rendered configuration directory
+  ansible.builtin.file:
+    path: "{{ victorialogs_auth_dir }}"
+    state: directory
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    # Group-writable so the writer can rename a new file into place; setgid so
+    # what it creates stays in its group.
+    mode: "2770"
+  become: true
+
+- name: Create the tenant users directory
+  ansible.builtin.file:
+    path: "{{ victorialogs_users_dir }}"
+    state: directory
+    owner: "{{ victorialogs_writer_user }}"
+    group: "{{ victorialogs_writer_user }}"
+    # 0700: every file in here holds two of a tenant's bearer tokens.
+    mode: "0700"
+  become: true
+
+- name: Write the writer's configuration
+  ansible.builtin.template:
+    src: log-user.json.j2
+    dest: "{{ victorialogs_writer_config }}"
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    mode: "0640"
+    # Literal JSON in a template rather than to_nice_json, and validated, so a
+    # file the program would refuse is caught here instead of at the first
+    # tenant apply.
+    validate: python3 -c "import json,sys; json.load(open('%s'))"
+  become: true
+
+# The half of the configuration this role owns. Root-only: it holds the
+# operator's read token and, once the bridge exists, the bridge's.
+- name: Write the store's base configuration
+  ansible.builtin.template:
+    src: base.json.j2
+    dest: "{{ victorialogs_base_file }}"
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    mode: "0640"
+    validate: python3 -c "import json,sys; json.load(open('%s'))"
+  become: true
+  no_log: true
+
+# Rendered before the containers start, because vmauth will not start without
+# an auth.yml and cannot be reloaded before it is running. The reload happens
+# in the second render, after the containers are up.
+- name: Render the store's users
+  ansible.builtin.command:
+    argv: [sudo, -u, "{{ victorialogs_writer_user }}", "{{ victorialogs_writer_path }}", --render, --no-reload]
+  register: victorialogs_render
+  changed_when: false
+  become: true
+
+- name: Pin the API's key to the writer
+  when: victorialogs_writer_public_key | length > 0
+  block:
+    - name: Fail early if the writer is half-declared
+      ansible.builtin.assert:
+        that:
+          - victorialogs_writer_from | length > 0
+        fail_msg: >-
+          victorialogs_writer_public_key is set but victorialogs_writer_from is
+          not. The key must be pinned to a source address: from= is what keeps a
+          stolen key unusable from anywhere else, and it is the half of this
+          that survives a firewall mistake. It matters more here than for the
+          broker's writer, because what this key carries is the tenant's tokens
+          themselves rather than a hash of a password.
+        quiet: true
+
+    # Every restriction is a requirement, not a preference:
+    #   command=  pins the key to one program, and the program never reads
+    #             SSH_ORIGINAL_COMMAND.
+    #   restrict  is default-deny: no pty, no agent, no forwarding, no user-rc,
+    #             and it keeps denying options OpenSSH has not added yet.
+    #   from=     binds the key to the API's address.
+    - name: Install the API's key with its restrictions
+      ansible.posix.authorized_key:
+        user: "{{ victorialogs_writer_user }}"
+        key: "{{ victorialogs_writer_public_key }}"
+        key_options: 'command="{{ victorialogs_writer_path }}",restrict,from="{{ victorialogs_writer_from }}"'
+        exclusive: true
+        manage_dir: false
+      become: true
+
+- name: Remove the API's key when none is declared
+  ansible.posix.authorized_key:
+    user: "{{ victorialogs_writer_user }}"
+    key: "{{ victorialogs_writer_public_key | default('') }}"
+    state: absent
+  when: victorialogs_writer_public_key | length == 0
+  failed_when: false
+  become: true
