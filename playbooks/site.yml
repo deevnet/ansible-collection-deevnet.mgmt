@@ -89,6 +89,13 @@
   roles:
     - vernemq
 
-# Observability tooling is not chosen yet. It lands in the substrate
-# observability VM (substrate_observability) and the tenant observability VM
-# (tenant_observability), which are built empty for now (ADR-0013 §5).
+# The central log store (ADR-0022, CHG-0018): VictoriaLogs behind vmauth in the
+# observability store VM. The collector VM (observability_collectors) is built
+# empty; its tooling is ADR-0023's change.
+- name: Configure the log store
+  hosts: observability_store
+  become: true
+  tags: [log-store]
+  roles:
+    - victorialogs
+

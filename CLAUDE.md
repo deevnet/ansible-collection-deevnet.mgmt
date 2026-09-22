@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is the `deevnet.mgmt` Ansible collection for management plane services. It provides roles for centralized logging, monitoring (Grafana), and observability infrastructure. The collection supports Fedora/RHEL systems.
 
 Roles map to ADRs in `deevnet-docs`: `powerdns` (ADR-0004), `minio` (ADR-0007),
-`deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013). `logging` and
-`grafana` are planned, not implemented.
+`deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013),
+`vernemq` (ADR-0012), `victorialogs` (ADR-0022). `grafana` is planned, not implemented.
 
 ## Rules that are easy to get wrong
 
