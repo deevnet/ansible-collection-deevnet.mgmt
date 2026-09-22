@@ -6,13 +6,15 @@
 # only thing any other host can reach. VictoriaLogs "doesn't perform per-tenant
 # authorization"; vmauth does, by mapping a bearer token to a partition.
 #
-# BOTH RUN WITH HOST NETWORKING, and that is a security property, not a style.
-# The syslog listener has no authentication, so its only control is a firewalld
-# rule admitting the network devices and hypervisors - and CHG-0016 measured
-# that a firewalld rule does not filter a published podman port (DNAT plus
-# forward never reaches INPUT). With host networking the listeners are host
-# listeners, which firewalld does filter, and "bound to 127.0.0.1" means what
-# it says.
+# ADR-0027 (CHG-0019) made the store tenants-only: no syslog listener, and no
+# substrate ingest users. vmauth's token check is now the only way in.
+#
+# BOTH STILL RUN WITH HOST NETWORKING. The original reason was the syslog
+# listener, whose only control was a firewalld source rule, and CHG-0016 had
+# measured that firewalld does not filter a published podman port (DNAT plus
+# forward never reaches INPUT). That reason is gone with the listener. It is
+# kept because it is what was deployed and verified, and because "bound to
+# 127.0.0.1" then means the host's loopback rather than a publish rule.
 
 victorialogs_version: "v1.52.0"
 victorialogs_image: "docker.io/victoriametrics/victoria-logs:{{ victorialogs_version }}"
@@ -45,17 +47,10 @@ victorialogs_http_listen: "127.0.0.1:9428"
 victorialogs_retention_period: 30d
 victorialogs_max_disk_usage_percent: 80
 
-# The one unauthenticated ingest path: RFC 5424 syslog over TLS, fixed to the
-# substrate partition (0:0) whatever the sender claims. For the network devices
-# and the hypervisors, which cannot present a token (ADR-0022 §5). 6514 is the
-# registered port for syslog over TLS. A plaintext UDP listener is added only
-# if a device turns out not to support TLS, and that device is named here when
-# it is.
-victorialogs_syslog_port: 6514
-
-# Who may reach the syslog listener. Set in inventory; the role refuses an
-# empty list rather than open the port to everyone.
-victorialogs_syslog_sources: []
+# NO SYSLOG LISTENER. ADR-0027 makes the store tenants-only, so the one
+# unauthenticated ingest path is gone (CHG-0019). The port below is kept only so
+# the role can remove rules left from ADR-0022's listener.
+victorialogs_retired_syslog_port: 6514
 
 # --- vmauth --------------------------------------------------------------------
 # The public listener, TLS only. 8427 is vmauth's own port; 443 is left free
@@ -70,15 +65,10 @@ victorialogs_vmauth_internal_listen: "127.0.0.1:8426"
 # Where vmauth sends everything. Loopback, because of host networking.
 victorialogs_vmauth_backend: "http://{{ victorialogs_http_listen }}/"
 
-# Every ingest user writes the substrate partition only. Tenant partitions are
-# the tenant-token change's, not this one's.
+# The substrate partition. Nothing writes to it any more (ADR-0027); the
+# operator still reads it, and it holds what CHG-0018's trial left.
 victorialogs_vmauth_substrate_account: 0
 victorialogs_vmauth_substrate_project: 0
-
-# One ingest user per host in this group, each with the token from that host's
-# own host_vars/<host>/vault.yml (vault_log_ingest_token). A host can then be
-# revoked alone. The Builder is deliberately not in it (ADR-0022 §5).
-victorialogs_vmauth_ingest_group: log_shippers
 
 # The operator's read token (group_vars/observability_store/vault.yml).
 victorialogs_vmauth_operator_read_token: "{{ vault_victorialogs_operator_read_token | default('') }}"

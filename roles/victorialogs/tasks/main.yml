@@ -26,57 +26,15 @@
       operator token reads the substrate partition only.
     quiet: true
 
-- name: Refuse an open syslog listener
+- name: Fail early if the operator read token is missing or short
   ansible.builtin.assert:
-    that: victorialogs_syslog_sources | length > 0
+    that: victorialogs_vmauth_operator_read_token | length >= 32
     fail_msg: >-
-      victorialogs_syslog_sources is empty. The syslog listener has no
-      authentication, so the source list is its ONLY control; an empty list
-      would mean opening it to every zone that reaches Platform, tenants
-      included. Set it in the observability_store group vars.
+      vault_victorialogs_operator_read_token must be in
+      group_vars/observability_store/vault.yml and at least 32 characters.
+      Generate it with `openssl rand -hex 32`, then vault, commit and push
+      before running this.
     quiet: true
-
-# Which tokens are missing, by HOST NAME, never by value. The assert after it
-# carries no_log and so can only say "assertion failed".
-- name: Report which log tokens are missing
-  ansible.builtin.debug:
-    msg: >-
-      Missing or short (< 32 chars) tokens:
-      {{ groups[victorialogs_vmauth_ingest_group]
-         | reject('in', groups[victorialogs_vmauth_ingest_group]
-                        | map('extract', hostvars)
-                        | selectattr('vault_log_ingest_token', 'defined')
-                        | selectattr('vault_log_ingest_token', 'match', '^.{32,}$')
-                        | map(attribute='inventory_hostname') | list)
-         | list }}
-      {{ ['vault_victorialogs_operator_read_token']
-         if victorialogs_vmauth_operator_read_token | length < 32 else [] }}
-
-- name: Fail early if any token is missing, short or shared
-  ansible.builtin.assert:
-    that:
-      - victorialogs_vmauth_operator_read_token | length >= 32
-      - _ingest | length == groups[victorialogs_vmauth_ingest_group] | length
-      - _ingest | select('match', '^.{32,}$') | list | length == _ingest | length
-      # Every token distinct, the operator's included: a shared token would
-      # make one host's revocation revoke another, and a read token equal to an
-      # ingest token would let a shipping host read the store.
-      - (_ingest + [victorialogs_vmauth_operator_read_token]) | unique | length
-        == _ingest | length + 1
-    fail_msg: >-
-      A log token is missing, shorter than 32 characters, or not unique. The
-      task above names which hosts lack one. Tokens live in the vault: one
-      vault_log_ingest_token per host in {{ victorialogs_vmauth_ingest_group }}
-      (host_vars/<host>/vault.yml), and vault_victorialogs_operator_read_token
-      in group_vars/observability_store/vault.yml. Generate each with
-      `openssl rand -hex 32`, then vault, commit and push before running this.
-    quiet: true
-  vars:
-    _ingest: >-
-      {{ groups[victorialogs_vmauth_ingest_group]
-         | map('extract', hostvars)
-         | selectattr('vault_log_ingest_token', 'defined')
-         | map(attribute='vault_log_ingest_token') | list }}
   no_log: true
 
 # --- TLS, then directories and configuration -----------------------------------
@@ -127,18 +85,12 @@
       - "-storageDataPath=/victoria-logs-data"
       - "-retentionPeriod={{ victorialogs_retention_period }}"
       - "-retention.maxDiskUsagePercent={{ victorialogs_max_disk_usage_percent }}"
-      - "-syslog.listenAddr.tcp=:{{ victorialogs_syslog_port }}"
-      - "-syslog.tls"
-      - "-syslog.tlsCertFile=/tls/cert.pem"
-      - "-syslog.tlsKeyFile=/tls/key.pem"
-      # Whatever the sender claims, syslog lands in the substrate partition.
-      - "-syslog.tenantID.tcp={{ victorialogs_vmauth_substrate_account }}:{{ victorialogs_vmauth_substrate_project }}"
-      # The hostname field in a syslog line is whatever the sender wrote; the
-      # remote address is the one attribution this path can trust.
-      - "-syslog.useRemoteIP.tcp=true"
+      # No -syslog.* flags: ADR-0027 removed the unauthenticated ingest path.
+      # Deletion stays off (the default), which VictoriaLogs' own docs call
+      # "good from security PoV - an attacker cannot remove the existing logs".
     podman_service_stop_timeout: 60
-    # No podman_service_firewall_ports: that opens a port to the whole zone.
-    # The syslog port is opened below, per source, and nothing else is.
+    # No podman_service_firewall_ports: VictoriaLogs listens on loopback only,
+    # and nothing else on this host is opened to the zone.
 
 - name: Run vmauth
   ansible.builtin.include_role:
@@ -167,20 +119,29 @@
     podman_service_firewall_ports:
       - "{{ victorialogs_vmauth_port }}/tcp"
 
-# --- The syslog listener: named sources only ------------------------------------
-# Host INPUT traffic (host networking), so these rich rules filter it. CHG-0018's
-# verification measures that from a source that is not listed.
+# --- Remove ADR-0022's syslog rules ---------------------------------------------
+# The listener is gone (ADR-0027, CHG-0019). A rich rule left behind would keep
+# 6514 open on a host that no longer listens, so the role takes any of them away
+# rather than only stopping to add them.
 
-- name: Admit the named sources to the syslog listener
+- name: Read the zone's rich rules
+  ansible.builtin.command:
+    argv: [firewall-cmd, --zone, "{{ victorialogs_firewalld_zone }}", --list-rich-rules]
+  register: victorialogs_rich_rules
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Remove every rich rule for the retired syslog port
   ansible.posix.firewalld:
-    rich_rule: >-
-      rule family="ipv4" source address="{{ item }}"
-      port port="{{ victorialogs_syslog_port }}" protocol="tcp" accept
+    rich_rule: "{{ item }}"
     zone: "{{ victorialogs_firewalld_zone }}"
     permanent: true
     immediate: true
-    state: enabled
-  loop: "{{ victorialogs_syslog_sources }}"
+    state: disabled
+  loop: >-
+    {{ (victorialogs_rich_rules.stdout_lines | default([]))
+       | select('search', 'port=\"' ~ victorialogs_retired_syslog_port ~ '\"') | list }}
   become: true
 
 - name: Restart now if the certificate or vmauth's users changed
@@ -219,6 +180,5 @@
 - name: Report what the store is serving
   ansible.builtin.debug:
     msg:
-      - "vmauth: https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }} ({{ groups[victorialogs_vmauth_ingest_group] | length }} ingest users, 1 operator read user)"
-      - "syslog/TLS: {{ victorialogs_tls_ip }}:{{ victorialogs_syslog_port }} -> (0, 0), from {{ victorialogs_syslog_sources | join(', ') }}"
+      - "vmauth: https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }} (1 operator read user; tenants' users arrive with tenant tokens)"
       - "VictoriaLogs: {{ victorialogs_http_listen }} (loopback only), retention {{ victorialogs_retention_period }}, disk cap {{ victorialogs_max_disk_usage_percent }}%"
