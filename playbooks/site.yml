@@ -99,3 +99,14 @@
   roles:
     - victorialogs
 
+
+# Every shipping host sends its journal to the log store with its own token
+# (ADR-0022 §5, CHG-0018). Store and forward: the local journal is untouched.
+# The Builder is not in log_shippers and never ships; the hypervisors ship by
+# syslog instead.
+- name: Ship journals to the log store
+  hosts: log_shippers
+  become: true
+  tags: [log-shipping]
+  roles:
+    - journal_upload

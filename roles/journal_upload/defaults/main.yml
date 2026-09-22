@@ -1,0 +1,37 @@
+---
+# journal_upload - ship this host's journal to the log store (ADR-0022 §5, CHG-0018).
+#
+# STORE AND FORWARD, NOT A SWITCH-OVER. The local journal stays exactly as it
+# is and is still the first copy. systemd-journal-upload reads from it and runs
+# with --save-state (in the Fedora unit), so after an outage of the store or the
+# network it resumes from where it got to. The one loss window is local journal
+# rotation outrunning an outage.
+
+# The store's vmauth, by NAME: the certificate carries the name and the address,
+# and a name survives a readdress.
+journal_upload_store_host: "{{ groups['observability_store'] | first }}"
+journal_upload_url: >-
+  https://{{ journal_upload_store_host }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}:{{ hostvars[journal_upload_store_host].victorialogs_vmauth_port | default(8427) }}/insert/journald
+
+# This host's OWN ingest token (host_vars/<host>/vault.yml). One per host, so a
+# host can be revoked alone.
+journal_upload_token: "{{ vault_log_ingest_token | default('') }}"
+
+# Header= needs systemd-journal-upload 258 or later. Fedora 44 ships 259.
+journal_upload_min_systemd: 258
+
+# The site CA, copied from the store host, where the victorialogs role wrote it.
+journal_upload_ca_source: /srv/victorialogs/tls/site-ca.pem
+journal_upload_ca_path: /etc/pki/deevnet/site-ca.pem
+
+# THE TOKEN AT REST. The Fedora unit runs with DynamicUser=yes as
+# systemd-journal-upload, so a root-only file would stop the service reading
+# its own configuration, and the stock 0644 would hand the token to every local
+# user. The unit always holds SupplementaryGroups=systemd-journal, a static
+# group with no human members on these hosts, so the drop-in is 0640
+# root:systemd-journal. journal-upload has no way to read Header= from a systemd
+# credential (journal-upload.conf(5), systemd 259), which is what would
+# otherwise be preferred.
+journal_upload_dropin_dir: /etc/systemd/journal-upload.conf.d
+journal_upload_dropin: "{{ journal_upload_dropin_dir }}/60-deevnet.conf"
+journal_upload_dropin_group: systemd-journal

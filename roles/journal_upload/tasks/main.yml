@@ -1,0 +1,142 @@
+---
+# Ship this host's journal to the log store (ADR-0022 §5, CHG-0018).
+
+- name: Refuse to run without this host's own token
+  ansible.builtin.assert:
+    that: journal_upload_token | length >= 32
+    fail_msg: >-
+      {{ inventory_hostname }} has no vault_log_ingest_token of at least 32
+      characters in host_vars/{{ inventory_hostname }}/vault.yml. Every shipping
+      host has its own token, so it can be revoked alone.
+    quiet: true
+  no_log: true
+
+- name: Install systemd-journal-remote (it carries journal-upload on Fedora)
+  ansible.builtin.dnf:
+    name: systemd-journal-remote
+    state: present
+  become: true
+
+# SELINUX: journal-upload runs confined as systemd_journal_upload_t, which may
+# connect only to ports of the types its policy names - journald's own remote
+# port type among them - and vmauth's 8427 is an unlabelled unreserved_port_t.
+# Enforcing mode denies the connect in 2 ms and the unit exits "Could not
+# connect to server" with nothing else said; the AVC is in audit.log under
+# comm="systemd-journal" (truncated), which is why a grep for "journal-upload"
+# misses it. Found in CHG-0018. Labelling the port on THIS host, as the type
+# the domain is already allowed to reach, grants exactly that connect and
+# loosens nothing else; SELinux stays enforcing.
+- name: Install the SELinux port-labelling tools
+  ansible.builtin.dnf:
+    name: policycoreutils-python-utils
+    state: present
+  become: true
+
+- name: Let journal-upload reach the store's port under SELinux
+  community.general.seport:
+    ports: "{{ hostvars[journal_upload_store_host].victorialogs_vmauth_port | default(8427) }}"
+    proto: tcp
+    setype: journal_remote_port_t
+    state: present
+  become: true
+  notify: restart journal upload
+
+- name: Read the installed systemd version
+  ansible.builtin.command: systemctl --version
+  register: journal_upload_systemd
+  changed_when: false
+
+# Asserted, not assumed: Header= is how the token is sent, and older
+# journal-upload ignores it and uploads without authenticating, which vmauth
+# refuses - silently, from the host's point of view.
+- name: Refuse a systemd too old for Header=
+  ansible.builtin.assert:
+    that: >-
+      (journal_upload_systemd.stdout_lines | first).split()[1] | int
+      >= journal_upload_min_systemd | int
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ journal_upload_systemd.stdout_lines | first }}.
+      Header= needs systemd-journal-upload {{ journal_upload_min_systemd }} or later;
+      without it the token is not sent. Ship this host by syslog instead.
+    quiet: true
+
+- name: Read the site CA from the store host
+  ansible.builtin.slurp:
+    src: "{{ journal_upload_ca_source }}"
+  register: journal_upload_ca
+  delegate_to: "{{ journal_upload_store_host }}"
+  run_once: true
+  become: true
+
+- name: Create the site CA directory
+  ansible.builtin.file:
+    path: "{{ journal_upload_ca_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install the site CA for journal-upload
+  ansible.builtin.copy:
+    content: "{{ journal_upload_ca.content | b64decode }}"
+    dest: "{{ journal_upload_ca_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart journal upload
+
+- name: Create the drop-in directory
+  ansible.builtin.file:
+    path: "{{ journal_upload_dropin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Write the upload configuration with this host's token
+  ansible.builtin.template:
+    src: 60-deevnet.conf.j2
+    dest: "{{ journal_upload_dropin }}"
+    owner: root
+    group: "{{ journal_upload_dropin_group }}"
+    mode: "0640"
+  become: true
+  no_log: true
+  notify: restart journal upload
+
+- name: Enable and start journal-upload
+  ansible.builtin.systemd:
+    name: systemd-journal-upload
+    enabled: true
+    state: started
+  become: true
+
+- name: Apply a changed configuration now
+  ansible.builtin.meta: flush_handlers
+
+# Active is not the same as uploading: a refused token, or a TLS failure, can
+# still leave the unit restarting in a loop. Give it a moment, then read both.
+- name: Let it make its first uploads
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Read the service state
+  ansible.builtin.command: systemctl show systemd-journal-upload -p ActiveState -p NRestarts
+  register: journal_upload_state
+  changed_when: false
+  become: true
+
+- name: Confirm journal-upload is running and not restarting
+  ansible.builtin.assert:
+    that:
+      - "'ActiveState=active' in journal_upload_state.stdout"
+      - "'NRestarts=0' in journal_upload_state.stdout"
+    fail_msg: >-
+      systemd-journal-upload is not running cleanly on {{ inventory_hostname }}
+      ({{ journal_upload_state.stdout_lines | join(', ') }}). Read
+      `journalctl -u systemd-journal-upload` there: a 401 is the token, a TLS
+      error is the CA or the name.
+    quiet: true

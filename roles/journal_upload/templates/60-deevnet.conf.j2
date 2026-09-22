@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Ship this host's journal to the log store (ADR-0022 §5, CHG-0018).
+# 0640 root:{{ journal_upload_dropin_group }}: it holds this host's ingest token.
+[Upload]
+URL={{ journal_upload_url | trim }}
+TrustedCertificateFile={{ journal_upload_ca_path }}
+# No client certificate: this host authenticates with its bearer token, not
+# mTLS (vmauth's mTLS is Enterprise-only). "-" disables it, per
+# systemd-journal-upload(8); otherwise it demands /etc/ssl/certs/journal-upload.pem.
+ServerKeyFile=-
+ServerCertificateFile=-
+Header=Authorization: Bearer {{ journal_upload_token }}

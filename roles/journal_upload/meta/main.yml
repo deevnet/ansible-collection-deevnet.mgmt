@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: journal_upload
+  description: Ship this host's journal to the central log store (ADR-0022 §5)
