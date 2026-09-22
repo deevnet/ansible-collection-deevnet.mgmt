@@ -355,6 +355,51 @@
            'DEEVNET_BROKER_SESSION_TIMEOUT': deevnet_api_broker_session_timeout}) }}
   when: deevnet_api_broker_writer_addr | length > 0
 
+- name: Read the log store's SSH host key
+  # Pinned like the broker's, and read now rather than frozen in inventory for
+  # the same reason. What a spoofed host would be handed here is worse: the
+  # tenant's log tokens themselves.
+  ansible.builtin.slurp:
+    src: "{{ deevnet_api_log_host_key_file }}"
+  delegate_to: "{{ deevnet_api_log_host }}"
+  register: deevnet_api_log_hostkey_read
+  when:
+    - deevnet_api_log_writer_addr | length > 0
+    - deevnet_api_log_host_key | length == 0
+    - deevnet_api_log_host | length > 0
+
+- name: Settle on the log store's host key to pin
+  ansible.builtin.set_fact:
+    deevnet_api_log_host_key_pinned: >-
+      {{ deevnet_api_log_host_key if deevnet_api_log_host_key | length > 0
+         else (deevnet_api_log_hostkey_read.content | default('') | b64decode | trim) }}
+  when: deevnet_api_log_writer_addr | length > 0
+
+- name: Refuse a log writer with no host key to pin
+  ansible.builtin.assert:
+    that:
+      - deevnet_api_log_host_key_pinned | length > 0
+      - deevnet_api_log_host_key_pinned is search('^(ssh|ecdsa)-')
+    fail_msg: >-
+      deevnet_api_log_writer_addr is set, but no host key could be read from
+      {{ deevnet_api_log_host | default('no host in observability_store') }}
+      ({{ deevnet_api_log_host_key_file }}). The API pins this key and will not
+      connect without it.
+    quiet: true
+  when: deevnet_api_log_writer_addr | length > 0
+
+- name: Add the log store's writer when this site has a store
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'DEEVNET_LOG_WRITER_ADDR': deevnet_api_log_writer_addr,
+           'DEEVNET_LOG_WRITER_USER': deevnet_api_log_writer_user,
+           'DEEVNET_LOG_HOST_KEY': deevnet_api_log_host_key_pinned,
+           'DEEVNET_LOG_ENDPOINT': deevnet_api_log_endpoint,
+           'DEEVNET_LOG_CONNECT_TIMEOUT': deevnet_api_log_connect_timeout,
+           'DEEVNET_LOG_SESSION_TIMEOUT': deevnet_api_log_session_timeout}) }}
+  when: deevnet_api_log_writer_addr | length > 0
+
 - name: Refuse a wireless controller with no trust class to serve
   # An API that could reach the controller but served no class would accept the
   # configuration and then refuse every tenant's key, which is a harder failure
