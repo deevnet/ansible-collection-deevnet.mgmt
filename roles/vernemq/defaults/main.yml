@@ -233,3 +233,44 @@ vernemq_ssh_allowed_sources: []
 # where it is needed - measured on this host, not assumed. ssh_restrict.yml
 # asks the connection user instead.
 vernemq_ssh_control_node: ""
+
+# --- The log bridge's account (ADR-0027 §4, CHG-0021) ------------------------
+# The one account on this broker the Deevnet API does not write.
+#
+# The bridge is not a tenant: it subscribes to EVERY tenant's log topic and
+# carries what it finds into that tenant's (index, 2) log partition. The API's
+# account writer refuses to write it, and correctly so - its whole contract is
+# that a pattern sits under one tenant's prefix. So the substrate provisions it
+# here, beside the schema and the database roles, which are the other things
+# about this broker that are not any tenant's.
+#
+# NOTHING IS CREATED UNTIL A PASSWORD IS DECLARED, the same shape as the
+# account writer above: no password, no account.
+#
+#   openssl rand -hex 24
+vernemq_bridge_password: "{{ vault_vernemq_bridge_password | default('') }}"
+
+# The username cannot collide with an API-issued one, and that is checked
+# rather than hoped: those are "<tenant>-<account>" where a tenant name is at
+# most 8 characters (ADR-0002), so a first segment of 9 is unreachable.
+vernemq_bridge_username: substrate-log-bridge
+
+# Pinned, not '*'. The plugin matches "client_id = $2 OR client_id = '*'", so
+# an account may be left open to any client id - which is right for a device
+# whose id the substrate does not choose, and wrong here: this client is one
+# program the substrate deploys, with an id it sets. It must match
+# log_bridge_client_id, and the two defaults are the same word.
+vernemq_bridge_client_id: deevnet-log-bridge
+
+# SUBSCRIBE ONLY, and one filter.
+#
+# `+/log/#` is every tenant's reserved log level and nothing else: the + is one
+# whole level, so it cannot reach past a tenant's prefix into another level,
+# and the # confines the rest to what follows `log`. The API enforces the other
+# side of this - who may publish there (ADR-0027 §3).
+#
+# The publish list is empty, which the broker reads as "may publish nothing".
+# A bridge that could publish could inject a log line attributed to any device
+# of any tenant.
+vernemq_bridge_subscribe:
+  - "+/log/#"

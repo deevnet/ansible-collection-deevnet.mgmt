@@ -1,0 +1,187 @@
+---
+# The MQTT log bridge (ADR-0027 §4, CHG-0021), in the messaging VM beside the
+# broker it subscribes to.
+
+- name: Fail early if the bridge's credentials are missing
+  ansible.builtin.assert:
+    that:
+      - log_bridge_password | length >= 24
+      - log_bridge_store_token | length >= 32
+      - log_bridge_broker_host | length > 0
+      - log_bridge_store_url | length > 0
+    fail_msg: >-
+      The bridge holds two credentials and needs both:
+      vault_vernemq_bridge_password, which the `vernemq` role writes into the
+      broker's account table, and vault_victorialogs_bridge_token, which the
+      `victorialogs` role writes into vmauth's configuration. Both live in the
+      vault; the store token is the SAME value the store is configured with,
+      which is why it is in group_vars/all rather than either host's.
+      log_bridge_store_url is derived from the observability_store group, so an
+      empty one means this site has no log store and the bridge has nowhere to
+      write.
+  no_log: true
+
+- name: Create the bridge's directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ log_bridge_data_root }}"
+    - "{{ log_bridge_tls_dir }}"
+  become: true
+
+# --- The site CA -------------------------------------------------------------
+# Read on the CONTROL NODE, as Ansible's own AppRole. The messaging VM has no
+# path to OpenBao and must not need one.
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ log_bridge_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ log_bridge_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ log_bridge_openbao_ansible_role_id }}"
+      secret_id: "{{ log_bridge_openbao_ansible_secret_id }}"
+  register: log_bridge_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ log_bridge_openbao_addr }}/v1/{{ log_bridge_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ log_bridge_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ log_bridge_bao_login.json.auth.client_token }}"}
+  register: log_bridge_current_ca
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# Written from what OpenBao holds NOW, so a rebuilt root (INC-0003) reaches the
+# bridge rather than leaving it verifying against a CA nobody issues from any
+# more. The container is recreated on a change, because Go reads a root pool
+# once at startup.
+- name: Write the site CA
+  ansible.builtin.copy:
+    dest: "{{ log_bridge_tls_dir }}/site-ca.pem"
+    content: "{{ log_bridge_current_ca.json.data.certificate }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  register: log_bridge_ca_file
+
+# --- The container -----------------------------------------------------------
+
+- name: Run the bridge
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ log_bridge_container_name }}"
+    podman_service_description: "Deevnet MQTT log bridge (ADR-0027 §4)"
+    podman_service_image: "{{ log_bridge_image }}"
+    podman_service_tarball: "{{ log_bridge_tarball }}"
+    # HOST networking, and it publishes nothing.
+    #
+    # The bridge dials the broker on this host's own address, which is what the
+    # broker's certificate carries as a SAN - a container network would leave
+    # it dialling either a name the certificate does not carry or a published
+    # port back through DNAT, for no gain. Its own listener is the health
+    # endpoint, bound to 127.0.0.1, so host networking exposes nothing: there
+    # is no port to filter and no rule to get wrong.
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ log_bridge_tls_dir }}:/etc/deevnet/tls:ro,Z"
+    # Both credentials arrive here, in a root-only env file, and never on a
+    # command line where `ps` would show them.
+    podman_service_env:
+      DEEVNET_BRIDGE_BROKER_URL: "{{ log_bridge_broker_url }}"
+      DEEVNET_BRIDGE_BROKER_USERNAME: "{{ log_bridge_username }}"
+      DEEVNET_BRIDGE_BROKER_PASSWORD: "{{ log_bridge_password }}"
+      DEEVNET_BRIDGE_BROKER_CA_FILE: /etc/deevnet/tls/site-ca.pem
+      DEEVNET_BRIDGE_CLIENT_ID: "{{ log_bridge_client_id }}"
+      DEEVNET_BRIDGE_TOPIC: "{{ log_bridge_topic }}"
+      DEEVNET_BRIDGE_STORE_URL: "{{ log_bridge_store_url }}"
+      DEEVNET_BRIDGE_STORE_TOKEN: "{{ log_bridge_store_token }}"
+      DEEVNET_BRIDGE_STORE_CA_FILE: /etc/deevnet/tls/site-ca.pem
+      DEEVNET_BRIDGE_QUEUE_MAX: "{{ log_bridge_queue_max }}"
+      DEEVNET_BRIDGE_FLUSH_INTERVAL: "{{ log_bridge_flush_interval }}"
+      DEEVNET_BRIDGE_HEALTH_ADDR: "{{ log_bridge_health_addr }}"
+    podman_service_after:
+      - "{{ vernemq_container_name | default('vernemq') }}.service"
+
+# A rewritten CA is not a restart the container would notice by itself: the
+# root pool is read once, at startup.
+- name: Restart the bridge if the site CA changed
+  ansible.builtin.systemd_service:
+    name: "{{ log_bridge_container_name }}"
+    state: restarted
+  when: log_bridge_ca_file.changed
+  become: true
+
+# --- Verification ------------------------------------------------------------
+# The question is not "is it running" but "does it hold the subscription it
+# exists for". Those are different states, and telling them apart is the whole
+# point: a bridge whose account may not hold `+/log/#` connects happily, is
+# refused the filter in an otherwise successful SUBACK, and carries nothing.
+#
+# The bridge answers that question itself - /healthz is 503 until it holds the
+# subscription - so this asks it rather than inferring anything.
+
+- name: Ask the bridge whether it holds its subscription
+  ansible.builtin.uri:
+    url: "http://{{ log_bridge_health_addr }}/healthz"
+    status_code: [200, 503]
+  register: log_bridge_health
+  retries: 20
+  delay: 3
+  until: log_bridge_health.status | default(0) == 200
+  changed_when: false
+  failed_when: false
+  become: true
+
+# Read whatever the state is, so a failure below carries the bridge's own
+# words rather than only an HTTP code.
+- name: Read what the bridge has said since it started
+  ansible.builtin.command:
+    argv: [podman, logs, --since, 10m, "{{ log_bridge_container_name }}"]
+  register: log_bridge_logs
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Confirm the bridge is carrying device logs
+  ansible.builtin.assert:
+    that: log_bridge_health.status | default(0) == 200
+    fail_msg: >-
+      The bridge is not subscribed, so no device log is reaching the store.
+      Its health endpoint answered
+      {{ log_bridge_health.status | default('nothing at all') }} and its own
+      output says why:
+
+      {{ (log_bridge_logs.stdout | default('') | trim)[-800:] | default('no output', true) }}
+
+      The three usual causes, in the order they are worth checking:
+        - the ACL. A refused filter is not a refused connection: the broker
+          answers 0x80 for it in an otherwise successful SUBACK. The account's
+          subscribe list must cover {{ log_bridge_topic }} - see
+          vernemq_bridge_subscribe.
+        - the password. vault_vernemq_bridge_password here and the row the
+          `vernemq` role wrote must agree, or the broker refuses the
+          connection outright.
+        - the client id. It is PINNED in that row, so
+          {{ log_bridge_client_id }} must match vernemq_bridge_client_id.
+    quiet: true
+
+- name: Report what the bridge is carrying
+  ansible.builtin.debug:
+    msg: >-
+      deevnet-log-bridge {{ log_bridge_version }} holds {{ log_bridge_topic }}
+      on {{ log_bridge_broker_url }} as {{ log_bridge_username }}, and writes to
+      {{ log_bridge_store_url }}. It keeps no state: a restart loses whatever
+      the broker does not redeliver to its persistent session, and stopping it
+      loses device logs without touching the broker or any device.
