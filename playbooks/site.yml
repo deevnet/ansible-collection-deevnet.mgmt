@@ -87,8 +87,23 @@
 - name: Configure the MQTT broker
   hosts: mqtt_brokers
   become: true
+  tags: [mqtt-broker]
   roles:
     - vernemq
+
+# The MQTT log bridge (ADR-0027 §4, CHG-0021): device logs from the broker into
+# each tenant's (index, 2) partition. Its own group rather than mqtt_brokers,
+# for the reason every other group here is held empty until its secrets exist -
+# the role refuses to run without both credentials, and a member here would
+# stop every site.yml run on that host. It IS the messaging VM: the bridge runs
+# beside the broker so it subscribes locally and writes over a zone rule that
+# is already declared.
+- name: Configure the MQTT log bridge
+  hosts: log_bridges
+  become: true
+  tags: [log-bridge]
+  roles:
+    - log_bridge
 
 # The central log store (ADR-0022, CHG-0018): VictoriaLogs behind vmauth in the
 # observability store VM. The collector VM (observability_collectors) is built

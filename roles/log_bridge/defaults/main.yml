@@ -1,0 +1,98 @@
+---
+# deevnet-log-bridge - device logs from the broker into each tenant's log
+# partition (ADR-0027 §4, CHG-0021).
+#
+# It runs BESIDE THE BROKER, on the messaging VM, and that is a decision rather
+# than a convenience: it subscribes on the broker's own listener, and it writes
+# to vmauth on the observability store over iot_backend -> platform, which the
+# zone policy already declares. Running it beside the STORE instead would need
+# a new platform -> iot_backend rule, which is the rule CHG-0016 had to add for
+# the API and would rather not add twice.
+#
+# It is our own software, built and staged by the deevnet-log-bridge
+# repository's `make stage` - not by the container image factory, which is
+# chartered for third-party software (ADR-0027 §4).
+#
+# It holds two credentials: a subscribe-only broker account the `vernemq` role
+# writes, and one store token whose vmauth routes confine it to (index, 2) for
+# every tenant. It keeps no state and it is not in any device's path: stopping
+# it loses device logs and breaks nothing.
+
+# v0.1.1 or later, and that is not just currency: v0.1.0 reported itself
+# subscribed when the broker had REFUSED the filter, so the check at the end of
+# this role would have passed for a bridge carrying nothing.
+log_bridge_version: "v0.1.1"
+log_bridge_image: "localhost/deevnet-log-bridge:{{ log_bridge_version }}"
+log_bridge_tarball: "deevnet-log-bridge/deevnet-log-bridge-{{ log_bridge_version }}.tar"
+log_bridge_container_name: deevnet-log-bridge
+
+log_bridge_data_root: /srv/deevnet-log-bridge
+# Holds the site CA and nothing else. A DIRECTORY is mounted, never the file:
+# a file bind-mount follows the inode, so rewriting the CA leaves the container
+# holding the old one until it is recreated.
+log_bridge_tls_dir: "{{ log_bridge_data_root }}/tls"
+
+# --- The broker --------------------------------------------------------------
+# By ADDRESS, not by name. This host is talking to itself and the certificate
+# carries its address as a SAN, so the connection does not have to wait on a
+# resolver - and a bridge that cannot start because DNS is slow would be a
+# silly way to lose logs.
+log_bridge_broker_host: "{{ env.interfaces.eth0.ip | default('') }}"
+log_bridge_broker_port: "{{ vernemq_tls_port | default(8883) }}"
+log_bridge_broker_url: "ssl://{{ log_bridge_broker_host }}:{{ log_bridge_broker_port }}"
+
+# The account the `vernemq` role writes. Same vault value on both sides: these
+# defaults follow that role's so the two cannot be configured apart.
+log_bridge_username: "{{ vernemq_bridge_username | default('substrate-log-bridge') }}"
+log_bridge_password: "{{ vault_vernemq_bridge_password | default('') }}"
+
+# Pinned in the account row too, so this credential is not usable by another
+# client. Changing it here alone leaves the broker refusing the connection.
+log_bridge_client_id: "{{ vernemq_bridge_client_id | default('deevnet-log-bridge') }}"
+
+# Every tenant's reserved log level, and nothing else (ADR-0027 §3). The
+# account's subscribe ACL says the same thing; this is what the bridge asks
+# for, that is what the broker will allow, and they are deliberately identical.
+log_bridge_topic: "+/log/#"
+
+# --- The store ---------------------------------------------------------------
+# vmauth's HTTPS port on the observability store, by NAME here, because that is
+# what its certificate carries.
+log_bridge_store_url: >-
+  {{ ('https://' ~ ((groups['observability_store'] | default([])) | first | default('')) ~ '.' ~
+      deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':' ~ (victorialogs_vmauth_port | default(8427)))
+     if (groups['observability_store'] | default([])) | length > 0 else '' }}
+
+# ONE token for every tenant. It names a tenant per request in a header; vmauth
+# matches that against a route the Deevnet API wrote and overwrites the store's
+# partition headers from the route (ADR-0027 open question 1, CHG-0020). So the
+# bridge selects among tenants the API has created and cannot invent a
+# partition - a tenant with no route is refused, not filed somewhere.
+log_bridge_store_token: "{{ vault_victorialogs_bridge_token | default('') }}"
+
+# --- Bounds ------------------------------------------------------------------
+# The queue is bounded and drops the OLDEST under pressure, counting what it
+# dropped. A device that talks faster than the store accepts must not grow this
+# process until the VM kills it, and must not hold up other tenants' logs.
+log_bridge_queue_max: 10000
+log_bridge_flush_interval: 2s
+
+# Loopback only. It says this process is alive, not that the broker or the
+# store are - both come back, and a bridge that cannot reach either is still
+# the right process to leave running.
+log_bridge_health_addr: "127.0.0.1:9099"
+
+# --- The site CA (ADR-0016) --------------------------------------------------
+# The bridge verifies both ends against it, and nothing else. Fetched fresh
+# rather than copied from the broker's own tls directory: that directory is
+# mounted into the broker with :Z, and a second consumer touching it is how a
+# private SELinux label leaves the broker unable to read its own key.
+#
+# Reissued material is not the only reason to rewrite it. A rebuilt OpenBao
+# generates a NEW root under the same name (INC-0003), so the comparison is
+# against what OpenBao holds now, not against an expiry date.
+log_bridge_openbao_addr: "{{ vernemq_openbao_addr | default('') }}"
+log_bridge_openbao_ca_local: "{{ vernemq_openbao_ca_local | default('') }}"
+log_bridge_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+log_bridge_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+log_bridge_openbao_pki_mount: pki

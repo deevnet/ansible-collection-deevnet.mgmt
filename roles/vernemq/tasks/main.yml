@@ -322,6 +322,12 @@
   ansible.builtin.import_tasks: writer.yml
   when: vernemq_writer_public_key | length > 0
 
+# The one account here the API does not write (ADR-0027 §4). See the task file
+# for why it is the substrate's to provision and what confines it.
+- name: Write the log bridge's broker account
+  ansible.builtin.import_tasks: bridge_account.yml
+  when: vernemq_bridge_password | length > 0
+
 - name: Restrict sshd to named sources
   ansible.builtin.import_tasks: ssh_restrict.yml
   when: vernemq_ssh_restrict | bool
@@ -339,3 +345,6 @@
       {{ vernemq_accounts.stdout | trim }} account(s) in the registry.
       {{ 'No accounts yet - the Deevnet API provisions them (ADR-0012 §3).'
          if (vernemq_accounts.stdout | trim) == '0' else '' }}
+      {{ 'The log bridge may subscribe to ' ~ (vernemq_bridge_subscribe | join(' '))
+         if vernemq_bridge_password | length > 0
+         else 'No log bridge account: no password declared.' }}

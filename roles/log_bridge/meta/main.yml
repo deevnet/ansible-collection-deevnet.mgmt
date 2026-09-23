@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: log_bridge
+  description: The MQTT log bridge, beside the broker (ADR-0027 §4)
