@@ -60,6 +60,7 @@
 # The Deevnet API and its database (ADR-0012), in the provisioning VM.
 - name: Configure the Deevnet API
   hosts: deevnet_api
+  tags: [deevnet-api]
   become: true
   roles:
     - deevnet_api
