@@ -143,6 +143,20 @@
        | select('search', 'port=\"' ~ victorialogs_retired_syslog_port ~ '\"') | list }}
   become: true
 
+# CHG-0018 rendered auth.yml straight into the etc directory. CHG-0020 gave
+# that file two authors - Ansible's base.json and the writer's users.d - and
+# moved the rendered output to the auth directory, which is the one vmauth
+# mounts. The old file was left behind on the host, holding a second copy of
+# the operator's read token that nothing reads and nothing rotates.
+#
+# A credential nobody reads is still a credential. Removed here rather than by
+# hand, so a store rebuilt from an older state does not quietly keep one.
+- name: Remove the pre-CHG-0020 rendered auth file
+  ansible.builtin.file:
+    path: "{{ victorialogs_etc_dir }}/auth.yml"
+    state: absent
+  become: true
+
 - name: Restart now if the certificate changed
   ansible.builtin.meta: flush_handlers
 
