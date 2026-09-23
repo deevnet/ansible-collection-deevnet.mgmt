@@ -49,6 +49,25 @@
     mode: "0755"
   become: true
 
+# The writer runs as its own user, so it needs to TRAVERSE its way in. Both of
+# these are otherwise root-only, and a group-readable base.json inside a 0700
+# directory is still unreadable: the permission that matters is execute on
+# every parent, not read on the file.
+- name: Let the writer reach its files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    # 0750: the group may enter and read, and only root may write. The writer
+    # creates files in users.d/ and the auth directory, which it owns, not
+    # here.
+    mode: "0750"
+  loop:
+    - "{{ victorialogs_data_root }}"
+    - "{{ victorialogs_etc_dir }}"
+  become: true
+
 # Only the rendered file lives here, and it is what the container mounts. The
 # writer renames a new file into place, so it must be able to write the
 # DIRECTORY, not just the file.

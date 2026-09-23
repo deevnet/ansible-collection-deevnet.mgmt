@@ -42,17 +42,17 @@
 - name: Issue the log store's TLS material from the site CA
   ansible.builtin.import_tasks: openbao.yml
 
-- name: Create the store's directories
+# Only the store's own data. The root and the configuration directory are
+# created by writer.yml, which owns their ownership because the writer has to
+# reach through them - two tasks setting the same path is how a role reports
+# "changed" for ever and leaves the permissions to whichever ran last.
+- name: Create the store's data directory
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ victorialogs_data_dir }}"
     state: directory
     owner: root
     group: root
     mode: "0700"
-  loop:
-    - "{{ victorialogs_data_root }}"
-    - "{{ victorialogs_data_dir }}"
-    - "{{ victorialogs_etc_dir }}"
   become: true
 
 # vmauth's users, and the program that writes them. auth.yml is RENDERED by
