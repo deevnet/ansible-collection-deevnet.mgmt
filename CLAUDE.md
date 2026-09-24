@@ -8,9 +8,13 @@ This is the `deevnet.mgmt` Ansible collection for management plane services. It 
 
 Roles map to ADRs in `deevnet-docs`: `powerdns` (ADR-0004), `minio` (ADR-0007),
 `deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013),
-`vernemq` (ADR-0012), `victorialogs` (ADR-0022). `grafana` is planned, not implemented.
+`vernemq` (ADR-0012), `victorialogs` (ADR-0022, ADR-0027), `grafana` (ADR-0024; tenant dashboards, CHG-0024).
 
 ## Rules that are easy to get wrong
+
+- **Grafana's tenant organisations are the Deevnet API's**, not this role's. The role runs the server;
+  a wiped database is repaired by reconciling tenants. Keep `GF_USERS_AUTO_ASSIGN_ORG` on: Grafana 13
+  ignores the organisation the API names on user create when it is off.
 
 - **No Terraform here.** Management-plane workloads are Ansible-only
   (`extended-services.md` §5). That is not an oversight to be corrected.

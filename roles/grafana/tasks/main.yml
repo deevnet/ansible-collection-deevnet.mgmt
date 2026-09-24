@@ -1,0 +1,147 @@
+---
+# Tenant dashboards on the observability store VM (ADR-0024, CHG-0024).
+#
+# The server only. Tenants' organisations, logins and data sources are the
+# Deevnet API's to write, on create and on every reconcile; an empty database
+# here is repaired by reconciling, not by this role.
+
+# --- Refuse to start in a state that would be wrong ----------------------------
+
+- name: Refuse to put Grafana's database on the OS disk
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.mounts | selectattr('mount', 'equalto', '/srv') | list | length == 1
+    fail_msg: >-
+      /srv is not a mountpoint on {{ inventory_hostname }}. Grafana's data belongs
+      on the data disk beside the log store's.
+    quiet: true
+
+- name: Fail early if the admin password or secret key is missing or short
+  ansible.builtin.assert:
+    that:
+      - grafana_admin_password | length >= 32
+      - grafana_secret_key | length >= 32
+    fail_msg: >-
+      vault_grafana_admin_password (group_vars/all/vault.yml) and
+      vault_grafana_secret_key (group_vars/observability_store/vault.yml) must
+      both be set and at least 32 characters. Generate them with
+      `openssl rand -hex 32`, then vault, commit and push before running this.
+    quiet: true
+  no_log: true
+
+# --- Directories, TLS and the plugin ---------------------------------------------
+
+- name: Create Grafana's root directory
+  ansible.builtin.file:
+    path: "{{ grafana_data_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+# The database, sessions and anything Grafana writes. Its own uid, nobody
+# else's: the data sources' secrets are in here, encrypted with the secret key.
+- name: Create Grafana's data directory
+  ansible.builtin.file:
+    path: "{{ grafana_data_dir }}"
+    state: directory
+    owner: "{{ grafana_uid }}"
+    group: "{{ grafana_uid }}"
+    mode: "0700"
+  become: true
+
+- name: Issue Grafana's TLS material from the site CA
+  ansible.builtin.import_tasks: openbao.yml
+
+- name: Install the VictoriaLogs data source plugin
+  ansible.builtin.import_tasks: plugin.yml
+
+# --- The container ---------------------------------------------------------------
+
+- name: Run Grafana
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ grafana_container_name }}"
+    podman_service_description: "Grafana, tenant dashboards (ADR-0024)"
+    podman_service_image: "{{ grafana_image }}"
+    podman_service_tarball: "{{ grafana_tarball }}"
+    podman_service_network: host
+    podman_service_env: "{{ grafana_env }}"
+    podman_service_volumes:
+      - "{{ grafana_data_dir }}:/var/lib/grafana:Z"
+      # Read-only: the container loads this code and cannot change it.
+      - "{{ grafana_plugins_dir }}:/var/lib/grafana/plugins:ro,Z"
+      - "{{ grafana_tls_dir }}:/tls:ro,Z"
+    podman_service_stop_timeout: 60
+    podman_service_firewall_ports:
+      - "{{ grafana_port }}/tcp"
+
+- name: Restart now if the certificate or the plugin changed
+  ansible.builtin.meta: flush_handlers
+
+# --- Readiness ---------------------------------------------------------------------
+
+- name: Wait for Grafana to report healthy
+  ansible.builtin.uri:
+    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/health"
+    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+  register: grafana_health
+  retries: 45
+  delay: 2
+  until: grafana_health.status == 200
+  become: true
+
+# GF_SECURITY_ADMIN_PASSWORD is read only when the database is created, so a
+# password changed in the vault afterwards would leave the API locked out
+# while this role reported success. The password is checked by using it, and
+# reset only when it fails.
+- name: Check the server admin's password works
+  ansible.builtin.uri:
+    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/user"
+    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    url_username: "{{ grafana_admin_user }}"
+    url_password: "{{ grafana_admin_password }}"
+    force_basic_auth: true
+    status_code: [200, 401]
+  register: grafana_admin_check
+  become: true
+  no_log: true
+
+- name: Reset the server admin's password to the vault's
+  ansible.builtin.command:
+    argv: [podman, exec, "{{ grafana_container_name }}", grafana, cli, admin, reset-admin-password, "{{ grafana_admin_password }}"]
+  when: grafana_admin_check.status == 401
+  changed_when: true
+  become: true
+  no_log: true
+
+- name: Confirm Grafana refuses a request with no credentials
+  ansible.builtin.uri:
+    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/org"
+    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    status_code: [401]
+  become: true
+
+- name: Confirm the VictoriaLogs plugin is loaded and signed
+  ansible.builtin.uri:
+    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/plugins/{{ grafana_plugin_id }}/settings"
+    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    url_username: "{{ grafana_admin_user }}"
+    url_password: "{{ grafana_admin_password }}"
+    force_basic_auth: true
+  register: grafana_plugin_settings
+  failed_when: >-
+    grafana_plugin_settings.status != 200
+    or grafana_plugin_settings.json.info.version != grafana_plugin_version
+    or grafana_plugin_settings.json.signature != 'valid'
+  become: true
+  no_log: true
+
+- name: Report what Grafana is serving
+  ansible.builtin.debug:
+    msg:
+      - "Grafana {{ grafana_version }}: https://{{ grafana_tls_common_name }}:{{ grafana_port }} ({{ grafana_tls_ip }})"
+      - "Plugin {{ grafana_plugin_id }} {{ grafana_plugin_version }}, signature valid"
+      - "Tenants' organisations are the Deevnet API's: reconcile a tenant to (re)create its own."

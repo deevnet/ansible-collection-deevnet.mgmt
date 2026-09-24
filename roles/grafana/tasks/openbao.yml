@@ -1,0 +1,152 @@
+---
+# Grafana's TLS material, from the site CA in OpenBao (ADR-0016).
+#
+# The victorialogs role's openbao.yml with Grafana's names. Its own
+# certificate rather than a copy of vmauth's: the two containers run as
+# different users, and a key readable by both would be a key readable by
+# either one's compromise. Grafana has no plaintext listener, so without a
+# certificate this host serves no dashboards.
+#
+# Calls to OpenBao run on the CONTROL NODE against the pinned listener
+# certificate, as Ansible's own AppRole - this VM has no path to OpenBao and
+# must not need one.
+
+# Which of these is missing, by NAME. The assert below carries no_log, because
+# an AppRole id is half of a credential and an assert can echo what it was
+# given - but that makes a failure say only "assertion failed", which is no
+# help at all when four variables could be the cause. This names them without
+# touching a value, and it exists because the first run of this role failed
+# here and the message said nothing.
+- name: Report which OpenBao settings are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing OpenBao settings:
+      {{ ['grafana_openbao_addr'] if grafana_openbao_addr | length == 0 else [] }}
+      {{ ['grafana_openbao_ca_local'] if grafana_openbao_ca_local | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_role_id'] if grafana_openbao_ansible_role_id | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_secret_id'] if grafana_openbao_ansible_secret_id | length == 0 else [] }}
+  when: >-
+    grafana_openbao_addr | length == 0
+    or grafana_openbao_ca_local | length == 0
+    or grafana_openbao_ansible_role_id | length == 0
+    or grafana_openbao_ansible_secret_id | length == 0
+
+- name: Fail early if OpenBao is not configured
+  ansible.builtin.assert:
+    that:
+      - grafana_openbao_addr | length > 0
+      - grafana_openbao_ca_local | length > 0
+      - grafana_openbao_ansible_role_id | length > 0
+      - grafana_openbao_ansible_secret_id | length > 0
+    fail_msg: >-
+      Grafana serves TLS only, so it needs a certificate from the site CA.
+      See the task above for which setting is missing. grafana_openbao_addr and
+      grafana_openbao_ca_local belong in the observability_store group vars;
+      the AppRole id and secret come from the vault.
+  no_log: true
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ grafana_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ grafana_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ grafana_openbao_ansible_role_id }}"
+      secret_id: "{{ grafana_openbao_ansible_secret_id }}"
+  register: grafana_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the token for this run
+  ansible.builtin.set_fact:
+    grafana_bao_token: "{{ grafana_bao_login.json.auth.client_token }}"
+  no_log: true
+
+# Only Grafana mounts this directory, so :Z is safe here. The image runs as uid
+# grafana_uid, which therefore owns the key, 0400.
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ grafana_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Check whether the certificate is still valid for long enough
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ grafana_tls_renew_before }}", -noout, -in, "{{ grafana_tls_dir }}/cert.pem"]
+  register: grafana_cert_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Expiry is not the only reason to reissue, and this is the expensive lesson
+# from 2026-09-17 (INC-0003): a rebuilt OpenBao generates a NEW PKI root under
+# the same common name, so the certificate on the host stays valid for its full
+# term and verifies against nothing, while every client has been handed the new
+# CA. Comparing the issuer is what catches that.
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ grafana_openbao_addr }}/v1/{{ grafana_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ grafana_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ grafana_bao_token }}"}
+  register: grafana_current_ca
+  delegate_to: localhost
+  become: false
+
+- name: Read the site CA the host holds
+  ansible.builtin.slurp:
+    src: "{{ grafana_tls_dir }}/site-ca.pem"
+  register: grafana_host_ca
+  failed_when: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    grafana_cert_wanted: >-
+      {{ grafana_cert_check.rc != 0
+         or grafana_host_ca.content is not defined
+         or (grafana_host_ca.content | b64decode | trim)
+            != (grafana_current_ca.json.data.certificate | trim) }}
+
+- name: Issue Grafana's certificate from the site CA
+  when: grafana_cert_wanted | bool
+  block:
+    # The name is what tenants and the API dial; the address is for probes.
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ grafana_openbao_addr }}/v1/{{ grafana_openbao_pki_mount }}/issue/{{ grafana_openbao_pki_role }}"
+        method: POST
+        ca_path: "{{ grafana_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ grafana_bao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ grafana_tls_common_name }}"
+          alt_names: "{{ grafana_tls_alt_names | join(',') }}"
+          ip_sans: "{{ grafana_tls_ip }}"
+          ttl: "{{ grafana_tls_ttl }}"
+      register: grafana_cert
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write the certificate, key and site CA
+      ansible.builtin.copy:
+        dest: "{{ grafana_tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: cert.pem, content: "{{ grafana_cert.json.data.certificate }}", owner: root, mode: "0644" }
+        - { name: key.pem, content: "{{ grafana_cert.json.data.private_key }}", owner: "{{ grafana_uid }}", mode: "0400" }
+        - { name: site-ca.pem, content: "{{ grafana_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: restart grafana

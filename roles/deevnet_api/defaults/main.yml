@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.7.0"
+deevnet_api_version: "v0.8.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -176,6 +176,21 @@ deevnet_api_log_host: "{{ (groups['observability_store'] | default([])) | first 
 
 deevnet_api_log_connect_timeout: 10s
 deevnet_api_log_session_timeout: 30s
+
+# --- The dashboard server (ADR-0024, CHG-0024) -------------------------------------
+# Grafana beside the log store. The API gives each tenant its organisation,
+# login and data sources there over HTTPS, as the server admin, whose password
+# is grafana_admin_password in the backend credentials. Same segment, so no
+# zone rule. By name, because that is what the certificate carries, and it is
+# also what the tenant is told.
+#
+# Optional, and it needs the log store: empty means the site has no dashboard
+# server. Deploy Grafana (site.yml --tags dashboards) BEFORE an API that has
+# this set, or every tenant's dashboards step fails until it exists.
+deevnet_api_grafana_url: >-
+  {{ ('https://' ~ ((groups['observability_store'] | default([])) | first | default('')) ~ '.' ~
+      deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':3000')
+     if (groups['observability_store'] | default([])) | length > 0 else '' }}
 
 # OpenBao (ADR-0016). The address the API and this role use, and the listener
 # certificate the openbao role fetched to the control node.

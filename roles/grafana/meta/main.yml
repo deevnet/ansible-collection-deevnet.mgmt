@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: grafana
+  description: Tenant dashboards, Grafana OSS beside the log store (ADR-0024)

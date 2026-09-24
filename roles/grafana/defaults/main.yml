@@ -1,0 +1,106 @@
+---
+# grafana - tenant dashboards (ADR-0024, CHG-0024), beside the log store on the
+# observability store VM.
+#
+# One organisation per tenant, created by the Deevnet API, not by this role:
+# the API issues each tenant its login and data sources the way it issues its
+# log tokens. This role runs the server, gives it TLS and the VictoriaLogs
+# plugin, and keeps the server admin's credentials in line with the vault.
+#
+# Host networking, like the log store's containers: CHG-0016 measured that
+# firewalld does not filter a published podman port, and the listener here is
+# one tenants reach.
+
+grafana_version: "13.2.2"
+# grafana/grafana is the OSS edition; grafana/grafana-oss has no 13.x tags.
+grafana_image: "docker.io/grafana/grafana:{{ grafana_version }}"
+grafana_tarball: "grafana/grafana-{{ grafana_version }}.tar"
+grafana_container_name: grafana
+
+# The image runs as this uid. It has no account on the host, and needs none:
+# ownership is set numerically.
+grafana_uid: 472
+
+# On the data disk, beside the log store. Grafana's SQLite is treated as
+# rebuildable (ADR-0024 §6): the API re-creates every tenant's organisation,
+# login and data sources on reconcile, and tenants' dashboards are code.
+grafana_data_root: /srv/grafana
+grafana_data_dir: "{{ grafana_data_root }}/data"
+grafana_plugins_dir: "{{ grafana_data_root }}/plugins"
+grafana_tls_dir: "{{ grafana_data_root }}/tls"
+
+# 3000, Grafana's own port, rather than 443: the image runs as an unprivileged
+# uid, and binding below 1024 would need a capability granted to it.
+grafana_port: 3000
+
+# --- The VictoriaLogs data source plugin ------------------------------------------
+# Mirrored by the Builder's artifacts role (fetched-artifacts); this VM has no
+# route to the internet, and Grafana installs plugins by download. Pushed from
+# the control node and unpacked into a directory the container mounts
+# read-only, so nothing in the container can change what code it loads.
+grafana_plugin_id: victoriametrics-logs-datasource
+grafana_plugin_version: "0.32.0"
+grafana_plugin_zip: "/srv/deevnet-http/grafana-plugins/{{ grafana_plugin_id }}-v{{ grafana_plugin_version }}.zip"
+
+# --- Credentials (vault) -----------------------------------------------------------
+grafana_admin_user: admin
+# group_vars/all/vault.yml: the API uses the same value to create tenants.
+grafana_admin_password: "{{ vault_grafana_admin_password | default('') }}"
+# group_vars/observability_store/vault.yml: encrypts data-source secrets - the
+# tenants' read tokens - in SQLite. Stable, or those secrets become unreadable
+# until the API re-ensures every tenant.
+grafana_secret_key: "{{ vault_grafana_secret_key | default('') }}"
+
+# --- TLS, from the site CA in OpenBao (ADR-0016) -------------------------------------
+# The same settings as the log store's, used on the CONTROL NODE.
+grafana_openbao_addr: ""
+grafana_openbao_ca_local: ""
+grafana_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+grafana_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+grafana_openbao_pki_mount: pki
+grafana_openbao_pki_role: platform
+
+grafana_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+grafana_tls_alt_names: []
+grafana_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
+grafana_tls_ttl: 2160h
+grafana_tls_renew_before: 2592000
+
+# --- Server settings ---------------------------------------------------------------------
+# Every one is a decision of ADR-0024 §3 or a consequence of this VM having no
+# internet; see the comments beside each.
+grafana_env:
+  GF_SERVER_PROTOCOL: https
+  GF_SERVER_HTTP_PORT: "{{ grafana_port }}"
+  GF_SERVER_DOMAIN: "{{ grafana_tls_common_name }}"
+  GF_SERVER_ROOT_URL: "https://{{ grafana_tls_common_name }}:{{ grafana_port }}/"
+  GF_SERVER_CERT_FILE: /tls/cert.pem
+  GF_SERVER_CERT_KEY: /tls/key.pem
+  GF_SECURITY_ADMIN_USER: "{{ grafana_admin_user }}"
+  # Read only when the database is first created. After that the role checks
+  # the password works and resets it if the vault moved (tasks/main.yml).
+  GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+  GF_SECURITY_SECRET_KEY: "{{ grafana_secret_key }}"
+  GF_SECURITY_COOKIE_SECURE: "true"
+  GF_SECURITY_DISABLE_GRAVATAR: "true"
+  # Nobody signs themselves up or makes an organisation: the API does both.
+  GF_USERS_ALLOW_SIGN_UP: "false"
+  GF_USERS_ALLOW_ORG_CREATE: "false"
+  # auto_assign_org STAYS ON. Grafana 13 honours the organisation the API names
+  # when it creates a tenant's login only while it is on; off, it ignores it and
+  # makes the login a personal organisation named for the tenant (verified on
+  # 13.2.2). The named organisation wins, so no login lands in organisation 1.
+  GF_USERS_AUTO_ASSIGN_ORG: "true"
+  GF_USERS_AUTO_ASSIGN_ORG_ROLE: Viewer
+  GF_AUTH_ANONYMOUS_ENABLED: "false"
+  # Grafana's own alerting is off (ADR-0024 §3): alerting is ADR-0023's, and a
+  # contact point is a URL the server would call on a tenant's behalf.
+  GF_UNIFIED_ALERTING_ENABLED: "false"
+  # No internet here. Without these Grafana 13 tries, and logs, downloading
+  # plugins, update checks and a news feed on every start.
+  GF_PLUGINS_PREINSTALL_DISABLED: "true"
+  GF_ANALYTICS_REPORTING_ENABLED: "false"
+  GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+  GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+  GF_NEWS_NEWS_FEED_ENABLED: "false"
+  GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"

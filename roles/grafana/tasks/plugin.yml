@@ -1,0 +1,94 @@
+---
+# The VictoriaLogs data source plugin (Apache 2.0, signed by Grafana Labs).
+#
+# The zip is pushed from the control node, like the images, and unpacked with
+# Python's zipfile because the VM has no unzip. A marker file records the
+# version unpacked, so the plugin is replaced only when the version changes and
+# a run with nothing to do reports nothing changed.
+
+- name: Check the plugin zip is staged on the control node
+  ansible.builtin.stat:
+    path: "{{ grafana_plugin_zip }}"
+  register: grafana_plugin_zip_stat
+  delegate_to: localhost
+  become: false
+
+- name: Refuse to run without the plugin
+  ansible.builtin.assert:
+    that: grafana_plugin_zip_stat.stat.exists
+    fail_msg: >-
+      {{ grafana_plugin_zip }} is not on the control node. Mirror it with the
+      deevnet.builder artifacts role: site.yml --tags fetched-artifacts.
+    quiet: true
+
+- name: Read which plugin version is unpacked
+  ansible.builtin.slurp:
+    src: "{{ grafana_plugins_dir }}/{{ grafana_plugin_id }}/.deevnet-version"
+  register: grafana_plugin_marker
+  failed_when: false
+  become: true
+
+- name: Replace the plugin
+  when: >-
+    grafana_plugin_marker.content is not defined
+    or (grafana_plugin_marker.content | b64decode | trim) != grafana_plugin_version
+  block:
+    - name: Create the plugins directory
+      ansible.builtin.file:
+        path: "{{ grafana_plugins_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: Push the plugin zip
+      ansible.builtin.copy:
+        src: "{{ grafana_plugin_zip }}"
+        dest: "{{ grafana_data_root }}/{{ grafana_plugin_zip | basename }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: Remove the old plugin
+      ansible.builtin.file:
+        path: "{{ grafana_plugins_dir }}/{{ grafana_plugin_id }}"
+        state: absent
+      become: true
+
+    - name: Unpack the plugin
+      ansible.builtin.command:
+        argv: [python3, -m, zipfile, -e, "{{ grafana_data_root }}/{{ grafana_plugin_zip | basename }}", "{{ grafana_plugins_dir }}"]
+      changed_when: true
+      become: true
+
+    # Owned by root and not writable by the container, which mounts the
+    # directory read-only as well. The backend binaries must be executable:
+    # zipfile does not restore modes.
+    - name: Make the plugin readable, and its backends executable
+      ansible.builtin.shell: |
+        set -eu
+        d={{ grafana_plugins_dir | quote }}/{{ grafana_plugin_id | quote }}
+        chown -R root:root "$d"
+        find "$d" -type d -exec chmod 0755 {} +
+        find "$d" -type f -exec chmod 0644 {} +
+        find "$d" -type f -name 'victoriametrics_logs_backend_plugin_*' -exec chmod 0755 {} +
+      changed_when: true
+      become: true
+
+    - name: Record the version unpacked
+      ansible.builtin.copy:
+        dest: "{{ grafana_plugins_dir }}/{{ grafana_plugin_id }}/.deevnet-version"
+        content: "{{ grafana_plugin_version }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify: restart grafana
+
+    - name: Remove the pushed zip
+      ansible.builtin.file:
+        path: "{{ grafana_data_root }}/{{ grafana_plugin_zip | basename }}"
+        state: absent
+      become: true
