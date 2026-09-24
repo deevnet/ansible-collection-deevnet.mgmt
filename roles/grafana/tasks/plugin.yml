@@ -5,6 +5,11 @@
 # Python's zipfile because the VM has no unzip. A marker file records the
 # version unpacked, so the plugin is replaced only when the version changes and
 # a run with nothing to do reports nothing changed.
+#
+# The marker lives OUTSIDE the plugin's directory. Grafana checks that
+# directory against the plugin's signed manifest, and a file the manifest does
+# not list - this marker, the first time it was put there - makes the
+# signature "modified" and the plugin refuses to load.
 
 - name: Check the plugin zip is staged on the control node
   ansible.builtin.stat:
@@ -23,7 +28,7 @@
 
 - name: Read which plugin version is unpacked
   ansible.builtin.slurp:
-    src: "{{ grafana_plugins_dir }}/{{ grafana_plugin_id }}/.deevnet-version"
+    src: "{{ grafana_plugin_marker_file }}"
   register: grafana_plugin_marker
   failed_when: false
   become: true
@@ -79,7 +84,7 @@
 
     - name: Record the version unpacked
       ansible.builtin.copy:
-        dest: "{{ grafana_plugins_dir }}/{{ grafana_plugin_id }}/.deevnet-version"
+        dest: "{{ grafana_plugin_marker_file }}"
         content: "{{ grafana_plugin_version }}\n"
         owner: root
         group: root

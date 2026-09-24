@@ -41,6 +41,9 @@ grafana_port: 3000
 grafana_plugin_id: victoriametrics-logs-datasource
 grafana_plugin_version: "0.32.0"
 grafana_plugin_zip: "/srv/deevnet-http/grafana-plugins/{{ grafana_plugin_id }}-v{{ grafana_plugin_version }}.zip"
+# Which version is unpacked. Beside the plugins directory, never in it: see
+# tasks/plugin.yml.
+grafana_plugin_marker_file: "{{ grafana_data_root }}/{{ grafana_plugin_id }}.version"
 
 # --- Credentials (vault) -----------------------------------------------------------
 grafana_admin_user: admin
