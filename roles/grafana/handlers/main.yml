@@ -1,0 +1,7 @@
+---
+# A reissued certificate is read at start.
+- name: restart grafana
+  ansible.builtin.systemd:
+    name: "{{ grafana_container_name }}"
+    state: restarted
+  become: true

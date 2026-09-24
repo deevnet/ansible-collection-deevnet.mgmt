@@ -115,3 +115,12 @@
   roles:
     - victorialogs
 
+# Tenant dashboards (ADR-0024, CHG-0024): Grafana beside the log store. The
+# server only; each tenant's organisation is the Deevnet API's to create.
+- name: Configure the dashboard server
+  hosts: observability_store
+  become: true
+  tags: [dashboards]
+  roles:
+    - grafana
+

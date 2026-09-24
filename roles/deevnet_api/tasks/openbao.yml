@@ -400,6 +400,18 @@
            'DEEVNET_LOG_SESSION_TIMEOUT': deevnet_api_log_session_timeout}) }}
   when: deevnet_api_log_writer_addr | length > 0
 
+- name: Add the dashboard server when this site has one
+  # Verified with the site CA the container already mounts: Grafana's
+  # certificate comes from the same CA as the API's own.
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'DEEVNET_GRAFANA_URL': deevnet_api_grafana_url,
+           'DEEVNET_GRAFANA_CACERT': '/etc/deevnet-api/tls/site-ca.pem'}) }}
+  when:
+    - deevnet_api_grafana_url | length > 0
+    - deevnet_api_log_writer_addr | length > 0
+
 - name: Refuse a wireless controller with no trust class to serve
   # An API that could reach the controller but served no class would accept the
   # configuration and then refuse every tenant's key, which is a harder failure
