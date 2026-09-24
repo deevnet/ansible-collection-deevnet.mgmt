@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: tenant_downloads
+  description: Read-only tenant developer downloads on Platform (CHG-0025)

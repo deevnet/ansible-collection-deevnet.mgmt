@@ -124,3 +124,12 @@
   roles:
     - grafana
 
+# Tenant developer downloads (CHG-0025): the provider, Terraform, Pi Imager,
+# MicroPython and the take-home Pi image, served read-only to DVNTM-TD.
+- name: Configure the tenant downloads server
+  hosts: observability_store
+  become: true
+  tags: [tenant-downloads]
+  roles:
+    - tenant_downloads
+

@@ -1,0 +1,6 @@
+---
+- name: restart tenant downloads
+  ansible.builtin.systemd:
+    name: "{{ tenant_downloads_container_name }}"
+    state: restarted
+  become: true
