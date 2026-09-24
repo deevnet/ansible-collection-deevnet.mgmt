@@ -1,0 +1,149 @@
+---
+# The tenant downloads server's TLS material, from the site CA in OpenBao
+# (ADR-0016). The grafana role's openbao.yml with this role's names. Laptops
+# verify it with the site CA that install-provider.sh and tenant-check.sh
+# carry, so a download on a shared Wi-Fi cannot be swapped in transit.
+#
+# Calls to OpenBao run on the CONTROL NODE against the pinned listener
+# certificate, as Ansible's own AppRole - this VM has no path to OpenBao and
+# must not need one.
+
+# Which of these is missing, by NAME. The assert below carries no_log, because
+# an AppRole id is half of a credential and an assert can echo what it was
+# given - but that makes a failure say only "assertion failed", which is no
+# help at all when four variables could be the cause. This names them without
+# touching a value, and it exists because the first run of this role failed
+# here and the message said nothing.
+- name: Report which OpenBao settings are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing OpenBao settings:
+      {{ ['tenant_downloads_openbao_addr'] if tenant_downloads_openbao_addr | length == 0 else [] }}
+      {{ ['tenant_downloads_openbao_ca_local'] if tenant_downloads_openbao_ca_local | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_role_id'] if tenant_downloads_openbao_ansible_role_id | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_secret_id'] if tenant_downloads_openbao_ansible_secret_id | length == 0 else [] }}
+  when: >-
+    tenant_downloads_openbao_addr | length == 0
+    or tenant_downloads_openbao_ca_local | length == 0
+    or tenant_downloads_openbao_ansible_role_id | length == 0
+    or tenant_downloads_openbao_ansible_secret_id | length == 0
+
+- name: Fail early if OpenBao is not configured
+  ansible.builtin.assert:
+    that:
+      - tenant_downloads_openbao_addr | length > 0
+      - tenant_downloads_openbao_ca_local | length > 0
+      - tenant_downloads_openbao_ansible_role_id | length > 0
+      - tenant_downloads_openbao_ansible_secret_id | length > 0
+    fail_msg: >-
+      The tenant downloads server serves TLS only, so it needs a certificate from the site CA.
+      See the task above for which setting is missing. tenant_downloads_openbao_addr and
+      tenant_downloads_openbao_ca_local belong in the observability_store group vars;
+      the AppRole id and secret come from the vault.
+  no_log: true
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ tenant_downloads_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ tenant_downloads_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ tenant_downloads_openbao_ansible_role_id }}"
+      secret_id: "{{ tenant_downloads_openbao_ansible_secret_id }}"
+  register: tenant_downloads_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the token for this run
+  ansible.builtin.set_fact:
+    tenant_downloads_bao_token: "{{ tenant_downloads_bao_login.json.auth.client_token }}"
+  no_log: true
+
+# Only this container mounts this directory, so :Z is safe. nginx's master
+# process reads the key as root before it drops privileges.
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ tenant_downloads_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Check whether the certificate is still valid for long enough
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ tenant_downloads_tls_renew_before }}", -noout, -in, "{{ tenant_downloads_tls_dir }}/cert.pem"]
+  register: tenant_downloads_cert_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Expiry is not the only reason to reissue, and this is the expensive lesson
+# from 2026-09-17 (INC-0003): a rebuilt OpenBao generates a NEW PKI root under
+# the same common name, so the certificate on the host stays valid for its full
+# term and verifies against nothing, while every client has been handed the new
+# CA. Comparing the issuer is what catches that.
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ tenant_downloads_openbao_addr }}/v1/{{ tenant_downloads_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ tenant_downloads_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ tenant_downloads_bao_token }}"}
+  register: tenant_downloads_current_ca
+  delegate_to: localhost
+  become: false
+
+- name: Read the site CA the host holds
+  ansible.builtin.slurp:
+    src: "{{ tenant_downloads_tls_dir }}/site-ca.pem"
+  register: tenant_downloads_host_ca
+  failed_when: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    tenant_downloads_cert_wanted: >-
+      {{ tenant_downloads_cert_check.rc != 0
+         or tenant_downloads_host_ca.content is not defined
+         or (tenant_downloads_host_ca.content | b64decode | trim)
+            != (tenant_downloads_current_ca.json.data.certificate | trim) }}
+
+- name: Issue the downloads server's certificate from the site CA
+  when: tenant_downloads_cert_wanted | bool
+  block:
+    # The name is what tenants and the API dial; the address is for probes.
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ tenant_downloads_openbao_addr }}/v1/{{ tenant_downloads_openbao_pki_mount }}/issue/{{ tenant_downloads_openbao_pki_role }}"
+        method: POST
+        ca_path: "{{ tenant_downloads_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ tenant_downloads_bao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ tenant_downloads_tls_common_name }}"
+          alt_names: "{{ tenant_downloads_tls_alt_names | join(',') }}"
+          ip_sans: "{{ tenant_downloads_tls_ip }}"
+          ttl: "{{ tenant_downloads_tls_ttl }}"
+      register: tenant_downloads_cert
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write the certificate, key and site CA
+      ansible.builtin.copy:
+        dest: "{{ tenant_downloads_tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: cert.pem, content: "{{ tenant_downloads_cert.json.data.certificate }}", owner: root, mode: "0644" }
+        - { name: key.pem, content: "{{ tenant_downloads_cert.json.data.private_key }}", owner: root, mode: "0400" }
+        - { name: site-ca.pem, content: "{{ tenant_downloads_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: restart tenant downloads

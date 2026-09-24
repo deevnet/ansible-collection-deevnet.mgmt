@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+# Tenant downloads (CHG-0025): static, read-only, HTTPS only. The only server
+# in this container - the image's default port-80 server is not mounted.
+server {
+    listen {{ tenant_downloads_port }} ssl;
+    server_name _;
+
+    ssl_certificate     /tls/cert.pem;
+    ssl_certificate_key /tls/key.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    root /content;
+    autoindex on;
+    autoindex_exact_size off;
+    server_tokens off;
+    add_header X-Content-Type-Options nosniff always;
+
+    # Read-only: anything but GET and HEAD is refused. (limit_except is only
+    # allowed inside a location.)
+    location / {
+        limit_except GET HEAD { deny all; }
+    }
+
+    # The CA itself, so a laptop can fetch it once and check its fingerprint
+    # against the tenant guide before trusting anything it signs.
+    location = /site-ca.pem {
+        alias /tls/site-ca.pem;
+        default_type application/x-pem-file;
+    }
+}

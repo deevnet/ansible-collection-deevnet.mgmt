@@ -1,0 +1,40 @@
+---
+# tenant_downloads - what a tenant developer's laptop needs, served from the
+# site to DVNTM-TD (CHG-0025): the deevnet provider and its scripts, the
+# grafana provider, Terraform, Pi Imager, MicroPython and the take-home Pi
+# image. Read-only static files over HTTPS.
+#
+# On Platform, not the Builder: the segmentation standard forbids tenant dev ->
+# management, and a meetup on library internet should not download these forty
+# times. The Builder curates the tree (its artifacts role, the provider's
+# `make stage`, the image factory's `make pi-backend-publish`) and this role
+# pushes it here, because domain VMs cannot reach the Builder.
+
+tenant_downloads_image: "docker.io/library/nginx:1.29.1-alpine"
+tenant_downloads_tarball: "nginx/nginx-1.29.1-alpine.tar"
+tenant_downloads_container_name: tenant-downloads
+
+tenant_downloads_port: 8443
+
+# The tree on the CONTROL NODE, and where it lands on the data disk.
+tenant_downloads_source: /srv/deevnet-http/tenant/
+tenant_downloads_root: /srv/tenant-downloads
+tenant_downloads_content_dir: "{{ tenant_downloads_root }}/content"
+tenant_downloads_conf_dir: "{{ tenant_downloads_root }}/conf.d"
+tenant_downloads_tls_dir: "{{ tenant_downloads_root }}/tls"
+
+# --- TLS, from the site CA in OpenBao (ADR-0016) ---------------------------------
+tenant_downloads_openbao_addr: ""
+tenant_downloads_openbao_ca_local: ""
+tenant_downloads_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
+tenant_downloads_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+tenant_downloads_openbao_pki_mount: pki
+tenant_downloads_openbao_pki_role: platform
+
+# Tenants use the downloads name; the host name is kept so a probe by host works.
+tenant_downloads_tls_common_name: "downloads.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+tenant_downloads_tls_alt_names:
+  - "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+tenant_downloads_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
+tenant_downloads_tls_ttl: 2160h
+tenant_downloads_tls_renew_before: 2592000

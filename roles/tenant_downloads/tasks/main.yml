@@ -1,0 +1,120 @@
+---
+# Tenant downloads on the observability store (CHG-0025). Static files the
+# Builder curates, pushed here and served read-only over HTTPS to DVNTM-TD.
+
+- name: Refuse to put the downloads on the OS disk
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.mounts | selectattr('mount', 'equalto', '/srv') | list | length == 1
+    fail_msg: >-
+      /srv is not a mountpoint on {{ inventory_hostname }}. The downloads (a Pi
+      image alone is a gigabyte) belong on the data disk.
+    quiet: true
+
+- name: Check the tree is staged on the control node
+  ansible.builtin.stat:
+    path: "{{ tenant_downloads_source }}"
+  register: tenant_downloads_source_stat
+  delegate_to: localhost
+  become: false
+
+- name: Refuse to run without the tree
+  ansible.builtin.assert:
+    that: tenant_downloads_source_stat.stat.isdir | default(false)
+    fail_msg: >-
+      {{ tenant_downloads_source }} is not on the control node. Stage it with the
+      deevnet.builder artifacts role (--tags fetched-artifacts), the provider's
+      `make stage` and the image factory's `make pi-backend-publish`.
+    quiet: true
+
+- name: Install rsync, which the push needs at both ends
+  ansible.builtin.dnf:
+    name: rsync
+    state: present
+  become: true
+
+- name: Create the directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ tenant_downloads_root }}"
+    - "{{ tenant_downloads_content_dir }}"
+    - "{{ tenant_downloads_conf_dir }}"
+  become: true
+
+- name: Issue the downloads server's TLS material from the site CA
+  ansible.builtin.import_tasks: openbao.yml
+
+# Mirrors the Builder's tree exactly: a file removed there is removed here, so
+# nothing stale stays downloadable. Root-owned and world-readable; the
+# container mounts it read-only.
+- name: Push the tree from the Builder
+  ansible.posix.synchronize:
+    src: "{{ tenant_downloads_source }}"
+    dest: "{{ tenant_downloads_content_dir }}/"
+    delete: true
+    checksum: false
+    rsync_opts:
+      - "--chmod=D0755,F0644"
+      - "--chown=root:root"
+  become: true
+
+- name: Write the server configuration
+  ansible.builtin.template:
+    src: tenant-downloads.conf.j2
+    dest: "{{ tenant_downloads_conf_dir }}/tenant-downloads.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart tenant downloads
+
+- name: Run the downloads server
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ tenant_downloads_container_name }}"
+    podman_service_description: "Tenant developer downloads (CHG-0025)"
+    podman_service_image: "{{ tenant_downloads_image }}"
+    podman_service_tarball: "{{ tenant_downloads_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ tenant_downloads_content_dir }}:/content:ro,Z"
+      # The DIRECTORY replaces the image's conf.d, so its default server on
+      # port 80 is never loaded.
+      - "{{ tenant_downloads_conf_dir }}:/etc/nginx/conf.d:ro,Z"
+      - "{{ tenant_downloads_tls_dir }}:/tls:ro,Z"
+    podman_service_firewall_ports:
+      - "{{ tenant_downloads_port }}/tcp"
+
+- name: Restart now if the certificate or configuration changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the index to answer over verified TLS
+  ansible.builtin.uri:
+    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/"
+    ca_path: "{{ tenant_downloads_tls_dir }}/site-ca.pem"
+    validate_certs: true
+    headers: {Host: "{{ tenant_downloads_tls_common_name }}"}
+  register: tenant_downloads_index
+  retries: 20
+  delay: 2
+  until: tenant_downloads_index.status == 200
+  become: true
+
+- name: Confirm a write is refused
+  ansible.builtin.uri:
+    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/probe"
+    method: PUT
+    body: "x"
+    ca_path: "{{ tenant_downloads_tls_dir }}/site-ca.pem"
+    status_code: [403, 405]
+  become: true
+
+- name: Report what is served
+  ansible.builtin.debug:
+    msg: "Tenant downloads: https://{{ tenant_downloads_tls_common_name }}:{{ tenant_downloads_port }}/ ({{ tenant_downloads_tls_ip }})"
