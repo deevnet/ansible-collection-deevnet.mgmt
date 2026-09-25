@@ -43,6 +43,7 @@
     status_code: [200, 204]
   loop:
     - { path: "{{ openbao_kv_mount }}", body: { type: kv, options: { version: "2" } } }
+    - { path: "{{ openbao_build_kv_mount }}", body: { type: kv, options: { version: "2" } } }
     - { path: transit, body: { type: transit } }
     - { path: "{{ openbao_pki_mount }}", body: { type: pki, config: { max_lease_ttl: "{{ openbao_pki_ttl }}" } } }
   when: (item.path ~ '/') not in openbao_mounts.json
@@ -207,3 +208,7 @@
           OpenBao is initialised. {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json
           holds the recovery key and Ansible's AppRole: move them into the vault
           (vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id) and delete the file.
+
+- name: Write the build-time secrets
+  ansible.builtin.import_tasks: build_secrets.yml
+  when: openbao_bootstrap_token is not defined
