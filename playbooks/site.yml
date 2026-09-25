@@ -40,6 +40,7 @@
 - name: Configure OpenBao
   hosts: openbao
   become: true
+  tags: [openbao]
   roles:
     - openbao
 

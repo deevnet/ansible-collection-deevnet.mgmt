@@ -60,9 +60,22 @@ openbao_init_output_dir: "{{ playbook_dir }}/../.openbao"
 # After initialisation, Ansible works through its own AppRole.
 openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
 openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
+# The image-factory AppRole's credentials, which scripts/pve-creds uses. Only
+# checked here: empty means they have not been issued yet (build_secrets.yml).
+openbao_image_factory_role_id: "{{ vault_openbao_image_factory_role_id | default('') }}"
+openbao_image_factory_secret_id: "{{ vault_openbao_image_factory_secret_id | default('') }}"
 
 # ADR-0016 §3
 openbao_kv_mount: deevnet-api
+# Build-time secrets (CHG-0026): what the image factory's Packer builds and the
+# tenant fabric's Terraform need, read per run by scripts/pve-creds and never
+# rendered to a file. The inventory stays authoritative; this is the copy the
+# builds read, so every read is audited and the token that reads it lives
+# minutes.
+openbao_build_kv_mount: image-factory
+# The hypervisors whose Proxmox API token is written to
+# image-factory/proxmox/<node>. Each needs proxmox_token_id/_secret.
+openbao_build_hypervisors: "{{ groups['hypervisors'] | default([]) }}"
 openbao_transit_key: tenant-secrets
 openbao_pki_mount: pki
 openbao_pki_ttl: 87600h
@@ -94,8 +107,15 @@ openbao_policies:
     path "sys/policies/acl/*" { capabilities = ["create", "read", "update"] }
     path "auth/approle/role/*" { capabilities = ["create", "read", "update"] }
     path "{{ openbao_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
+    path "{{ openbao_build_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
     path "transit/keys/*" { capabilities = ["create", "read", "update"] }
     path "{{ openbao_pki_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
+
+  # The image factory and the tenant fabric at build time (CHG-0026): read the
+  # Proxmox tokens, and nothing else - not the API's backends, not a mount,
+  # not PKI.
+  image-factory: |
+    path "{{ openbao_build_kv_mount }}/data/proxmox/*" { capabilities = ["read"] }
 
 # AppRoles, by name.
 openbao_approles:
@@ -107,3 +127,10 @@ openbao_approles:
     token_policies: [ansible]
     token_ttl: 30m
     token_max_ttl: 2h
+  # One build's worth: scripts/pve-creds logs in, reads once and revokes its
+  # own token, so three uses and fifteen minutes is all a token ever gets.
+  image-factory:
+    token_policies: [image-factory]
+    token_ttl: 15m
+    token_max_ttl: 1h
+    token_num_uses: 3
