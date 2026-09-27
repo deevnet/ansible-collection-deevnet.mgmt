@@ -292,6 +292,17 @@
            'DEEVNET_IOT_TRUST_CLASSES': deevnet_api_iot_trust_classes}) }}
   when: deevnet_api_omada_url | length > 0
 
+# The trust class an admission issues its tenant developer key in (ADR-0029).
+# Only when the site serves it: the API refuses an admission class that is not
+# a served trust class, and empty means admissions issue no key.
+- name: Add the admission Wi-Fi class to the API environment
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({'DEEVNET_ADMISSION_WIFI_CLASS': deevnet_api_admission_wifi_class}) }}
+  when:
+    - deevnet_api_omada_url | length > 0
+    - deevnet_api_admission_wifi_class | length > 0
+
 # --- The broker account writer (CHG-0016) ------------------------------------
 
 - name: Read the messaging host's SSH host key

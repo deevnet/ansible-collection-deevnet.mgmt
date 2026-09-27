@@ -97,6 +97,13 @@ deevnet_api_iot_trust_classes: >-
   {%- endfor -%}
   {{ out | join(',') }}
 
+# The class an admission issues a tenant developer key in (ADR-0029): the
+# tenant_dev segment, when inventory makes it a PPSK one, else none. A tenant
+# needs that network to reach this API, so its first key comes with the
+# enrollment token rather than from its own apply.
+deevnet_api_admission_wifi_class: >-
+  {{ 'tenant_dev' if (deevnet_vlans | default({})).get('tenant_dev', {}).get('wifi_security', 'psk') == 'ppsk' else '' }}
+
 # The exit node's egress agent (ADR-0015 §7). It reads GET /v1/fabric/egress
 # and nothing else, so the hypervisor holds no operator credential. Optional:
 # empty leaves that route operator-only. The same value goes to the agent, from
