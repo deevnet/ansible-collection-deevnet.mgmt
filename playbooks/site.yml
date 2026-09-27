@@ -55,6 +55,7 @@
 - name: Configure the tenant Terraform state store
   hosts: tenant_state
   become: true
+  tags: [tenant-state]
   roles:
     - minio
 

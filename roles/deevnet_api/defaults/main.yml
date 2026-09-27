@@ -97,6 +97,11 @@ deevnet_api_iot_trust_classes: >-
   {%- endfor -%}
   {{ out | join(',') }}
 
+# Whether the state store serves TLS (CHG-0030). Set with the minio role's
+# minio_tls_enabled; deevnet_api_state_endpoint, what tenants are told, turns
+# https in the same commit.
+deevnet_api_minio_tls: false
+
 # The class an admission issues a tenant developer key in (ADR-0029): the
 # tenant_dev segment, when inventory makes it a PPSK one, else none. A tenant
 # needs that network to reach this API, so its first key comes with the

@@ -1,0 +1,7 @@
+---
+# A reissued certificate is read at start, so MinIO restarts to serve it.
+- name: restart minio
+  ansible.builtin.systemd:
+    name: "{{ minio_container_name }}"
+    state: restarted
+  become: true

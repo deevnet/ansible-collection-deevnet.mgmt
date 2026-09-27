@@ -303,6 +303,18 @@
     - deevnet_api_omada_url | length > 0
     - deevnet_api_admission_wifi_class | length > 0
 
+# The state store over TLS (CHG-0030): the admin client dials it by address and
+# verifies it against the site CA the API already mounts. Separate from the dict
+# above for the same reason as the Omada block: every value there must be
+# non-empty, and a site without TLS on its state store sets nothing here.
+- name: Point the API's state store client at TLS
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'MINIO_ADMIN_TLS': 'true',
+           'MINIO_ADMIN_CACERT': '/etc/deevnet-api/tls/site-ca.pem'}) }}
+  when: deevnet_api_minio_tls | bool
+
 # --- The broker account writer (CHG-0016) ------------------------------------
 
 - name: Read the messaging host's SSH host key

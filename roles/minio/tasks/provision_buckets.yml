@@ -35,7 +35,7 @@
   ansible.builtin.command:
     cmd: >
       podman exec {{ minio_container_name }}
-      mc alias set local http://127.0.0.1:9000
+      mc alias set local {{ minio_scheme }}://127.0.0.1:9000
       {{ minio_root_user }} {{ minio_root_password }}
   changed_when: false
   become: true
