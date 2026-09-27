@@ -18,6 +18,10 @@
         openssl rand -base64 24
   no_log: true
 
+- name: Issue the state store's certificate
+  ansible.builtin.import_tasks: tls.yml
+  when: minio_tls_enabled | bool
+
 # Published ports rather than host networking: unlike an authoritative DNS
 # server, MinIO has no per-request source-address policy that a port mapping
 # would defeat. Access control is the credential, and the credential is scoped
@@ -39,12 +43,18 @@
     podman_service_ports:
       - "{{ minio_listen_address }}:{{ minio_api_port }}:9000/tcp"
       - "{{ minio_listen_address }}:{{ minio_console_port }}:9001/tcp"
-    podman_service_volumes:
-      - "{{ minio_data_dir }}:/data:Z"
-    podman_service_env:
-      MINIO_ROOT_USER: "{{ minio_root_user }}"
-      MINIO_ROOT_PASSWORD: "{{ minio_root_password }}"
-    podman_service_command: [server, /data, --console-address, ":9001"]
+    podman_service_volumes: >-
+      {{ ([minio_data_dir ~ ':/data:Z'])
+         + ([minio_tls_dir ~ ':/certs:Z'] if minio_tls_enabled | bool else []) }}
+    # SSL_CERT_FILE makes the site CA the trust store inside the container, so
+    # `podman exec ... mc` - which inherits the container's environment -
+    # verifies the TLS listener rather than being told to skip verification.
+    podman_service_env: >-
+      {{ {'MINIO_ROOT_USER': minio_root_user, 'MINIO_ROOT_PASSWORD': minio_root_password}
+         | combine({'SSL_CERT_FILE': '/certs/CAs/site-ca.pem'} if minio_tls_enabled | bool else {}) }}
+    podman_service_command: >-
+      {{ ['server', '/data', '--console-address', ':9001']
+         + (['--certs-dir', '/certs'] if minio_tls_enabled | bool else []) }}
     podman_service_firewall_ports:
       - "{{ minio_api_port }}/tcp"
       - "{{ minio_console_port }}/tcp"
@@ -57,9 +67,12 @@
     host: 127.0.0.1
     timeout: 90
 
+# Over TLS this also proves the certificate verifies against the site CA for
+# the address it was dialed at.
 - name: Confirm MinIO reports itself healthy
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ minio_api_port }}/minio/health/live"
+    url: "{{ minio_scheme }}://127.0.0.1:{{ minio_api_port }}/minio/health/live"
+    ca_path: "{{ (minio_tls_dir ~ '/CAs/site-ca.pem') if minio_tls_enabled | bool else omit }}"
     status_code: [200]
   register: minio_health
   retries: 10

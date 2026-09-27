@@ -1,0 +1,155 @@
+---
+# The state store's TLS material, from the site CA in OpenBao (ADR-0016,
+# CHG-0030). The tenant_downloads role's openbao.yml with this role's names.
+# A tenant's Terraform state holds every secret the substrate issued it, and it
+# crosses DVNTM-TD, where laptops are isolated by IP but not against ARP
+# spoofing (ADR-0029 §4) - so the state store must be TLS, verified against the
+# site CA the tenant already carries.
+#
+# Calls to OpenBao run on the CONTROL NODE against the pinned listener
+# certificate, as Ansible's own AppRole - this VM has no path to OpenBao and
+# must not need one.
+
+# Which of these is missing, by NAME. The assert below carries no_log, because
+# an AppRole id is half of a credential and an assert can echo what it was
+# given - but that makes a failure say only "assertion failed", which is no
+# help at all when four variables could be the cause. This names them without
+# touching a value, and it exists because the first run of this role failed
+# here and the message said nothing.
+- name: Report which OpenBao settings are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing OpenBao settings:
+      {{ ['minio_openbao_addr'] if minio_openbao_addr | length == 0 else [] }}
+      {{ ['minio_openbao_ca_local'] if minio_openbao_ca_local | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_role_id'] if minio_openbao_ansible_role_id | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_secret_id'] if minio_openbao_ansible_secret_id | length == 0 else [] }}
+  when: >-
+    minio_openbao_addr | length == 0
+    or minio_openbao_ca_local | length == 0
+    or minio_openbao_ansible_role_id | length == 0
+    or minio_openbao_ansible_secret_id | length == 0
+
+- name: Fail early if OpenBao is not configured
+  ansible.builtin.assert:
+    that:
+      - minio_openbao_addr | length > 0
+      - minio_openbao_ca_local | length > 0
+      - minio_openbao_ansible_role_id | length > 0
+      - minio_openbao_ansible_secret_id | length > 0
+    fail_msg: >-
+      With minio_tls_enabled the state store serves TLS only, so it needs a certificate from the site CA.
+      See the task above for which setting is missing. minio_openbao_addr and
+      minio_openbao_ca_local belong in the tenant_state group vars;
+      the AppRole id and secret come from the vault.
+  no_log: true
+
+- name: Log in to OpenBao as Ansible
+  ansible.builtin.uri:
+    url: "{{ minio_openbao_addr }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ minio_openbao_ca_local }}"
+    body_format: json
+    body:
+      role_id: "{{ minio_openbao_ansible_role_id }}"
+      secret_id: "{{ minio_openbao_ansible_secret_id }}"
+  register: minio_bao_login
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Keep the token for this run
+  ansible.builtin.set_fact:
+    minio_bao_token: "{{ minio_bao_login.json.auth.client_token }}"
+  no_log: true
+
+# MinIO's --certs-dir layout: public.crt and private.key at the top, and CAs/
+# for the CAs it trusts. Only this container mounts it, so :Z is safe; MinIO
+# runs as root in the container and reads the key as root.
+- name: Create the TLS directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: ["{{ minio_tls_dir }}", "{{ minio_tls_dir }}/CAs"]
+  become: true
+
+- name: Check whether the certificate is still valid for long enough
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ minio_tls_renew_before }}", -noout, -in, "{{ minio_tls_dir }}/public.crt"]
+  register: minio_cert_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Expiry is not the only reason to reissue, and this is the expensive lesson
+# from 2026-09-17 (INC-0003): a rebuilt OpenBao generates a NEW PKI root under
+# the same common name, so the certificate on the host stays valid for its full
+# term and verifies against nothing, while every client has been handed the new
+# CA. Comparing the issuer is what catches that.
+- name: Read the site CA as OpenBao currently holds it
+  ansible.builtin.uri:
+    url: "{{ minio_openbao_addr }}/v1/{{ minio_openbao_pki_mount }}/cert/ca"
+    ca_path: "{{ minio_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ minio_bao_token }}"}
+  register: minio_current_ca
+  delegate_to: localhost
+  become: false
+
+- name: Read the site CA the host holds
+  ansible.builtin.slurp:
+    src: "{{ minio_tls_dir }}/CAs/site-ca.pem"
+  register: minio_host_ca
+  failed_when: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    minio_cert_wanted: >-
+      {{ minio_cert_check.rc != 0
+         or minio_host_ca.content is not defined
+         or (minio_host_ca.content | b64decode | trim)
+            != (minio_current_ca.json.data.certificate | trim) }}
+
+- name: Issue the state store's certificate from the site CA
+  when: minio_cert_wanted | bool
+  block:
+    # The name is what tenants dial; the host address is what the API dials
+    # (deevnet_api_minio_endpoint); 127.0.0.1 is what this role's own health
+    # check and mc dial from the host.
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ minio_openbao_addr }}/v1/{{ minio_openbao_pki_mount }}/issue/{{ minio_openbao_pki_role }}"
+        method: POST
+        ca_path: "{{ minio_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ minio_bao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ minio_tls_common_name }}"
+          alt_names: "{{ minio_tls_alt_names | join(',') }}"
+          ip_sans: "{{ minio_tls_ips | join(',') }}"
+          ttl: "{{ minio_tls_ttl }}"
+      register: minio_cert
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write the certificate, key and site CA
+      ansible.builtin.copy:
+        dest: "{{ minio_tls_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: public.crt, content: "{{ minio_cert.json.data.certificate }}", owner: root, mode: "0644" }
+        - { name: private.key, content: "{{ minio_cert.json.data.private_key }}", owner: root, mode: "0400" }
+        - { name: CAs/site-ca.pem, content: "{{ minio_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: restart minio
