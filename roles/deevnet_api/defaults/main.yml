@@ -72,11 +72,19 @@ deevnet_api_enrollment_ttl: 72h
 deevnet_api_tenant_vmid_base: 2000
 deevnet_api_mac_namespace: "{{ deevnet_mac_namespace | default('') }}"
 # The newest template whose name starts with this is cloned, which is the rule
-# the proxmox_vm role already follows.
-deevnet_api_template_prefix: "fedora-server-"
+# the proxmox_vm role already follows. Tenants clone the TENANT template, built
+# without a_autoprov (image factory `make proxmox-fedora-tenant`, ADR-0028) -
+# never the substrate's fedora-server-*. Build that template on the node before
+# deploying this: with no match, a workload create fails rather than falling
+# back to the substrate one.
+deevnet_api_template_prefix: "fedora-tenant-"
 deevnet_api_tenant_storage: local-lvm
 deevnet_api_tenant_disk: scsi0
-deevnet_api_tenant_ciuser: "{{ proxmox_vm_ciuser | default('a_autoprov') }}"
+# The account a tenant's ssh_keys land on, and which the API reports as the
+# workload's login_user. Deliberately not a_autoprov (ADR-0028): the tenant
+# holds the only key to it. cloud-init creates it from the image's default
+# user, which on Fedora carries passwordless sudo - it is the tenant's VM.
+deevnet_api_tenant_ciuser: tenant
 
 # Tenant Wi-Fi keys (ADR-0012 §3, CHG-0013). Optional: leave the URL empty and
 # the API issues none and its wifi-keys routes refuse with a reason. That is not
