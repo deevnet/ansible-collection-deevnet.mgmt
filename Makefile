@@ -1,5 +1,5 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
-        vm-identity vm-identity-assign admit unadmit \
+        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -55,6 +55,12 @@ help:
 "" \
 "  unadmit NAME=<name>" \
 "      Revoke an admission that was never used (its Wi-Fi key stops working)" \
+"" \
+"  remove-tenant NAME=<name>" \
+"      Take a tenant out of service: its workloads, the tenant, then its Terraform state" \
+"" \
+"  purge-tenant-state NAME=<name>" \
+"      Remove a deleted tenant's leftover Terraform state, every version" \
 "" \
 "  list" \
 "      Show installed collections in project and user paths" \
@@ -129,6 +135,13 @@ admit:
 
 unadmit:
 	@./scripts/tenant-admission.sh unadmit "$(NAME)"
+
+# Tenant removal (runbook: Tenant Removal). Both ask for the name to be typed back.
+remove-tenant:
+	@./scripts/tenant-removal.sh remove "$(NAME)"
+
+purge-tenant-state:
+	@./scripts/tenant-removal.sh purge-state "$(NAME)"
 
 list:
 	@echo "== Project collections ($(PROJECT_COLLECTIONS_PATH)) =="
