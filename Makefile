@@ -1,5 +1,5 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
-        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state \
+        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -55,6 +55,9 @@ help:
 "" \
 "  unadmit NAME=<name>" \
 "      Revoke an admission that was never used (its Wi-Fi key stops working)" \
+"" \
+"  rotate-wifi-key NAME=<name> [KEY=admission]" \
+"      Rotate a tenant's Wi-Fi key (new password, same key): writes ~/<name>-wifi-<key>.txt (0600)" \
 "" \
 "  remove-tenant NAME=<name>" \
 "      Take a tenant out of service: its workloads, the tenant, then its Terraform state" \
@@ -135,6 +138,11 @@ admit:
 
 unadmit:
 	@./scripts/tenant-admission.sh unadmit "$(NAME)"
+
+# A new password for a tenant's Wi-Fi key; KEY defaults to the DVNTM-TD key
+# the tenant was admitted with (runbook: Tenant Admission).
+rotate-wifi-key:
+	@./scripts/tenant-wifi-key.sh rotate "$(NAME)" "$(or $(KEY),admission)"
 
 # Tenant removal (runbook: Tenant Removal). Both ask for the name to be typed back.
 remove-tenant:
