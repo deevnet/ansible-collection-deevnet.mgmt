@@ -10,36 +10,20 @@
 # (mode 0600), written for the person handing them over, not for a program.
 set -euo pipefail
 
-API_URL="${DEEVNET_API_ENDPOINT:-https://api.mobile.deevnet.net:8080}"
-API_HOST="${DEEVNET_API_HOST:-a_autoprov@dv02prv001v01.mobile.deevnet.net}"
-DOWNLOADS="${DEEVNET_DOWNLOADS:-https://downloads.mobile.deevnet.net:8443}"
-CA="${DEEVNET_API_CACERT:-$(cd "$(dirname "$0")/.." && pwd)/.openbao/site-ca.pem}"
-
-die() { echo "$*" >&2; exit 2; }
+. "$(dirname "$0")/lib/deevnet-api.sh"
 
 cmd="${1:-}"; name="${2:-}"; mac="${3:-}"
 [[ "$cmd" == admit || "$cmd" == unadmit ]] || die "usage: $0 admit NAME [MAC] | unadmit NAME"
-[[ "$name" =~ ^[a-z][a-z0-9]{0,7}$ ]] ||
-  die "'$name' is not a tenant name: 1-8 lowercase letters or digits, starting with a letter"
+check_name "$name"
 [[ -z "$mac" || "$mac" =~ ^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$ ]] ||
   die "'$mac' is not a MAC address (AA-BB-CC-00-11-22)"
-[[ -r "$CA" ]] || die "no site CA at $CA"
-
 out="$HOME/$name-admission.txt"
 
-operator_token() {
-  ssh -o BatchMode=yes "$API_HOST" \
-    "sudo podman inspect deevnet-api --format '{{range .Config.Env}}{{println .}}{{end}}'" |
-    sed -n 's/^DEEVNET_API_TOKEN=//p'
-}
-
-token="$(operator_token)"
-[[ -n "$token" ]] || die "could not read the operator token from deevnet-api on $API_HOST"
+load_operator_token
 
 if [[ "$cmd" == unadmit ]]; then
-  code=$(curl -sS --cacert "$CA" -X DELETE -H "Authorization: Bearer $token" \
-    -o /dev/null -w '%{http_code}' "$API_URL/v1/admissions/$name")
-  unset token
+  code=$(api DELETE "/v1/admissions/$name" /dev/null)
+  unset TOKEN
   case "$code" in
     2??) echo "revoked the admission for $name: its Wi-Fi key no longer works"
          rm -f "$out" ;;
@@ -58,10 +42,8 @@ fi
 
 body="{\"name\":\"$name\"${mac:+,\"mac\":\"$mac\"}}"
 resp="$(mktemp)"; trap 'rm -f "$resp"' EXIT; chmod 600 "$resp"
-code=$(curl -sS --cacert "$CA" -H "Authorization: Bearer $token" \
-  -H 'Content-Type: application/json' -d "$body" \
-  -o "$resp" -w '%{http_code}' "$API_URL/v1/admissions")
-unset token
+code=$(api POST /v1/admissions "$resp" -H 'Content-Type: application/json' -d "$body")
+unset TOKEN
 if [[ "$code" != 201 ]]; then
   # An error body carries no secret.
   echo "HTTP $code admitting $name: $(cat "$resp")" >&2
