@@ -1,5 +1,5 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
-        vm-identity vm-identity-assign \
+        vm-identity vm-identity-assign admit unadmit \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -49,6 +49,12 @@ help:
 "" \
 "  vm-identity-assign" \
 "      vm-identity + allocate identity for management VMs that have none" \
+"" \
+"  admit NAME=<name> [MAC=AA-BB-CC-00-11-22]" \
+"      Admit a tenant name: writes the handover details to ~/<name>-admission.txt (0600)" \
+"" \
+"  unadmit NAME=<name>" \
+"      Revoke an admission that was never used (its Wi-Fi key stops working)" \
 "" \
 "  list" \
 "      Show installed collections in project and user paths" \
@@ -116,6 +122,14 @@ vm-identity-assign: install-dev
 	  ansible-playbook playbooks/vm-identity.yml -e vm_identity_assign=true
 
 # ---------- Inspection ----------
+# Tenant admission (runbook: Tenant Admission). The operator token is read
+# from the API container over SSH; see scripts/tenant-admission.sh.
+admit:
+	@./scripts/tenant-admission.sh admit "$(NAME)" "$(MAC)"
+
+unadmit:
+	@./scripts/tenant-admission.sh unadmit "$(NAME)"
+
 list:
 	@echo "== Project collections ($(PROJECT_COLLECTIONS_PATH)) =="
 	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH)" ansible-galaxy collection list || true
