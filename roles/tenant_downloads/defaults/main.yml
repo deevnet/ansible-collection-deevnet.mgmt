@@ -23,6 +23,11 @@ tenant_downloads_content_dir: "{{ tenant_downloads_root }}/content"
 tenant_downloads_conf_dir: "{{ tenant_downloads_root }}/conf.d"
 tenant_downloads_tls_dir: "{{ tenant_downloads_root }}/tls"
 
+# The site CA is served under two names: its own, which says which site it
+# belongs to, and /site-ca.pem, the name a tenant saves it under locally (the
+# role name kit.env and apps use: "the CA of the site I am on").
+tenant_downloads_ca_name: "deevnet-{{ deevnet_substrate | default('site') }}-ca.pem"
+
 # --- TLS, from the site CA in OpenBao (ADR-0016) ---------------------------------
 tenant_downloads_openbao_addr: ""
 tenant_downloads_openbao_ca_local: ""
