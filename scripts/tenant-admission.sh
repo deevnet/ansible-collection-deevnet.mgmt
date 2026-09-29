@@ -54,9 +54,9 @@ fi
 fingerprint=$(openssl x509 -in "$CA" -noout -fingerprint -sha256 | cut -d= -f2)
 
 umask 077
-python3 - "$resp" "$out" "$API_URL" "$DOWNLOADS" "$fingerprint" <<'EOF'
+python3 - "$resp" "$out" "$API_URL" "$SITE_CA_URL" "$fingerprint" <<'EOF'
 import json, sys
-resp, out, api, downloads, fingerprint = sys.argv[1:]
+resp, out, api, ca_url, fingerprint = sys.argv[1:]
 d = json.load(open(resp))
 w = d.get("wifi") or {}
 lines = [
@@ -74,12 +74,13 @@ lines = [
 if w.get("mac"):
     lines.append(f"  works only for   {w['mac']}")
 lines += [
-    f"Site CA            {downloads}/site-ca.pem",
+    f"Site CA            {ca_url}",
     f"  SHA-256          {fingerprint}",
     "",
     "For the tenant:",
     f"  1. Join {w.get('ssid', 'the network')} with the password above.",
-    "  2. Download site-ca.pem and check its SHA-256 fingerprint matches the one above.",
+    "  2. Download the site CA, save it as site-ca.pem, and check its SHA-256",
+    "     fingerprint matches the one above.",
     "  3. export DEEVNET_API_TOKEN=<the enrollment token>, then make init && make apply.",
     "     The first apply spends the token and the Wi-Fi key becomes the tenant's own.",
 ]

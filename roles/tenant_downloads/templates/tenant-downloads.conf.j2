@@ -22,7 +22,13 @@ server {
     }
 
     # The CA itself, so a laptop can fetch it once and check its fingerprint
-    # against the tenant guide before trusting anything it signs.
+    # against the tenant guide before trusting anything it signs. Under its
+    # own name, which says whose CA it is, and under /site-ca.pem, the name a
+    # tenant saves it as.
+    location = /{{ tenant_downloads_ca_name }} {
+        alias /tls/site-ca.pem;
+        default_type application/x-pem-file;
+    }
     location = /site-ca.pem {
         alias /tls/site-ca.pem;
         default_type application/x-pem-file;
