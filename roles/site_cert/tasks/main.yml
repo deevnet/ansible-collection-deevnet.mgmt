@@ -170,6 +170,31 @@
       no_log: true
       notify: "{{ site_cert_notify }}"
 
+# A directory a container mounts with :Z carries that container's private
+# SELinux label, and podman applies it only when it CREATES the container. A
+# file written here later gets the host's default label instead, and a
+# container that is merely restarted cannot read it: at CHG-0031 the broker's
+# new root file was var_t, its TLS listener reported running, and every
+# handshake was reset. A file already labelled like its directory is left
+# alone, and nothing is done where SELinux is off.
+- name: Give the files their directory's SELinux label
+  ansible.builtin.shell:
+    cmd: |
+      selinuxenabled 2>/dev/null || exit 0
+      for f in {{ [site_cert_cert_file, site_cert_key_file, site_cert_ca_file] | map('quote') | join(' ') }}; do
+        [ -e "$f" ] || continue
+        d=$(dirname "$f")
+        if [ "$(stat -c %C "$f")" != "$(stat -c %C "$d")" ]; then
+          chcon --reference="$d" "$f" && echo "relabelled $f"
+        fi
+      done
+    chdir: "{{ site_cert_dir }}"
+  register: site_cert_relabel
+  changed_when: site_cert_relabel.stdout | length > 0
+  check_mode: false
+  become: true
+  notify: "{{ site_cert_notify }}"
+
 # The CA's old name (ADR-0030 §4), left behind by the roles before this one.
 - name: Remove the CA under its old name
   ansible.builtin.file:
