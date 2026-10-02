@@ -10,7 +10,7 @@ DOWNLOADS="${DEEVNET_DOWNLOADS:-https://downloads.mobile.deevnet.net:8443}"
 # The site root (ADR-0030), under the name a tenant keeps it as too.
 SITE_CA_URL="${DEEVNET_SITE_CA_URL:-$DOWNLOADS/deevnet-mobile-root-ca.pem}"
 STATE_BUCKET="${DEEVNET_STATE_BUCKET:-tf-state}"
-CA="${DEEVNET_API_CACERT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/ansible-inventory-deevnet/mobile/pki/deevnet-mobile-root-ca.pem}"
+CA="${DEEVNET_API_CACERT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/ansible-inventory-deevnet/pki/mobile/deevnet-mobile-root-ca.pem}"
 
 die() { echo "$*" >&2; exit 2; }
 
