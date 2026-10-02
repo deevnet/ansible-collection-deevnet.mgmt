@@ -15,6 +15,18 @@
         head -c 32 /dev/urandom | base64
   no_log: true
 
+- name: Fail early without the site root
+  ansible.builtin.assert:
+    that:
+      - openbao_site_root_local is file
+      - openbao_site_root_key | length > 0
+    fail_msg: >-
+      OpenBao issues from an intermediate under the site root (ADR-0030 §2), so
+      it needs the root's certificate ({{ openbao_site_root_local }}) and its key
+      (vault_site_root_ca_key). Both come from playbooks/site-root-ca.yml, once per site.
+  delegate_to: localhost
+  become: false
+
 - name: Create OpenBao directories
   ansible.builtin.file:
     path: "{{ item }}"

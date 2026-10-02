@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: site_cert
+  description: Issue a service's TLS certificate from the site CA in OpenBao and install the site root beside it
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

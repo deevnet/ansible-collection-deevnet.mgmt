@@ -1,0 +1,179 @@
+---
+# Names the missing settings without touching a value: the assert below carries
+# no_log, because an AppRole id is half of a credential.
+- name: Report which site certificate settings are missing
+  ansible.builtin.debug:
+    msg: >-
+      Missing:
+      {{ ['site_cert_dir'] if site_cert_dir | length == 0 else [] }}
+      {{ ['site_cert_common_name'] if site_cert_common_name | length == 0 else [] }}
+      {{ ['site_cert_openbao_addr'] if site_cert_openbao_addr | length == 0 else [] }}
+      {{ ['site_cert_openbao_ca_local'] if site_cert_openbao_ca_local | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_role_id'] if site_cert_openbao_role_id | length == 0 else [] }}
+      {{ ['vault_openbao_ansible_secret_id'] if site_cert_openbao_secret_id | length == 0 else [] }}
+  when: >-
+    site_cert_dir | length == 0 or site_cert_common_name | length == 0
+    or site_cert_openbao_addr | length == 0 or site_cert_openbao_ca_local | length == 0
+    or site_cert_openbao_role_id | length == 0 or site_cert_openbao_secret_id | length == 0
+
+- name: Fail early if the certificate is not fully described
+  ansible.builtin.assert:
+    that:
+      - site_cert_dir | length > 0
+      - site_cert_common_name | length > 0
+      - site_cert_openbao_addr | length > 0
+      - site_cert_openbao_ca_local | length > 0
+      - site_cert_openbao_role_id | length > 0
+      - site_cert_openbao_secret_id | length > 0
+    fail_msg: See the task above for which setting is missing.
+  no_log: true
+
+- name: Create the certificate directory
+  ansible.builtin.file:
+    path: "{{ site_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+# The root comes from the inventory, never from OpenBao: OpenBao holds an
+# intermediate, and a rebuilt OpenBao holds a different one (ADR-0030 §2).
+- name: Install the site root
+  ansible.builtin.copy:
+    src: "{{ site_cert_root_local }}"
+    dest: "{{ site_cert_dir }}/{{ site_cert_ca_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: "{{ site_cert_notify }}"
+
+- name: Check whether the certificate is still valid for long enough
+  ansible.builtin.command:
+    argv: [openssl, x509, -checkend, "{{ site_cert_renew_before }}", -noout,
+           -in, "{{ site_cert_dir }}/{{ site_cert_cert_file }}"]
+  register: site_cert_expiry
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# Expiry is not the only reason to reissue. A certificate from an intermediate
+# that has since been replaced (an OpenBao rebuild), or from the old internal
+# root, stays valid for its term and chains to nothing a client trusts - the
+# lesson of INC-0003. The certificate file holds the leaf then the
+# intermediate, so the same file is the untrusted link.
+- name: Check whether the certificate chains to the site root
+  ansible.builtin.command:
+    argv: [openssl, verify, -CAfile, "{{ site_cert_dir }}/{{ site_cert_ca_file }}",
+           -untrusted, "{{ site_cert_dir }}/{{ site_cert_cert_file }}",
+           "{{ site_cert_dir }}/{{ site_cert_cert_file }}"]
+  register: site_cert_chain
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+- name: Decide whether the certificate must be issued
+  ansible.builtin.set_fact:
+    site_cert_issued: "{{ site_cert_expiry.rc != 0 or site_cert_chain.rc != 0 }}"
+
+- name: Issue the certificate from the site CA
+  when: site_cert_issued | bool
+  block:
+    - name: Log in to OpenBao as Ansible
+      ansible.builtin.uri:
+        url: "{{ site_cert_openbao_addr }}/v1/auth/approle/login"
+        method: POST
+        ca_path: "{{ site_cert_openbao_ca_local }}"
+        body_format: json
+        body:
+          role_id: "{{ site_cert_openbao_role_id }}"
+          secret_id: "{{ site_cert_openbao_secret_id }}"
+      register: site_cert_login
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ site_cert_openbao_addr }}/v1/{{ site_cert_pki_mount }}/issue/{{ site_cert_pki_role }}"
+        method: POST
+        ca_path: "{{ site_cert_openbao_ca_local }}"
+        headers: {X-Vault-Token: "{{ site_cert_login.json.auth.client_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ site_cert_common_name }}"
+          alt_names: "{{ site_cert_alt_names | join(',') }}"
+          ip_sans: "{{ site_cert_ips | join(',') }}"
+          ttl: "{{ site_cert_ttl }}"
+      register: site_cert_response
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ca_chain is the intermediate alone: OpenBao never holds the root.
+    - name: Assemble the full chain
+      ansible.builtin.set_fact:
+        site_cert_chain_pem: "{{ ([site_cert_response.json.data.certificate] + site_cert_response.json.data.ca_chain)
+          | map('trim') | join('\n') }}"
+
+    # Run before anything is written: if OpenBao still issues from something
+    # other than an intermediate under the site root - the openbao play has not
+    # run since the root was made - a certificate written now would be reissued
+    # on every run and trusted by no client.
+    - name: Make a scratch file for the new chain
+      ansible.builtin.tempfile:
+        suffix: .pem
+      register: site_cert_scratch
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Check the new certificate chains to the site root
+      ansible.builtin.shell:
+        cmd: >-
+          cat > {{ site_cert_scratch.path | quote }} &&
+          openssl verify -CAfile {{ site_cert_root_local | quote }}
+          -untrusted {{ site_cert_scratch.path | quote }} {{ site_cert_scratch.path | quote }};
+          rc=$?; rm -f {{ site_cert_scratch.path | quote }}; exit $rc
+        stdin: "{{ site_cert_chain_pem }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: site_cert_new_chain
+      failed_when: false
+
+    - name: Fail if OpenBao is not issuing under the site root
+      ansible.builtin.fail:
+        msg: >-
+          OpenBao issued a certificate that does not chain to {{ site_cert_root_local }}.
+          Run playbooks/openbao.yml first: it installs the intermediate under the site root
+          (ADR-0030 §2). Nothing was written.
+      when: site_cert_new_chain.rc != 0
+
+    - name: Write the certificate and key
+      ansible.builtin.copy:
+        dest: "{{ site_cert_dir }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        owner: "{{ item.owner }}"
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: "{{ site_cert_cert_file }}", content: "{{ site_cert_chain_pem }}", owner: root, mode: "0644" }
+        - { name: "{{ site_cert_key_file }}", content: "{{ site_cert_response.json.data.private_key | trim }}",
+            owner: "{{ site_cert_key_owner }}", mode: "0400" }
+      loop_control:
+        label: "{{ item.name }}"
+      become: true
+      no_log: true
+      notify: "{{ site_cert_notify }}"
+
+# The CA's old name (ADR-0030 §4), left behind by the roles before this one.
+- name: Remove the CA under its old name
+  ansible.builtin.file:
+    path: "{{ site_cert_dir }}/site-ca.pem"
+    state: absent
+  when: site_cert_ca_file != 'site-ca.pem'
+  become: true
