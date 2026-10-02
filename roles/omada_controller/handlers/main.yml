@@ -1,0 +1,7 @@
+---
+# The image builds its keystore from /cert only when the container starts.
+- name: restart omada controller
+  ansible.builtin.systemd:
+    name: "{{ omada_container_name }}"
+    state: restarted
+  become: true

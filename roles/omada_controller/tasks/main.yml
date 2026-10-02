@@ -21,6 +21,10 @@
     - "{{ omada_data_root }}/logs"
   become: true
 
+- name: The controller's certificate from the site CA
+  ansible.builtin.import_tasks: tls.yml
+  when: omada_tls_enabled | bool
+
 - name: Run the Omada controller container
   ansible.builtin.include_role:
     name: deevnet.mgmt.podman_service
@@ -34,10 +38,12 @@
     # bridge networking the controller sees no devices at all, even though they
     # are broadcasting on the same L2 segment.
     podman_service_network: host
-    podman_service_volumes:
-      - "{{ omada_data_root }}/data:/opt/tplink/EAPController/data:Z"
-      - "{{ omada_data_root }}/work:/opt/tplink/EAPController/work:Z"
-      - "{{ omada_data_root }}/logs:/opt/tplink/EAPController/logs:Z"
+    # /cert only with TLS on: the entrypoint imports it at every start.
+    podman_service_volumes: >-
+      {{ [omada_data_root ~ '/data:/opt/tplink/EAPController/data:Z',
+          omada_data_root ~ '/work:/opt/tplink/EAPController/work:Z',
+          omada_data_root ~ '/logs:/opt/tplink/EAPController/logs:Z']
+         + ([omada_cert_dir ~ ':/cert:ro,Z'] if omada_tls_enabled | bool else []) }}
     podman_service_env: "{{ dict(omada_env_vars | map('regex_search', '^([^=]+)=(.*)$', '\\1', '\\2')) }}"
     podman_service_firewall_ports: >-
       {{ (omada_firewall_ports_tcp | map('string') | map('regex_replace', '$', '/tcp') | list)
@@ -60,6 +66,9 @@
     - ansible_facts.services['firewalld.service'].state == 'running'
   become: true
 
+- name: Restart now if the certificate changed
+  ansible.builtin.meta: flush_handlers
+
 - name: Wait for the controller to listen on {{ omada_https_port }}
   ansible.builtin.wait_for:
     port: "{{ omada_https_port }}"
@@ -71,7 +80,8 @@
 - name: Wait for the controller to answer
   ansible.builtin.uri:
     url: "https://127.0.0.1:{{ omada_https_port }}/api/info"
-    validate_certs: false
+    validate_certs: "{{ omada_tls_enabled | bool }}"
+    ca_path: "{{ (omada_cert_dir ~ '/' ~ site_root_ca_name) if omada_tls_enabled | bool else omit }}"
     status_code: [200]
   register: omada_info
   retries: 40

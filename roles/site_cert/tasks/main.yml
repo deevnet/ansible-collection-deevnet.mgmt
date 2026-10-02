@@ -116,7 +116,8 @@
     # ca_chain is the intermediate alone: OpenBao never holds the root.
     - name: Assemble the full chain
       ansible.builtin.set_fact:
-        site_cert_chain_pem: "{{ ([site_cert_response.json.data.certificate] + site_cert_response.json.data.ca_chain)
+        site_cert_chain_pem: "{{ ([site_cert_response.json.data.certificate] + site_cert_response.json.data.ca_chain
+          + ([lookup('file', site_cert_root_local)] if site_cert_chain_includes_root | bool else []))
           | map('trim') | join('\n') }}"
 
     # Run before anything is written: if OpenBao still issues from something
