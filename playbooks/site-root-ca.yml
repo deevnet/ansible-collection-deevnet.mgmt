@@ -20,6 +20,9 @@
   connection: local
   gather_facts: false
   vars:
+    # group_vars/all derives ansible_host from env.interfaces, which the
+    # control node has no entry for (as in vm-identity.yml).
+    ansible_host: 127.0.0.1
     site: "{{ deevnet_substrate | default('mobile') }}"
     site_inventory: "{{ ansible_inventory_sources[0] }}"
     pki_dir: "{{ site_inventory }}/pki"
