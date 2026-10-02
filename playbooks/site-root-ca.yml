@@ -5,7 +5,8 @@
 #   ansible-playbook playbooks/site-root-ca.yml
 #   cd ../ansible-inventory-deevnet && make vault && git add -A && git commit && git push
 #
-# It writes both certificates (public) to <inventory>/pki/ and appends both
+# It writes both certificates (public) to pki/<site>/ beside the inventory (not
+# in it: Ansible parses every file there as inventory) and appends both
 # private keys to <inventory>/group_vars/all/vault.yml. The keys exist nowhere
 # else: encrypt, commit and PUSH before anything is signed with them.
 #
@@ -25,7 +26,7 @@
     ansible_host: 127.0.0.1
     site: "{{ deevnet_substrate | default('mobile') }}"
     site_inventory: "{{ ansible_inventory_sources[0] }}"
-    pki_dir: "{{ site_inventory }}/pki"
+    pki_dir: "{{ site_inventory }}/../pki/{{ site }}"
     vault_file: "{{ site_inventory }}/group_vars/all/vault.yml"
     root_cert_file: "{{ pki_dir }}/deevnet-{{ site }}-root-ca.pem"
     bootstrap_cert_file: "{{ pki_dir }}/deevnet-{{ site }}-bootstrap-ca.pem"
