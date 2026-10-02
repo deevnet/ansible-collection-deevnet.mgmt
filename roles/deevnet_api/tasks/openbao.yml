@@ -156,79 +156,27 @@
   become: true
   notify: restart deevnet-api
 
-- name: Check whether the API certificate is still valid for long enough
-  ansible.builtin.command:
-    argv: [openssl, x509, -checkend, "{{ deevnet_api_tls_renew_before }}", -noout, -in, "{{ deevnet_api_tls_dir }}/api.pem"]
-  register: deevnet_api_cert_check
-  changed_when: false
-  failed_when: false
-  check_mode: false
-  become: true
-
-# Expiry is not the only reason to reissue. A rebuilt OpenBao generates a NEW
-# PKI root under the same common name, so the certificate on the host stays
-# valid for its full term and verifies against nothing: everyone else - the
-# tenants, the egress agent, the Builder - has been handed the new CA. Checking
-# the issuer is what catches that. It happened on 2026-09-17.
-- name: Read the site CA as OpenBao currently holds it
-  ansible.builtin.uri:
-    url: "{{ deevnet_api_openbao_addr }}/v1/{{ deevnet_api_openbao_pki_mount }}/cert/ca"
-    ca_path: "{{ deevnet_api_openbao_ca_local }}"
-    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}" }
-  register: deevnet_api_current_ca
-  delegate_to: localhost
-  become: false
-
-- name: Read the site CA the host holds
-  ansible.builtin.slurp:
-    src: "{{ deevnet_api_tls_dir }}/site-ca.pem"
-  register: deevnet_api_host_ca
-  failed_when: false
-  become: true
-
-- name: Decide whether the certificate must be issued
-  ansible.builtin.set_fact:
-    deevnet_api_cert_wanted: >-
-      {{ deevnet_api_cert_check.rc != 0
-         or deevnet_api_host_ca.content is not defined
-         or (deevnet_api_host_ca.content | b64decode | trim)
-            != (deevnet_api_current_ca.json.data.certificate | trim) }}
-
-- name: Issue the API certificate from the site CA
-  when: deevnet_api_cert_wanted | bool
-  block:
-    - name: Request the certificate
-      ansible.builtin.uri:
-        url: "{{ deevnet_api_openbao_addr }}/v1/{{ deevnet_api_openbao_pki_mount }}/issue/{{ deevnet_api_openbao_pki_role }}"
-        method: POST
-        ca_path: "{{ deevnet_api_openbao_ca_local }}"
-        headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
-        body_format: json
-        body:
-          common_name: "{{ deevnet_api_tls_common_name }}"
-          ip_sans: "{{ deevnet_api_tls_ip }},127.0.0.1"
-          ttl: "{{ deevnet_api_tls_ttl }}"
-      register: deevnet_api_cert
-      delegate_to: localhost
-      become: false
-      no_log: true
-
-    - name: Write the certificate, key and site CA
-      ansible.builtin.copy:
-        dest: "{{ deevnet_api_tls_dir }}/{{ item.name }}"
-        content: "{{ item.content }}\n"
-        owner: "{{ item.owner }}"
-        group: root
-        mode: "{{ item.mode }}"
-      loop:
-        - { name: api.pem, content: "{{ deevnet_api_cert.json.data.certificate }}", owner: root, mode: "0644" }
-        - { name: api-key.pem, content: "{{ deevnet_api_cert.json.data.private_key }}", owner: "{{ deevnet_api_container_uid }}", mode: "0400" }
-        - { name: site-ca.pem, content: "{{ deevnet_api_cert.json.data.issuing_ca }}", owner: root, mode: "0644" }
-      loop_control:
-        label: "{{ item.name }}"
-      become: true
-      no_log: true
-      notify: restart deevnet-api
+# The API's own certificate, from the site CA (ADR-0030), through site_cert.
+# 127.0.0.1 is what this role's readiness check dials from the host.
+- name: Issue the API certificate
+  ansible.builtin.include_role:
+    name: site_cert
+  vars:
+    site_cert_dir: "{{ deevnet_api_tls_dir }}"
+    site_cert_cert_file: api.pem
+    site_cert_key_file: api-key.pem
+    site_cert_key_owner: "{{ deevnet_api_container_uid }}"
+    site_cert_common_name: "{{ deevnet_api_tls_common_name }}"
+    site_cert_ips: ["{{ deevnet_api_tls_ip }}", 127.0.0.1]
+    site_cert_ttl: "{{ deevnet_api_tls_ttl }}"
+    site_cert_renew_before: "{{ deevnet_api_tls_renew_before }}"
+    site_cert_notify: restart deevnet-api
+    site_cert_openbao_addr: "{{ deevnet_api_openbao_addr }}"
+    site_cert_openbao_ca_local: "{{ deevnet_api_openbao_ca_local }}"
+    site_cert_openbao_role_id: "{{ deevnet_api_openbao_ansible_role_id }}"
+    site_cert_openbao_secret_id: "{{ deevnet_api_openbao_ansible_secret_id }}"
+    site_cert_pki_mount: "{{ deevnet_api_openbao_pki_mount }}"
+    site_cert_pki_role: "{{ deevnet_api_openbao_pki_role }}"
 
 # --- 4. Environment ------------------------------------------------------------
 
@@ -312,7 +260,7 @@
     deevnet_api_tenant_env: >-
       {{ deevnet_api_tenant_env | combine({
            'MINIO_ADMIN_TLS': 'true',
-           'MINIO_ADMIN_CACERT': '/etc/deevnet-api/tls/site-ca.pem'}) }}
+           'MINIO_ADMIN_CACERT': '/etc/deevnet-api/tls/' ~ site_root_ca_name}) }}
   when: deevnet_api_minio_tls | bool
 
 # --- The broker account writer (CHG-0016) ------------------------------------
@@ -430,7 +378,7 @@
     deevnet_api_tenant_env: >-
       {{ deevnet_api_tenant_env | combine({
            'DEEVNET_GRAFANA_URL': deevnet_api_grafana_url,
-           'DEEVNET_GRAFANA_CACERT': '/etc/deevnet-api/tls/site-ca.pem'}) }}
+           'DEEVNET_GRAFANA_CACERT': '/etc/deevnet-api/tls/' ~ site_root_ca_name}) }}
   when:
     - deevnet_api_grafana_url | length > 0
     - deevnet_api_log_writer_addr | length > 0

@@ -10,6 +10,8 @@ site_cert_cert_file: cert.pem
 site_cert_key_file: key.pem
 # The site root, the only trust anchor (ADR-0030 §4).
 site_cert_ca_file: "{{ site_root_ca_name }}"
+# The CA's name before CHG-0031, removed once the root is beside it.
+site_cert_old_ca_file: site-ca.pem
 # The container user that reads the key; the certificate and root are 0644.
 site_cert_key_owner: root
 

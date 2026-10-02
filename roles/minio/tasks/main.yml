@@ -51,7 +51,7 @@
     # verifies the TLS listener rather than being told to skip verification.
     podman_service_env: >-
       {{ {'MINIO_ROOT_USER': minio_root_user, 'MINIO_ROOT_PASSWORD': minio_root_password}
-         | combine({'SSL_CERT_FILE': '/certs/CAs/site-ca.pem'} if minio_tls_enabled | bool else {}) }}
+         | combine({'SSL_CERT_FILE': '/certs/CAs/' ~ site_root_ca_name} if minio_tls_enabled | bool else {}) }}
     podman_service_command: >-
       {{ ['server', '/data', '--console-address', ':9001']
          + (['--certs-dir', '/certs'] if minio_tls_enabled | bool else []) }}
@@ -72,7 +72,7 @@
 - name: Confirm MinIO reports itself healthy
   ansible.builtin.uri:
     url: "{{ minio_scheme }}://127.0.0.1:{{ minio_api_port }}/minio/health/live"
-    ca_path: "{{ (minio_tls_dir ~ '/CAs/site-ca.pem') if minio_tls_enabled | bool else omit }}"
+    ca_path: "{{ (minio_tls_dir ~ '/CAs/' ~ site_root_ca_name) if minio_tls_enabled | bool else omit }}"
     status_code: [200]
   register: minio_health
   retries: 10

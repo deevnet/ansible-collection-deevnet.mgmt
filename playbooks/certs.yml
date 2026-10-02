@@ -1,0 +1,85 @@
+---
+# Every site certificate and trust anchor, across the site (ADR-0030 §6). This
+# is how the operator renews: re-run it. Each step issues only what is missing,
+# within 60 days of expiry, or no longer chaining to the site root, so a run
+# with nothing to do changes nothing.
+#
+#   ansible-playbook playbooks/certs.yml
+#   ansible-playbook playbooks/certs.yml --limit dv02obs001v01
+#
+# It renews; it does not configure. A service whose configuration names its
+# certificate files (a first build, or CHG-0031's rename) is set up by site.yml.
+# The core router and the hypervisors' own certificates come from the bootstrap
+# intermediate, not from here (ADR-0030 §3; CHG-0032). The log bridge holds
+# only the root, which a renewal never changes.
+
+- name: Trust the site root
+  hosts: builder:hypervisors:management_plane
+  become: true
+  tags: [trust]
+  roles:
+    - deevnet.builder.site_trust
+
+# The intermediate first: a service certificate is refused if OpenBao is not
+# issuing under the site root.
+- name: Keep OpenBao issuing under the site root
+  hosts: openbao
+  become: true
+  tags: [openbao]
+  roles:
+    - openbao
+
+- name: The Deevnet API
+  hosts: deevnet_api
+  become: true
+  tasks:
+    - name: Issue the API certificate
+      ansible.builtin.include_role:
+        name: deevnet_api
+        tasks_from: openbao.yml
+
+- name: The tenant state store
+  hosts: tenant_state
+  become: true
+  tasks:
+    - name: Issue the state store's certificate
+      ansible.builtin.include_role:
+        name: minio
+        tasks_from: tls.yml
+      when: minio_tls_enabled | default(false) | bool
+
+- name: The broker
+  hosts: mqtt_brokers
+  become: true
+  tasks:
+    - name: Issue the broker certificate
+      ansible.builtin.include_role:
+        name: vernemq
+        tasks_from: openbao.yml
+
+- name: The log store
+  hosts: observability_store
+  become: true
+  tasks:
+    - name: Issue the log store certificate
+      ansible.builtin.include_role:
+        name: victorialogs
+        tasks_from: openbao.yml
+
+- name: Grafana
+  hosts: observability_store
+  become: true
+  tasks:
+    - name: Issue Grafana's certificate
+      ansible.builtin.include_role:
+        name: grafana
+        tasks_from: openbao.yml
+
+- name: Tenant downloads
+  hosts: observability_store
+  become: true
+  tasks:
+    - name: Issue the downloads server's certificate
+      ansible.builtin.include_role:
+        name: tenant_downloads
+        tasks_from: openbao.yml

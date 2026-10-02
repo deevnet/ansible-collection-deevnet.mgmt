@@ -173,7 +173,7 @@
 # The CA's old name (ADR-0030 §4), left behind by the roles before this one.
 - name: Remove the CA under its old name
   ansible.builtin.file:
-    path: "{{ site_cert_dir }}/site-ca.pem"
+    path: "{{ site_cert_dir }}/{{ site_cert_old_ca_file }}"
     state: absent
-  when: site_cert_ca_file != 'site-ca.pem'
+  when: site_cert_ca_file != site_cert_old_ca_file
   become: true

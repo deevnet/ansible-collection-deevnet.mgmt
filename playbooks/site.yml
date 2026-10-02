@@ -35,6 +35,16 @@
     - role: data_disk
       when: mgmt_vm.data_disk is defined
 
+# Every management-plane VM trusts the site root at the OS level (ADR-0030 §7),
+# before any service on it dials another. The role is deevnet.builder's, so the
+# Builder, the hypervisors and these VMs install it the same way.
+- name: Trust the site root
+  hosts: management_plane
+  become: true
+  tags: [trust, certs]
+  roles:
+    - deevnet.builder.site_trust
+
 # Substrate secrets (ADR-0016), in the identity VM. First among the services:
 # the API reads its credentials, keys and certificate from it.
 - name: Configure OpenBao

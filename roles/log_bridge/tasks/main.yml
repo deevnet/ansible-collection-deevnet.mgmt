@@ -33,47 +33,25 @@
     - "{{ log_bridge_tls_dir }}"
   become: true
 
-# --- The site CA -------------------------------------------------------------
-# Read on the CONTROL NODE, as Ansible's own AppRole. The messaging VM has no
-# path to OpenBao and must not need one.
-
-- name: Log in to OpenBao as Ansible
-  ansible.builtin.uri:
-    url: "{{ log_bridge_openbao_addr }}/v1/auth/approle/login"
-    method: POST
-    ca_path: "{{ log_bridge_openbao_ca_local }}"
-    body_format: json
-    body:
-      role_id: "{{ log_bridge_openbao_ansible_role_id }}"
-      secret_id: "{{ log_bridge_openbao_ansible_secret_id }}"
-  register: log_bridge_bao_login
-  delegate_to: localhost
-  become: false
-  no_log: true
-
-- name: Read the site CA as OpenBao currently holds it
-  ansible.builtin.uri:
-    url: "{{ log_bridge_openbao_addr }}/v1/{{ log_bridge_openbao_pki_mount }}/cert/ca"
-    ca_path: "{{ log_bridge_openbao_ca_local }}"
-    headers: {X-Vault-Token: "{{ log_bridge_bao_login.json.auth.client_token }}"}
-  register: log_bridge_current_ca
-  delegate_to: localhost
-  become: false
-  no_log: true
-
-# Written from what OpenBao holds NOW, so a rebuilt root (INC-0003) reaches the
-# bridge rather than leaving it verifying against a CA nobody issues from any
-# more. The container is recreated on a change, because Go reads a root pool
-# once at startup.
-- name: Write the site CA
+# --- The site root ------------------------------------------------------------
+# From the inventory, the only trust anchor (ADR-0030 §4) - never from OpenBao,
+# which holds an intermediate that a rebuild replaces. The container is
+# recreated on a change, because Go reads a root pool once at startup.
+- name: Install the site root
   ansible.builtin.copy:
-    dest: "{{ log_bridge_tls_dir }}/site-ca.pem"
-    content: "{{ log_bridge_current_ca.json.data.certificate }}\n"
+    src: "{{ site_root_ca_file }}"
+    dest: "{{ log_bridge_tls_dir }}/{{ site_root_ca_name }}"
     owner: root
     group: root
     mode: "0644"
   become: true
   register: log_bridge_ca_file
+
+- name: Remove the CA under its old name
+  ansible.builtin.file:
+    path: "{{ log_bridge_tls_dir }}/site-ca.pem"
+    state: absent
+  become: true
 
 # --- The container -----------------------------------------------------------
 
@@ -102,12 +80,12 @@
       DEEVNET_BRIDGE_BROKER_URL: "{{ log_bridge_broker_url }}"
       DEEVNET_BRIDGE_BROKER_USERNAME: "{{ log_bridge_username }}"
       DEEVNET_BRIDGE_BROKER_PASSWORD: "{{ log_bridge_password }}"
-      DEEVNET_BRIDGE_BROKER_CA_FILE: /etc/deevnet/tls/site-ca.pem
+      DEEVNET_BRIDGE_BROKER_CA_FILE: /etc/deevnet/tls/{{ site_root_ca_name }}
       DEEVNET_BRIDGE_CLIENT_ID: "{{ log_bridge_client_id }}"
       DEEVNET_BRIDGE_TOPIC: "{{ log_bridge_topic }}"
       DEEVNET_BRIDGE_STORE_URL: "{{ log_bridge_store_url }}"
       DEEVNET_BRIDGE_STORE_TOKEN: "{{ log_bridge_store_token }}"
-      DEEVNET_BRIDGE_STORE_CA_FILE: /etc/deevnet/tls/site-ca.pem
+      DEEVNET_BRIDGE_STORE_CA_FILE: /etc/deevnet/tls/{{ site_root_ca_name }}
       DEEVNET_BRIDGE_QUEUE_MAX: "{{ log_bridge_queue_max }}"
       DEEVNET_BRIDGE_FLUSH_INTERVAL: "{{ log_bridge_flush_interval }}"
       DEEVNET_BRIDGE_HEALTH_ADDR: "{{ log_bridge_health_addr }}"

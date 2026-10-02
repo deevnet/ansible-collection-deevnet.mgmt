@@ -30,7 +30,7 @@ distributed_cookie = {{ vernemq_cookie }}
 # - which is written ONLY to /vernemq/log/error.log. The console stays clean,
 # the node answers `vernemq ping` with pong, and the port simply never opens.
 listener.ssl.default = {{ vernemq_listen_address }}:{{ vernemq_tls_port }}
-listener.ssl.default.cafile = /vernemq/etc/tls/site-ca.pem
+listener.ssl.default.cafile = /vernemq/etc/tls/{{ site_root_ca_name }}
 listener.ssl.default.certfile = /vernemq/etc/tls/broker.pem
 listener.ssl.default.keyfile = /vernemq/etc/tls/broker-key.pem
 listener.ssl.default.tls_version = {{ vernemq_tls_version }}

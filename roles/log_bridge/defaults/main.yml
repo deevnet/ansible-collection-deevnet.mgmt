@@ -82,17 +82,8 @@ log_bridge_flush_interval: 2s
 # the right process to leave running.
 log_bridge_health_addr: "127.0.0.1:9099"
 
-# --- The site CA (ADR-0016) --------------------------------------------------
-# The bridge verifies both ends against it, and nothing else. Fetched fresh
-# rather than copied from the broker's own tls directory: that directory is
+# --- The site root (ADR-0030) --------------------------------------------------
+# The bridge verifies both ends against it, and nothing else. Copied from the
+# inventory rather than from the broker's own tls directory: that directory is
 # mounted into the broker with :Z, and a second consumer touching it is how a
 # private SELinux label leaves the broker unable to read its own key.
-#
-# Reissued material is not the only reason to rewrite it. A rebuilt OpenBao
-# generates a NEW root under the same name (INC-0003), so the comparison is
-# against what OpenBao holds now, not against an expiry date.
-log_bridge_openbao_addr: "{{ vernemq_openbao_addr | default('') }}"
-log_bridge_openbao_ca_local: "{{ vernemq_openbao_ca_local | default('') }}"
-log_bridge_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-log_bridge_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-log_bridge_openbao_pki_mount: pki

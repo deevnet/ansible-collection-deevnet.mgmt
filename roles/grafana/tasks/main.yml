@@ -86,7 +86,7 @@
 - name: Wait for Grafana to report healthy
   ansible.builtin.uri:
     url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/health"
-    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
   register: grafana_health
   retries: 45
   delay: 2
@@ -100,7 +100,7 @@
 - name: Check the server admin's password works
   ansible.builtin.uri:
     url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/user"
-    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
     url_username: "{{ grafana_admin_user }}"
     url_password: "{{ grafana_admin_password }}"
     force_basic_auth: true
@@ -120,14 +120,14 @@
 - name: Confirm Grafana refuses a request with no credentials
   ansible.builtin.uri:
     url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/org"
-    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
     status_code: [401]
   become: true
 
 - name: Confirm the VictoriaLogs plugin is loaded and signed
   ansible.builtin.uri:
     url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/plugins/{{ grafana_plugin_id }}/settings"
-    ca_path: "{{ grafana_tls_dir }}/site-ca.pem"
+    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
     url_username: "{{ grafana_admin_user }}"
     url_password: "{{ grafana_admin_password }}"
     force_basic_auth: true

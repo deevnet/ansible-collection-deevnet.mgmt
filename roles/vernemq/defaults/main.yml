@@ -160,8 +160,8 @@ vernemq_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | defaul
 vernemq_tls_alt_names:
   - "mqtt.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 vernemq_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-vernemq_tls_ttl: 2160h
-vernemq_tls_renew_before: 2592000
+vernemq_tls_ttl: 8760h
+vernemq_tls_renew_before: 5184000
 
 # Broker log level: info, or debug when chasing something.
 vernemq_log_level: info

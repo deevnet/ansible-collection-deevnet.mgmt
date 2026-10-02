@@ -101,9 +101,9 @@ victorialogs_openbao_pki_role: platform
 victorialogs_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 victorialogs_tls_alt_names: []
 victorialogs_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-victorialogs_tls_ttl: 2160h
-# Reissue when fewer than this many seconds remain (30 days).
-victorialogs_tls_renew_before: 2592000
+victorialogs_tls_ttl: 8760h
+# Reissue when fewer than this many seconds remain (60 days).
+victorialogs_tls_renew_before: 5184000
 
 # The zone the syslog rich rules go in: eth0's zone on this VM.
 victorialogs_firewalld_zone: public

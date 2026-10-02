@@ -196,7 +196,7 @@
 - name: Confirm vmauth refuses a request with no token
   ansible.builtin.uri:
     url: "https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }}/select/logsql/query?query=*"
-    ca_path: "{{ victorialogs_tls_dir }}/site-ca.pem"
+    ca_path: "{{ victorialogs_tls_dir }}/{{ site_root_ca_name }}"
     status_code: [401]
   become: true
 
