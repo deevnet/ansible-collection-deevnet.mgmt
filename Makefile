@@ -1,5 +1,5 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
-        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key \
+        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reconcile \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -52,6 +52,9 @@ help:
 "" \
 "  admit NAME=<name> [MAC=AA-BB-CC-00-11-22]" \
 "      Admit a tenant name: writes the handover details to ~/<name>-admission.txt (0600)" \
+"" \
+"  reconcile NAME=<name>|--all" \
+"      Re-ensure tenants through the API (repairs what it owns, Grafana data sources included)" \
 "" \
 "  unadmit NAME=<name>" \
 "      Revoke an admission that was never used (its Wi-Fi key stops working)" \
@@ -138,6 +141,11 @@ admit:
 
 unadmit:
 	@./scripts/tenant-admission.sh unadmit "$(NAME)"
+
+# Re-ensure a tenant (or every tenant: NAME=--all) through the API, e.g. after
+# the CA its Grafana data sources carry has changed (CHG-0031).
+reconcile:
+	@./scripts/tenant-reconcile.sh $(NAME)
 
 # A new password for a tenant's Wi-Fi key; KEY defaults to the DVNTM-TD key
 # the tenant was admitted with (runbook: Tenant Admission).
