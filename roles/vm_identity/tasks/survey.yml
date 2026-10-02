@@ -10,7 +10,7 @@
     api_user: "{{ hostvars[item].proxmox_token_id.split('!')[0] }}"
     api_token_id: "{{ hostvars[item].proxmox_token_id.split('!')[1] }}"
     api_token_secret: "{{ hostvars[item].proxmox_token_secret }}"
-    validate_certs: false
+    validate_certs: "{{ site_verify_proxmox | default(false) }}"
     # qemu AND lxc: a container holds a VMID just as hard as a VM does, and so
     # does a template. Deliberately no `node:` filter - if these nodes are ever
     # clustered, the survey widens by itself instead of going quietly stale.

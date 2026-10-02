@@ -12,6 +12,9 @@ site_cert_key_file: key.pem
 site_cert_ca_file: "{{ site_root_ca_name }}"
 # The CA's name before CHG-0031, removed once the root is beside it.
 site_cert_old_ca_file: site-ca.pem
+# Append the root to the served chain. Only for a product that insists on the
+# whole chain in one file: the Omada image builds its keystore from it.
+site_cert_chain_includes_root: false
 # The container user that reads the key; the certificate and root are 0644.
 site_cert_key_owner: root
 

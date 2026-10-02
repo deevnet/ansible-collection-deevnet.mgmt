@@ -9,9 +9,11 @@
 #
 # It renews; it does not configure. A service whose configuration names its
 # certificate files (a first build, or CHG-0031's rename) is set up by site.yml.
-# The core router and the hypervisors' own certificates come from the bootstrap
-# intermediate, not from here (ADR-0030 §3; CHG-0032). The log bridge holds
-# only the root, which a renewal never changes.
+# The hypervisors and the core router are signed by the bootstrap intermediate
+# on the control node (ADR-0030 §3); everything else issues from OpenBao. The
+# log bridge holds only the root, which a renewal never changes.
+#
+# Needs deevnet.builder and deevnet.net published (make publish in each).
 
 - name: Trust the site root
   hosts: builder:hypervisors:management_plane
@@ -19,6 +21,23 @@
   tags: [trust]
   roles:
     - deevnet.builder.site_trust
+
+# Before OpenBao: the hypervisors run it.
+- name: The hypervisors' web UI and API
+  hosts: hypervisors
+  become: true
+  tags: [hypervisors]
+  roles:
+    - deevnet.builder.proxmox_node_cert
+
+# The core router's web GUI and API. The role imports and checks; choosing the
+# certificate in the GUI is a manual step the first time (runbook: Certificates).
+- name: The core router
+  hosts: dns_servers
+  gather_facts: false
+  tags: [router]
+  roles:
+    - deevnet.net.opnsense_cert
 
 # The intermediate first: a service certificate is refused if OpenBao is not
 # issuing under the site root.
@@ -83,3 +102,27 @@
       ansible.builtin.include_role:
         name: tenant_downloads
         tasks_from: openbao.yml
+
+- name: The Omada controller
+  hosts: network_controllers:&management_plane
+  become: true
+  tags: [omada]
+  tasks:
+    - name: Issue the controller's certificate
+      ansible.builtin.include_role:
+        name: omada_controller
+        tasks_from: tls.yml
+      when: omada_tls_enabled | default(false) | bool
+
+    - name: Restart now if the certificate changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the controller to answer over verified TLS
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:8043/api/info"
+        ca_path: "{{ omada_data_root | default('/opt/omada-controller') }}/cert/{{ site_root_ca_name }}"
+      register: _omada_info
+      retries: 40
+      delay: 15
+      until: _omada_info.status is defined and _omada_info.status == 200
+      when: omada_tls_enabled | default(false) | bool

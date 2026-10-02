@@ -216,6 +216,15 @@
       OPENBAO_KV_PATH: "{{ deevnet_api_openbao_kv_path }}"
       DEEVNET_API_TLS_CERT: /etc/deevnet-api/tls/api.pem
       DEEVNET_API_TLS_KEY: /etc/deevnet-api/tls/api-key.pem
+      # The appliances (ADR-0030 §8, CHG-0032). Go reads SSL_CERT_FILE as its
+      # whole system pool, so the backends that verify through it - Proxmox, the
+      # router, the controller - trust the site root and nothing else. Each
+      # stops skipping verification when the inventory says its device serves
+      # a site certificate.
+      SSL_CERT_FILE: "/etc/deevnet-api/tls/{{ site_root_ca_name }}"
+      PROXMOX_INSECURE_TLS: "{{ (not (site_verify_proxmox | default(false) | bool)) | string | lower }}"
+      OPNSENSE_INSECURE_TLS: "{{ (not (site_verify_opnsense | default(false) | bool)) | string | lower }}"
+      OMADA_INSECURE_TLS: "{{ (not (site_verify_omada | default(false) | bool)) | string | lower }}"
   no_log: true
 
 # Added separately because it is optional: an empty value would fail the

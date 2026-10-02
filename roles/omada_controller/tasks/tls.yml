@@ -1,0 +1,37 @@
+---
+# The controller's HTTPS certificate (8043, and the portal on 8843), from the
+# site CA through site_cert (ADR-0030 §8). Port 8043 also serves device firmware
+# upgrades; adoption and inform (29810-29817) do not use this certificate.
+
+# Once, before the first site certificate: the entrypoint DELETES eap.keystore
+# before rebuilding it, so a failed import leaves nothing to fall back on.
+- name: Keep the controller's own keystore
+  ansible.builtin.copy:
+    src: "{{ omada_data_root }}/data/keystore/eap.keystore"
+    dest: "{{ omada_data_root }}/data/keystore/eap.keystore.pre-chg0032"
+    remote_src: true
+    force: false
+    mode: preserve
+  failed_when: false
+  become: true
+
+- name: Issue the controller's certificate
+  ansible.builtin.include_role:
+    name: site_cert
+  vars:
+    site_cert_dir: "{{ omada_cert_dir }}"
+    site_cert_cert_file: tls.crt
+    site_cert_key_file: tls.key
+    site_cert_chain_includes_root: true
+    site_cert_common_name: "{{ omada_tls_common_name }}"
+    site_cert_alt_names: "{{ omada_tls_alt_names }}"
+    site_cert_ips: "{{ omada_tls_ips }}"
+    site_cert_ttl: "{{ omada_tls_ttl }}"
+    site_cert_renew_before: "{{ omada_tls_renew_before }}"
+    site_cert_notify: restart omada controller
+    site_cert_openbao_addr: "{{ omada_openbao_addr }}"
+    site_cert_openbao_ca_local: "{{ omada_openbao_ca_local }}"
+    site_cert_openbao_role_id: "{{ omada_openbao_ansible_role_id }}"
+    site_cert_openbao_secret_id: "{{ omada_openbao_ansible_secret_id }}"
+    site_cert_pki_mount: "{{ omada_openbao_pki_mount }}"
+    site_cert_pki_role: "{{ omada_openbao_pki_role }}"

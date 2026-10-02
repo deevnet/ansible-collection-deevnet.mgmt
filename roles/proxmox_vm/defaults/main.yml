@@ -167,7 +167,9 @@ proxmox_vm_nameserver: "{{ mgmt_vm.nameserver | default(deevnet_vlans.management
 proxmox_vm_api_host: "{{ hostvars[proxmox_vm_hypervisor].ansible_host }}"
 proxmox_vm_api_token_id: "{{ hostvars[proxmox_vm_hypervisor].proxmox_token_id }}"
 proxmox_vm_api_token_secret: "{{ hostvars[proxmox_vm_hypervisor].proxmox_token_secret }}"
-proxmox_vm_api_validate_certs: false
+# On once the hypervisors serve site certificates (CHG-0032); the Builder
+# trusts the root at the OS level, and proxmoxer verifies through it.
+proxmox_vm_api_validate_certs: "{{ site_verify_proxmox | default(false) }}"
 
 # Seconds to wait for the guest to come up on SSH after first boot.
 proxmox_vm_boot_timeout: 300

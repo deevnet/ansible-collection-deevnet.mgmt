@@ -80,7 +80,7 @@
         api_user: "{{ proxmox_token_id.split('!')[0] }}"
         api_token_id: "{{ proxmox_token_id.split('!')[1] }}"
         api_token_secret: "{{ proxmox_token_secret }}"
-        validate_certs: false
+        validate_certs: "{{ site_verify_proxmox | default(false) }}"
         node: "{{ proxmox_node }}"
         type: qemu
         # The startup order and shutdown timeout live in the guest config, which
@@ -171,7 +171,7 @@
         api_user: "{{ proxmox_token_id.split('!')[0] }}"
         api_token_id: "{{ proxmox_token_id.split('!')[1] }}"
         api_token_secret: "{{ proxmox_token_secret }}"
-        validate_certs: false
+        validate_certs: "{{ site_verify_proxmox | default(false) }}"
         node: "{{ proxmox_node }}"
         vmid: "{{ item.vmid }}"
         state: stopped
@@ -190,7 +190,7 @@
         api_user: "{{ proxmox_token_id.split('!')[0] }}"
         api_token_id: "{{ proxmox_token_id.split('!')[1] }}"
         api_token_secret: "{{ proxmox_token_secret }}"
-        validate_certs: false
+        validate_certs: "{{ site_verify_proxmox | default(false) }}"
         node: "{{ proxmox_node }}"
         type: qemu
       register: shutdown_guest_check
