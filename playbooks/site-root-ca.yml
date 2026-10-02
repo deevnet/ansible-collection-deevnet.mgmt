@@ -1,0 +1,158 @@
+# The site's root CA and its bootstrap intermediate (ADR-0030 §1, §3). Run once
+# per site, on the control node, with the inventory's vaults DECRYPTED:
+#
+#   cd ../ansible-inventory-deevnet && make unvault
+#   ansible-playbook playbooks/site-root-ca.yml
+#   cd ../ansible-inventory-deevnet && make vault && git add -A && git commit && git push
+#
+# It writes both certificates (public) to <inventory>/pki/ and appends both
+# private keys to <inventory>/group_vars/all/vault.yml. The keys exist nowhere
+# else: encrypt, commit and PUSH before anything is signed with them.
+#
+# It refuses to run if the site already has a root, so it cannot re-root the
+# site by accident. Re-rooting is deliberate: remove the root by hand first.
+#
+# The root signs intermediates only. The OpenBao intermediate is signed by the
+# openbao role; the bootstrap intermediate, which signs what comes up before
+# OpenBao (the core router, the hypervisors), is signed here.
+- name: Generate the site root CA and bootstrap intermediate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    site: "{{ deevnet_substrate | default('mobile') }}"
+    site_inventory: "{{ ansible_inventory_sources[0] }}"
+    pki_dir: "{{ site_inventory }}/pki"
+    vault_file: "{{ site_inventory }}/group_vars/all/vault.yml"
+    root_cert_file: "{{ pki_dir }}/deevnet-{{ site }}-root-ca.pem"
+    bootstrap_cert_file: "{{ pki_dir }}/deevnet-{{ site }}-bootstrap-ca.pem"
+    root_days: 7305       # 20 years
+    bootstrap_days: 1826  # 5 years
+  tasks:
+    - name: Read the site vault
+      ansible.builtin.slurp:
+        src: "{{ vault_file }}"
+      register: site_vault
+      no_log: true
+
+    - name: Check for an existing root
+      ansible.builtin.stat:
+        path: "{{ root_cert_file }}"
+      register: root_cert_stat
+
+    - name: Refuse unless the vault is decrypted and the site has no root
+      ansible.builtin.assert:
+        that:
+          - not (site_vault.content | b64decode).startswith('$ANSIBLE_VAULT')
+          - "'vault_site_root_ca_key' not in (site_vault.content | b64decode)"
+          - not root_cert_stat.stat.exists
+        fail_msg: >-
+          Either {{ vault_file }} is encrypted (run make unvault), or the site already has a
+          root ({{ root_cert_file }} or vault_site_root_ca_key). This play never re-roots.
+        quiet: true
+
+    - name: Generate the root key
+      community.crypto.openssl_privatekey_pipe:
+        type: ECC
+        curve: secp256r1
+      register: root_key
+      no_log: true
+
+    - name: Make the root's request
+      community.crypto.openssl_csr_pipe:
+        privatekey_content: "{{ root_key.privatekey }}"
+        common_name: "Deevnet {{ site }} root CA"
+        basic_constraints: ["CA:TRUE"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+        create_subject_key_identifier: true
+        use_common_name_for_san: false
+      register: root_csr
+      no_log: true
+
+    - name: Self-sign the root
+      community.crypto.x509_certificate_pipe:
+        provider: selfsigned
+        csr_content: "{{ root_csr.csr }}"
+        privatekey_content: "{{ root_key.privatekey }}"
+        selfsigned_not_after: "+{{ root_days }}d"
+      register: root_cert
+      no_log: true
+
+    - name: Generate the bootstrap intermediate's key
+      community.crypto.openssl_privatekey_pipe:
+        type: ECC
+        curve: secp256r1
+      register: bootstrap_key
+      no_log: true
+
+    # pathlen:0 - it signs leaves only.
+    - name: Make the bootstrap intermediate's request
+      community.crypto.openssl_csr_pipe:
+        privatekey_content: "{{ bootstrap_key.privatekey }}"
+        common_name: "Deevnet {{ site }} bootstrap CA"
+        basic_constraints: ["CA:TRUE", "pathlen:0"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+        create_subject_key_identifier: true
+        use_common_name_for_san: false
+      register: bootstrap_csr
+      no_log: true
+
+    - name: Sign the bootstrap intermediate with the root
+      community.crypto.x509_certificate_pipe:
+        provider: ownca
+        csr_content: "{{ bootstrap_csr.csr }}"
+        ownca_content: "{{ root_cert.certificate }}"
+        ownca_privatekey_content: "{{ root_key.privatekey }}"
+        ownca_not_after: "+{{ bootstrap_days }}d"
+      register: bootstrap_cert
+      no_log: true
+
+    - name: Write the keys to the site vault
+      ansible.builtin.blockinfile:
+        path: "{{ vault_file }}"
+        marker: "# {mark} ADR-0030 site CA keys"
+        block: |
+          vault_site_root_ca_key: |
+            {{ root_key.privatekey | trim | indent(2) }}
+          vault_site_bootstrap_ca_key: |
+            {{ bootstrap_key.privatekey | trim | indent(2) }}
+      no_log: true
+
+    - name: Make the PKI directory
+      ansible.builtin.file:
+        path: "{{ pki_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write the certificates
+      ansible.builtin.copy:
+        dest: "{{ item.dest }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - { dest: "{{ root_cert_file }}", content: "{{ root_cert.certificate }}" }
+        - { dest: "{{ bootstrap_cert_file }}", content: "{{ bootstrap_cert.certificate }}" }
+      loop_control:
+        label: "{{ item.dest | basename }}"
+
+    - name: Check the bootstrap intermediate chains to the root
+      ansible.builtin.command:
+        argv: [openssl, verify, -CAfile, "{{ root_cert_file }}", "{{ bootstrap_cert_file }}"]
+      changed_when: false
+
+    - name: Read the root's fingerprint
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, "{{ root_cert_file }}", -noout, -subject, -enddate, -fingerprint, -sha256]
+      register: root_fingerprint
+      changed_when: false
+
+    - name: Encrypt, commit and push now
+      ansible.builtin.debug:
+        msg:
+          - "{{ root_fingerprint.stdout_lines }}"
+          - "The keys are in {{ vault_file }} IN PLAINTEXT and nowhere else."
+          - "cd {{ site_inventory }}/.. && make vault && git add -A && git commit && git push"
