@@ -79,5 +79,5 @@ minio_tls_alt_names:
 minio_tls_ips:
   - "{{ env.interfaces.eth0.ip | default('') }}"
   - 127.0.0.1
-minio_tls_ttl: 2160h
-minio_tls_renew_before: 2592000
+minio_tls_ttl: 8760h
+minio_tls_renew_before: 5184000

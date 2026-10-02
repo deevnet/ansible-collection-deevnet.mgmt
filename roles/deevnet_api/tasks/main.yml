@@ -110,7 +110,7 @@
 - name: Wait for the API to report ready
   ansible.builtin.uri:
     url: "{{ deevnet_api_local_url }}/readyz"
-    ca_path: "{{ (deevnet_api_tls_dir ~ '/site-ca.pem') if deevnet_api_site | length > 0 else omit }}"
+    ca_path: "{{ (deevnet_api_tls_dir ~ '/' ~ site_root_ca_name) if deevnet_api_site | length > 0 else omit }}"
     status_code: [200]
   register: deevnet_api_ready
   retries: 15
@@ -120,7 +120,7 @@
 - name: Read the API's version
   ansible.builtin.uri:
     url: "{{ deevnet_api_local_url }}/version"
-    ca_path: "{{ (deevnet_api_tls_dir ~ '/site-ca.pem') if deevnet_api_site | length > 0 else omit }}"
+    ca_path: "{{ (deevnet_api_tls_dir ~ '/' ~ site_root_ca_name) if deevnet_api_site | length > 0 else omit }}"
     return_content: true
   register: deevnet_api_version_info
 

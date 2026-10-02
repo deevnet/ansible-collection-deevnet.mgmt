@@ -234,8 +234,8 @@ deevnet_api_backends: {}
 deevnet_api_tls_dir: "{{ deevnet_api_data_root }}/tls"
 deevnet_api_tls_common_name: "api.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 deevnet_api_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-deevnet_api_tls_ttl: 2160h
-deevnet_api_tls_renew_before: 2592000
+deevnet_api_tls_ttl: 8760h
+deevnet_api_tls_renew_before: 5184000
 # The distroless image runs as nonroot, uid 65532; it reads its key file.
 deevnet_api_container_uid: 65532
 

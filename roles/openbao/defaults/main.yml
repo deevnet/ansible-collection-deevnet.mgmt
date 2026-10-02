@@ -47,9 +47,11 @@ openbao_seal_key_id: "{{ vault_openbao_seal_key_id | default('seal-1') }}"
 # pin it through the copy fetched to the control node.
 openbao_tls_days: 3650
 openbao_ca_local_path: "{{ playbook_dir }}/../.openbao/{{ inventory_hostname }}-listener.pem"
-# The site CA this instance issues from, fetched to the control node so other
-# roles can hand it to whatever has to trust the API, the state store or DNS.
-openbao_site_ca_local: "{{ playbook_dir }}/../.openbao/site-ca.pem"
+# The site root (ADR-0030 §1): its certificate from the inventory, its key from
+# the vault. Used only on the control node, to sign this instance's
+# intermediate. Clients trust the root, never anything fetched from here.
+openbao_site_root_local: "{{ site_root_ca_file }}"
+openbao_site_root_key: "{{ vault_site_root_ca_key | default('') }}"
 
 # First initialisation writes the recovery key, the root token and Ansible's
 # AppRole credentials here, on the control node, root-readable only. Move them
@@ -78,13 +80,21 @@ openbao_build_kv_mount: image-factory
 openbao_build_hypervisors: "{{ groups['hypervisors'] | default([]) }}"
 openbao_transit_key: tenant-secrets
 openbao_pki_mount: pki
+# The mount's ceiling, not a certificate's lifetime.
 openbao_pki_ttl: 87600h
-openbao_pki_common_name: "Deevnet {{ deevnet_substrate }} internal CA"
+# The intermediate this instance issues from (ADR-0030 §2): five years.
+openbao_pki_common_name: "Deevnet {{ deevnet_substrate }} intermediate CA"
+openbao_pki_intermediate_days: 1826
+# Sign a new intermediate even though the current one chains to the root:
+# -e openbao_pki_rotate_intermediate=true, before the current one expires, or
+# as the drill. Certificates the old one signed stay valid until they are due.
+openbao_pki_rotate_intermediate: false
 # Certificates for Platform services, e.g. api.mobile.deevnet.net.
 openbao_pki_role: platform
 openbao_pki_role_domains:
   - "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
-openbao_pki_role_max_ttl: 2160h
+# One year (ADR-0030 §5).
+openbao_pki_role_max_ttl: 8760h
 
 # Policies, as HCL, by name. Written verbatim.
 openbao_policies:

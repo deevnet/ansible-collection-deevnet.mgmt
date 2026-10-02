@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the `deevnet.mgmt` Ansible collection for management plane services. It provides roles for centralized logging, monitoring (Grafana), and observability infrastructure. The collection supports Fedora/RHEL systems.
 
-Roles map to ADRs in `deevnet-docs`: `powerdns` (ADR-0004), `minio` (ADR-0007),
+Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0030), `powerdns` (ADR-0004), `minio` (ADR-0007),
 `deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013),
 `vernemq` (ADR-0012), `victorialogs` (ADR-0022, ADR-0027), `grafana` (ADR-0024; tenant dashboards, CHG-0024).
 
@@ -43,6 +43,10 @@ Roles map to ADRs in `deevnet-docs`: `powerdns` (ADR-0004), `minio` (ADR-0007),
   `community.hashi_vault`, whose modules need `hvac`, which the Builder lacks.
   After first initialisation Ansible works through its own AppRole
   (`vault_openbao_ansible_*`); the root token is revoked in the same run.
+- **Every TLS certificate goes through the `site_cert` role** (ADR-0030). Trust is the site
+  root from the inventory (`site_root_ca_file`, `deevnet-<site>-root-ca.pem`), never
+  `pki/cert/ca`: OpenBao holds an intermediate, and a rebuilt OpenBao holds a different one.
+  A cert is reissued when it stops chaining to the root, not when the CA file differs.
 - **The Deevnet API holds only its AppRole.** Its backend credentials are written
   into OpenBao KV by the `deevnet_api` role, never into its env file.
 - **TSIG secrets are imported from the vault, not generated on the server.**

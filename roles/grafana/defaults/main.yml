@@ -66,8 +66,8 @@ grafana_openbao_pki_role: platform
 grafana_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 grafana_tls_alt_names: []
 grafana_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-grafana_tls_ttl: 2160h
-grafana_tls_renew_before: 2592000
+grafana_tls_ttl: 8760h
+grafana_tls_renew_before: 5184000
 
 # --- Server settings ---------------------------------------------------------------------
 # Every one is a decision of ADR-0024 §3 or a consequence of this VM having no

@@ -70,43 +70,132 @@
   when: "'approle/' not in openbao_auths.json"
   changed_when: true
 
-- name: Check for the CA
+# The site CA is an intermediate under the site root (ADR-0030 §2). The root
+# lives in the inventory, its key in the vault, and it never enters OpenBao;
+# the intermediate's key is generated here and never leaves. A new
+# intermediate is signed when the mount has no CA (a fresh or rebuilt OpenBao)
+# or when its default issuer does not chain to the inventory root (the old
+# internal root, before CHG-0031, or an intermediate under a retired root), or
+# when asked to (openbao_pki_rotate_intermediate: before the five years run
+# out, or as the drill).
+- name: Read the issuing CA
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
     ca_path: "{{ openbao_tls_dir }}/listener.pem"
     status_code: [200, 204]
+    return_content: true
   register: openbao_ca
 
-# A PKI mount with no CA answers 204 on ca/pem.
-- name: Generate the site CA
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/root/generate/internal"
-    method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
-    headers: {X-Vault-Token: "{{ openbao_token }}"}
-    body_format: json
-    body:
-      common_name: "{{ openbao_pki_common_name }}"
-      ttl: "{{ openbao_pki_ttl }}"
-  when: openbao_ca.status == 204
-  changed_when: true
-
-# Clients need the CA to trust what it signs: the API, the state store and
-# PowerDNS. Fetched to the control node so other roles can place it.
-- name: Fetch the site CA to the control node
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
-    return_content: true
-  register: openbao_ca_pem
-
-- name: Write the site CA on the control node
+- name: Check the issuing CA chains to the site root
+  ansible.builtin.command:
+    argv: [openssl, verify, -CAfile, "{{ openbao_site_root_local }}", /dev/stdin]
+    stdin: "{{ openbao_ca.content }}"
+  register: openbao_ca_chain
+  when: openbao_ca.status == 200
   delegate_to: localhost
   become: false
-  ansible.builtin.copy:
-    dest: "{{ openbao_site_ca_local }}"
-    content: "{{ openbao_ca_pem.content }}"
-    mode: "0644"
+  changed_when: false
+  failed_when: false
+
+- name: Sign an intermediate under the site root
+  when: >-
+    openbao_ca.status == 204 or openbao_ca_chain.rc != 0
+    or openbao_pki_rotate_intermediate | bool
+  block:
+    # Without add_basic_constraints the request carries no extensions at all.
+    - name: Generate the intermediate's key and request
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/intermediate/generate/internal"
+        method: POST
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ openbao_pki_common_name }}"
+          key_type: ec
+          key_bits: 256
+          add_basic_constraints: true
+      register: openbao_intermediate_csr
+      changed_when: true
+
+    - name: Make a scratch directory for the request
+      ansible.builtin.tempfile:
+        state: directory
+      register: openbao_sign_dir
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    # The request even with basic constraints has no key usage, and
+    # community.crypto's ownca provider copies a request's extensions rather
+    # than setting its own, so openssl signs with an explicit extension file.
+    # The root key goes in on stdin and never touches the disk.
+    - name: Sign the intermediate with the site root
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$CSR" > csr.pem &&
+          printf '%s\n' 'basicConstraints=critical,CA:TRUE,pathlen:0'
+          'keyUsage=critical,keyCertSign,cRLSign' 'subjectKeyIdentifier=hash'
+          'authorityKeyIdentifier=keyid:always' > ext.cnf &&
+          openssl x509 -req -in csr.pem -CA {{ openbao_site_root_local | quote }} -CAkey /dev/stdin
+          -set_serial {{ (2 ** 120) | random }} -days {{ openbao_pki_intermediate_days }} -sha256 -extfile ext.cnf
+        chdir: "{{ openbao_sign_dir.path }}"
+        stdin: "{{ openbao_site_root_key }}"
+      environment:
+        CSR: "{{ openbao_intermediate_csr.json.data.csr }}"
+      register: openbao_intermediate_cert
+      delegate_to: localhost
+      become: false
+      changed_when: true
+      no_log: true
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ openbao_sign_dir.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Install the signed intermediate
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/intermediate/set-signed"
+        method: POST
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          certificate: "{{ openbao_intermediate_cert.stdout }}"
+      register: openbao_set_signed
+      changed_when: true
+
+    # On a mount that already has an issuer (the old internal root), set-signed
+    # imports the intermediate but leaves the default where it was.
+    - name: Issue from the intermediate
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/config/issuers"
+        method: POST
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          default: "{{ openbao_set_signed.json.data.imported_issuers[0] }}"
+      changed_when: true
+
+    - name: Read the issuing CA again
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
+        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        return_content: true
+      register: openbao_ca_after
+
+    - name: Check OpenBao now issues under the site root
+      ansible.builtin.command:
+        argv: [openssl, verify, -CAfile, "{{ openbao_site_root_local }}", /dev/stdin]
+        stdin: "{{ openbao_ca_after.content }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
 
 - name: Write the Platform certificate role
   ansible.builtin.uri:
