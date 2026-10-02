@@ -298,6 +298,32 @@
       usual cause, and the node still answers ping while serving nothing).
     quiet: true
 
+# "Running" is not "serving": at CHG-0031 the listener reported running while
+# it could not read its cafile, and reset every handshake. A verified handshake
+# against the site root, from the host, is what a client gets.
+- name: Wait for a verified TLS handshake
+  ansible.builtin.shell:
+    cmd: >-
+      echo | timeout 10 openssl s_client -connect {{ vernemq_tls_ip }}:{{ vernemq_tls_port }}
+      -CAfile {{ (vernemq_tls_dir ~ '/' ~ site_root_ca_name) | quote }} 2>&1
+      | grep -q 'Verify return code: 0 (ok)'
+  register: vernemq_handshake
+  changed_when: false
+  failed_when: false
+  retries: 15
+  delay: 4
+  until: vernemq_handshake.rc == 0
+  become: true
+
+- name: Confirm clients can complete a handshake
+  ansible.builtin.assert:
+    that: vernemq_handshake.rc == 0
+    fail_msg: >-
+      The mqtts listener is running but no verified handshake completes against
+      the site root. Check that every file in {{ vernemq_tls_dir }} carries the
+      directory's SELinux label (ls -Z), then {{ vernemq_log_dir }}/error.log.
+    quiet: true
+
 # The auth plugin loading is not the same as the auth plugin working: a broker
 # with no accounts and a broker whose database is unreachable look identical
 # from outside. Asking the database how many accounts it holds distinguishes
