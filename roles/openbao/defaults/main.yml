@@ -85,6 +85,10 @@ openbao_pki_ttl: 87600h
 # The intermediate this instance issues from (ADR-0030 §2): five years.
 openbao_pki_common_name: "Deevnet {{ deevnet_substrate }} intermediate CA"
 openbao_pki_intermediate_days: 1826
+# Sign a new intermediate even though the current one chains to the root:
+# -e openbao_pki_rotate_intermediate=true, before the current one expires, or
+# as the drill. Certificates the old one signed stay valid until they are due.
+openbao_pki_rotate_intermediate: false
 # Certificates for Platform services, e.g. api.mobile.deevnet.net.
 openbao_pki_role: platform
 openbao_pki_role_domains:

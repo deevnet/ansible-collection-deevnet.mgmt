@@ -75,7 +75,9 @@
 # the intermediate's key is generated here and never leaves. A new
 # intermediate is signed when the mount has no CA (a fresh or rebuilt OpenBao)
 # or when its default issuer does not chain to the inventory root (the old
-# internal root, before CHG-0031, or an intermediate under a retired root).
+# internal root, before CHG-0031, or an intermediate under a retired root), or
+# when asked to (openbao_pki_rotate_intermediate: before the five years run
+# out, or as the drill).
 - name: Read the issuing CA
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
@@ -96,7 +98,9 @@
   failed_when: false
 
 - name: Sign an intermediate under the site root
-  when: openbao_ca.status == 204 or openbao_ca_chain.rc != 0
+  when: >-
+    openbao_ca.status == 204 or openbao_ca_chain.rc != 0
+    or openbao_pki_rotate_intermediate | bool
   block:
     # Without add_basic_constraints the request carries no extensions at all.
     - name: Generate the intermediate's key and request
