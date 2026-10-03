@@ -1,0 +1,27 @@
+# Deevnet PKI - certificate profiles for the offline ceremonies (standards/certificates).
+[ req ]
+prompt             = no
+distinguished_name = dn_root
+string_mask        = utf8only
+
+[ dn_root ]
+O  = Deevnet
+OU = Deevnet PKI
+CN = Deevnet Root CA
+
+[ v3_root ]
+basicConstraints       = critical, CA:TRUE, pathlen:2
+keyUsage               = critical, keyCertSign, cRLSign
+subjectKeyIdentifier   = hash
+
+[ v3_site ]
+basicConstraints       = critical, CA:TRUE, pathlen:1
+keyUsage               = critical, keyCertSign, cRLSign
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always
+
+[ v3_issuing ]
+basicConstraints       = critical, CA:TRUE, pathlen:0
+keyUsage               = critical, keyCertSign, cRLSign
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always
