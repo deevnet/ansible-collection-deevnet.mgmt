@@ -21,11 +21,12 @@ server {
         limit_except GET HEAD { deny all; }
     }
 
-    # The site root, so a laptop can fetch it once and check its fingerprint
-    # against the tenant guide before trusting anything it signs.
-{% for name in [tenant_downloads_ca_name] + tenant_downloads_ca_old_names %}
-    location = /{{ name }} {
-        alias /tls/{{ tenant_downloads_ca_name }};
+    # The Deevnet Root CA (and, during a re-root, the outgoing root), so a
+    # computer can fetch it once and check its fingerprint against the tenant
+    # guide before trusting anything it signs.
+{% for root in tenant_downloads_roots %}
+    location = /{{ root | basename }} {
+        alias /tls/public/{{ root | basename }};
         default_type application/x-pem-file;
     }
 {% endfor %}

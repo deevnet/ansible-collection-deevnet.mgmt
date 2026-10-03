@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the `deevnet.mgmt` Ansible collection for management plane services. It provides roles for centralized logging, monitoring (Grafana), and observability infrastructure. The collection supports Fedora/RHEL systems.
 
-Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0030), `powerdns` (ADR-0004), `minio` (ADR-0007),
+Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `powerdns` (ADR-0004), `minio` (ADR-0007),
 `deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013),
 `vernemq` (ADR-0012), `victorialogs` (ADR-0022, ADR-0027), `grafana` (ADR-0024; tenant dashboards, CHG-0024).
 
@@ -43,10 +43,14 @@ Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0030), `powerdns` (ADR-000
   `community.hashi_vault`, whose modules need `hvac`, which the Builder lacks.
   After first initialisation Ansible works through its own AppRole
   (`vault_openbao_ansible_*`); the root token is revoked in the same run.
-- **Every TLS certificate goes through the `site_cert` role** (ADR-0030). Trust is the site
-  root from the inventory (`site_root_ca_file`, `deevnet-<site>-root-ca.pem`), never
-  `pki/cert/ca`: OpenBao holds an intermediate, and a rebuilt OpenBao holds a different one.
-  A cert is reissued when it stops chaining to the root, not when the CA file differs.
+- **Every substrate TLS certificate goes through the `site_cert` role** (ADR-0031 §4). It is
+  signed on the control node by the site's Substrate CA (`deevnet.builder.substrate_cert`,
+  key `vault_site_substrate_ca_key`), never by OpenBao: OpenBao's own listener included, so a
+  substrate rebuilt from nothing has no cycle. Trust is the Deevnet Root CA from the inventory
+  (`site_root_ca_file`, `pki/deevnet-root-ca.pem`). A cert is reissued when it stops chaining
+  to that root, not when the CA file differs. OpenBao's only PKI is the Tenant Device CA.
+- **The Root CA's and Site CA's keys are never here, in any form** (Certificates standard 5.1).
+  Issuing CAs are signed offline; `scripts/pki/` moves their requests and certificates.
 - **The Deevnet API holds only its AppRole.** Its backend credentials are written
   into OpenBao KV by the `deevnet_api` role, never into its env file.
 - **TSIG secrets are imported from the vault, not generated on the server.**

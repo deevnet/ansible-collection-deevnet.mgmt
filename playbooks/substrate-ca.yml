@@ -1,0 +1,102 @@
+# The site's Substrate CA: its key and signing request (ADR-0031 §3). Run once
+# per site, and again to rotate it, on the control node with the inventory's
+# vaults DECRYPTED:
+#
+#   cd ../ansible-inventory-deevnet && make unvault
+#   ansible-playbook playbooks/substrate-ca.yml
+#   cd ../ansible-inventory-deevnet && make vault && git add -A && git commit && git push
+#
+# The key is generated here, where it lives (Certificates standard 5.2), and
+# appended to <inventory>/group_vars/all/vault.yml. Only the request leaves:
+# it is written to pki/<site>/deevnet-<site>-substrate-ca.csr and signed by the
+# Site CA in the Issuing CA ceremony (Root of Trust runbook), whose certificate
+# comes back as pki/<site>/deevnet-<site>-substrate-ca.pem. The key exists
+# nowhere else: encrypt, commit and PUSH before the ceremony.
+#
+# It refuses to run if the vault already holds a Substrate CA key, so it cannot
+# replace one by accident. To rotate, remove the key and old request by hand.
+- name: Generate the Substrate CA's key and request
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_host: 127.0.0.1
+    site: "{{ deevnet_substrate | default('mobile') }}"
+    site_title: "{{ site | capitalize }}"
+    site_inventory: "{{ ansible_inventory_sources[0] }}"
+    pki_dir: "{{ site_inventory }}/../pki/{{ site }}"
+    vault_file: "{{ site_inventory }}/group_vars/all/vault.yml"
+    csr_file: "{{ pki_dir }}/deevnet-{{ site }}-substrate-ca.csr"
+  tasks:
+    - name: Read the site vault
+      ansible.builtin.slurp:
+        src: "{{ vault_file }}"
+      register: site_vault
+      no_log: true
+
+    - name: Refuse unless the vault is decrypted and holds no Substrate CA key
+      ansible.builtin.assert:
+        that:
+          - not (site_vault.content | b64decode).startswith('$ANSIBLE_VAULT')
+          - "'vault_site_substrate_ca_key' not in (site_vault.content | b64decode)"
+        fail_msg: >-
+          Either {{ vault_file }} is encrypted (run make unvault), or the site already has a
+          Substrate CA key (vault_site_substrate_ca_key). This play never replaces one.
+        quiet: true
+
+    # RSA 3072 (standard §4). Unencrypted inside the ansible-vault, which is
+    # its encryption: automation signs with it unattended.
+    - name: Generate the key
+      community.crypto.openssl_privatekey_pipe:
+        type: RSA
+        size: 3072
+      register: substrate_key
+      no_log: true
+
+    # Subject only. The extensions - CA:TRUE, pathlen:0, five years - come from
+    # the ceremony's profile, never from the request (standard 4.6).
+    - name: Make the request
+      community.crypto.openssl_csr_pipe:
+        privatekey_content: "{{ substrate_key.privatekey }}"
+        subject_ordered:
+          - O: Deevnet
+          - OU: "{{ site_title }} Site"
+          - CN: "Deevnet {{ site_title }} Substrate CA"
+        use_common_name_for_san: false
+      register: substrate_csr
+      no_log: true
+
+    - name: Write the key to the site vault
+      ansible.builtin.blockinfile:
+        path: "{{ vault_file }}"
+        marker: "# {mark} ADR-0031 Substrate CA key"
+        block: |
+          vault_site_substrate_ca_key: |
+            {{ substrate_key.privatekey | trim | indent(2) }}
+      no_log: true
+
+    - name: Make the PKI directory
+      ansible.builtin.file:
+        path: "{{ pki_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write the request
+      ansible.builtin.copy:
+        dest: "{{ csr_file }}"
+        content: "{{ substrate_csr.csr }}"
+        mode: "0644"
+
+    - name: Show the request
+      ansible.builtin.command:
+        argv: [openssl, req, -in, "{{ csr_file }}", -noout, -verify, -subject, -nameopt, RFC2253]
+      register: substrate_csr_show
+      changed_when: false
+
+    - name: Encrypt, commit and push now
+      ansible.builtin.debug:
+        msg:
+          - "{{ substrate_csr_show.stdout_lines + substrate_csr_show.stderr_lines }}"
+          - "The key is in {{ vault_file }} IN PLAINTEXT and nowhere else."
+          - "cd {{ site_inventory }}/.. && make vault && git add -A && git commit && git push"
+          - "Then: Root of Trust > Issuing CA, with --ca substrate --csr {{ csr_file }}"

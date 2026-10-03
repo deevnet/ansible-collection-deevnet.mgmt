@@ -1,13 +1,11 @@
 ---
-# Grafana's TLS certificate from the site CA (ADR-0030), through site_cert.
+# Grafana's TLS certificate from the Substrate CA (ADR-0031 §4), through site_cert.
 # Its own certificate rather than a copy of vmauth's: the two containers run as
 # different users, and a key readable by both would be a key readable by
 # either one's compromise. Grafana has no plaintext listener, so without a
 # certificate this host serves no dashboards.
 #
-# site_cert talks to OpenBao from the CONTROL NODE, against the pinned listener
-# certificate, as Ansible's own AppRole - this VM has no path to OpenBao and
-# must not need one.
+# site_cert signs it on the CONTROL NODE: this VM needs no path to anything.
 - name: Issue Grafana's certificate
   ansible.builtin.include_role:
     name: site_cert
@@ -17,12 +15,5 @@
     site_cert_common_name: "{{ grafana_tls_common_name }}"
     site_cert_alt_names: "{{ grafana_tls_alt_names }}"
     site_cert_ips: "{{ [grafana_tls_ip] }}"
-    site_cert_ttl: "{{ grafana_tls_ttl }}"
     site_cert_renew_before: "{{ grafana_tls_renew_before }}"
     site_cert_notify: restart grafana
-    site_cert_openbao_addr: "{{ grafana_openbao_addr }}"
-    site_cert_openbao_ca_local: "{{ grafana_openbao_ca_local }}"
-    site_cert_openbao_role_id: "{{ grafana_openbao_ansible_role_id }}"
-    site_cert_openbao_secret_id: "{{ grafana_openbao_ansible_secret_id }}"
-    site_cert_pki_mount: "{{ grafana_openbao_pki_mount }}"
-    site_cert_pki_role: "{{ grafana_openbao_pki_role }}"

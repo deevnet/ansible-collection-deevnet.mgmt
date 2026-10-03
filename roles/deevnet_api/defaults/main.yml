@@ -212,19 +212,16 @@ deevnet_api_grafana_url: >-
       deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':3000')
      if (groups['observability_store'] | default([])) | length > 0 else '' }}
 
-# OpenBao (ADR-0016). The address the API and this role use, and the listener
-# certificate the openbao role fetched to the control node.
+# OpenBao (ADR-0016). The address the API and this role use, and the pin the
+# openbao role put on the control node (the Deevnet Root CA).
 deevnet_api_openbao_addr: ""
 deevnet_api_openbao_ca_local: ""
-# Ansible's AppRole, from the vault, which writes the KV secret and issues the
-# API's certificate.
+# Ansible's AppRole, from the vault, which writes the KV secret.
 deevnet_api_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
 deevnet_api_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
 deevnet_api_openbao_kv_mount: deevnet-api
 deevnet_api_openbao_kv_path: backends
 deevnet_api_openbao_approle: deevnet-api
-deevnet_api_openbao_pki_mount: pki
-deevnet_api_openbao_pki_role: platform
 
 # The KV secret's fields, as the API reads them. Set in inventory from the vault;
 # every value must be non-empty. token_hmac_key is base64 of at least 32 bytes.
@@ -234,7 +231,6 @@ deevnet_api_backends: {}
 deevnet_api_tls_dir: "{{ deevnet_api_data_root }}/tls"
 deevnet_api_tls_common_name: "api.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 deevnet_api_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-deevnet_api_tls_ttl: 8760h
 deevnet_api_tls_renew_before: 5184000
 # The distroless image runs as nonroot, uid 65532; it reads its key file.
 deevnet_api_container_uid: 65532

@@ -33,13 +33,14 @@
     - "{{ log_bridge_tls_dir }}"
   become: true
 
-# --- The site root ------------------------------------------------------------
-# From the inventory, the only trust anchor (ADR-0030 §4) - never from OpenBao,
-# which holds an intermediate that a rebuild replaces. The container is
-# recreated on a change, because Go reads a root pool once at startup.
-- name: Install the site root
+# --- The Deevnet Root CA ------------------------------------------------------
+# From the inventory, the only trust anchor (ADR-0031 §1). During a re-root the
+# file holds the outgoing root too, so the bridge reaches the broker and the
+# store whichever chain each serves. The container is recreated on a change,
+# because Go reads a root pool once at startup.
+- name: Install the Deevnet Root CA
   ansible.builtin.copy:
-    src: "{{ site_root_ca_file }}"
+    content: "{{ query('file', *([site_root_ca_file] + (site_root_ca_previous_files | default([])))) | map('trim') | join('\n') ~ '\n' }}"
     dest: "{{ log_bridge_tls_dir }}/{{ site_root_ca_name }}"
     owner: root
     group: root
@@ -47,10 +48,12 @@
   become: true
   register: log_bridge_ca_file
 
-- name: Remove the CA under its old name
+- name: Remove the CA under its old names
   ansible.builtin.file:
-    path: "{{ log_bridge_tls_dir }}/site-ca.pem"
+    path: "{{ log_bridge_tls_dir }}/{{ item }}"
     state: absent
+  loop: "{{ ['site-ca.pem'] + (site_root_ca_retired | default([])) }}"
+  when: item != site_root_ca_name
   become: true
 
 # --- The container -----------------------------------------------------------

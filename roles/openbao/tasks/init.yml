@@ -9,7 +9,7 @@
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/init"
     method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     body_format: json
     body:
       recovery_shares: 1

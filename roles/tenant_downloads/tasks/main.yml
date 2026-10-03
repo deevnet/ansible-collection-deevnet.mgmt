@@ -47,7 +47,7 @@
   become: true
 
 - name: Issue the downloads server's TLS material from the site CA
-  ansible.builtin.import_tasks: openbao.yml
+  ansible.builtin.import_tasks: tls.yml
 
 # Mirrors the Builder's tree exactly: a file removed there is removed here, so
 # nothing stale stays downloadable. Root-owned and world-readable; the
@@ -62,6 +62,55 @@
       - "--chmod=D0755,F0644"
       - "--chown=root:root"
   become: true
+
+# Each root on its own, under its own name, for tenants to fetch: the CA file
+# beside the certificate is a bundle during a re-root, and a tenant must be
+# able to check one root's fingerprint.
+- name: Make the directory for the served roots
+  ansible.builtin.file:
+    path: "{{ tenant_downloads_tls_dir }}/public"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Place each root to serve
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ tenant_downloads_tls_dir }}/public/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ tenant_downloads_roots }}"
+  become: true
+  notify: restart tenant downloads
+
+- name: Remove retired roots
+  ansible.builtin.file:
+    path: "{{ tenant_downloads_tls_dir }}/public/{{ item }}"
+    state: absent
+  loop: "{{ site_root_ca_retired | default([]) }}"
+  become: true
+  notify: restart tenant downloads
+
+# The tls directory is mounted :Z, whose label podman applies only when it
+# creates the container; files added later must be given it (as site_cert does).
+- name: Give the served roots their directory's SELinux label
+  ansible.builtin.shell:
+    cmd: |
+      selinuxenabled 2>/dev/null || exit 0
+      for f in public public/*; do
+        [ -e "$f" ] || continue
+        if [ "$(stat -c %C "$f")" != "$(stat -c %C .)" ]; then
+          chcon --reference=. "$f" && echo "relabelled $f"
+        fi
+      done
+    chdir: "{{ tenant_downloads_tls_dir }}"
+  register: tenant_downloads_relabel
+  changed_when: tenant_downloads_relabel.stdout | length > 0
+  become: true
+  notify: restart tenant downloads
 
 - name: Write the server configuration
   ansible.builtin.template:
@@ -115,25 +164,26 @@
     status_code: [403, 405]
   become: true
 
-# What tenants are told to trust must be the inventory's root, under every name.
-- name: Fetch the site root as a tenant would
+# What tenants are told to trust must be the inventory's roots, each under its
+# own name.
+- name: Fetch each root as a tenant would
   ansible.builtin.uri:
-    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/{{ item }}"
+    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/{{ item | basename }}"
     ca_path: "{{ tenant_downloads_tls_dir }}/{{ site_root_ca_name }}"
     headers: {Host: "{{ tenant_downloads_tls_common_name }}"}
     return_content: true
-  loop: "{{ [tenant_downloads_ca_name] + tenant_downloads_ca_old_names }}"
+  loop: "{{ tenant_downloads_roots }}"
   register: tenant_downloads_served_root
   become: true
 
-- name: Confirm the served root is the inventory's
+- name: Confirm each served root is the inventory's
   ansible.builtin.assert:
-    that: (item.content | trim) == (lookup('file', site_root_ca_file) | trim)
-    fail_msg: "/{{ item.item }} does not serve {{ site_root_ca_file }}"
+    that: (item.content | trim) == (lookup('file', item.item) | trim)
+    fail_msg: "/{{ item.item | basename }} does not serve {{ item.item }}"
     quiet: true
   loop: "{{ tenant_downloads_served_root.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.item | basename }}"
 
 - name: Report what is served
   ansible.builtin.debug:

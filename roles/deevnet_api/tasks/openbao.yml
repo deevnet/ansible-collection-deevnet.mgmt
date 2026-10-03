@@ -168,15 +168,8 @@
     site_cert_key_owner: "{{ deevnet_api_container_uid }}"
     site_cert_common_name: "{{ deevnet_api_tls_common_name }}"
     site_cert_ips: ["{{ deevnet_api_tls_ip }}", 127.0.0.1]
-    site_cert_ttl: "{{ deevnet_api_tls_ttl }}"
     site_cert_renew_before: "{{ deevnet_api_tls_renew_before }}"
     site_cert_notify: restart deevnet-api
-    site_cert_openbao_addr: "{{ deevnet_api_openbao_addr }}"
-    site_cert_openbao_ca_local: "{{ deevnet_api_openbao_ca_local }}"
-    site_cert_openbao_role_id: "{{ deevnet_api_openbao_ansible_role_id }}"
-    site_cert_openbao_secret_id: "{{ deevnet_api_openbao_ansible_secret_id }}"
-    site_cert_pki_mount: "{{ deevnet_api_openbao_pki_mount }}"
-    site_cert_pki_role: "{{ deevnet_api_openbao_pki_role }}"
 
 # --- 4. Environment ------------------------------------------------------------
 

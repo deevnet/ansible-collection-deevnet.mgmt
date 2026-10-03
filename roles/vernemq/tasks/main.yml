@@ -25,7 +25,7 @@
   no_log: true
 
 - name: Issue the broker's TLS material from the site CA
-  ansible.builtin.import_tasks: openbao.yml
+  ansible.builtin.import_tasks: tls.yml
 
 - name: Create the broker data root
   ansible.builtin.file:

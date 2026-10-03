@@ -1,21 +1,23 @@
 ---
-# Every site certificate and trust anchor, across the site (ADR-0030 §6). This
-# is how the operator renews: re-run it. Each step issues only what is missing,
-# within 60 days of expiry, or no longer chaining to the site root, so a run
-# with nothing to do changes nothing.
+# Every substrate certificate and trust anchor, across the site (ADR-0031 §7,
+# ADR-0030 §6). This is how the operator renews: re-run it. Each step issues
+# only what is missing, within 60 days of expiry, or no longer chaining to the
+# Deevnet Root CA, so a run with nothing to do changes nothing.
 #
 #   ansible-playbook playbooks/certs.yml
 #   ansible-playbook playbooks/certs.yml --limit dv02obs001v01
 #
 # It renews; it does not configure. A service whose configuration names its
 # certificate files (a first build, or CHG-0031's rename) is set up by site.yml.
-# The hypervisors and the core router are signed by the bootstrap intermediate
-# on the control node (ADR-0030 §3); everything else issues from OpenBao. The
-# log bridge holds only the root, which a renewal never changes.
+# Every certificate is signed on the control node by the site's Substrate CA
+# (deevnet.builder.substrate_cert), OpenBao's listener included: nothing here
+# depends on OpenBao (ADR-0031 §4). The log bridge holds only the root, which a
+# renewal never changes.
 #
-# Needs deevnet.builder and deevnet.net published (make publish in each).
+# Needs the inventory decrypted (the Substrate CA's key is in the vault), and
+# deevnet.builder and deevnet.net published (make publish in each).
 
-- name: Trust the site root
+- name: Trust the Deevnet Root CA
   hosts: builder:hypervisors:management_plane
   become: true
   tags: [trust]
@@ -39,9 +41,8 @@
   roles:
     - deevnet.net.opnsense_cert
 
-# The intermediate first: a service certificate is refused if OpenBao is not
-# issuing under the site root.
-- name: Keep OpenBao issuing under the site root
+# OpenBao's listener certificate, and its Tenant Device CA.
+- name: OpenBao
   hosts: openbao
   become: true
   tags: [openbao]
@@ -74,7 +75,7 @@
     - name: Issue the broker certificate
       ansible.builtin.include_role:
         name: vernemq
-        tasks_from: openbao.yml
+        tasks_from: tls.yml
 
 - name: The log store
   hosts: observability_store
@@ -83,7 +84,7 @@
     - name: Issue the log store certificate
       ansible.builtin.include_role:
         name: victorialogs
-        tasks_from: openbao.yml
+        tasks_from: tls.yml
 
 - name: Grafana
   hosts: observability_store
@@ -92,7 +93,7 @@
     - name: Issue Grafana's certificate
       ansible.builtin.include_role:
         name: grafana
-        tasks_from: openbao.yml
+        tasks_from: tls.yml
 
 - name: Tenant downloads
   hosts: observability_store
@@ -101,7 +102,7 @@
     - name: Issue the downloads server's certificate
       ansible.builtin.include_role:
         name: tenant_downloads
-        tasks_from: openbao.yml
+        tasks_from: tls.yml
 
 - name: The Omada controller
   hosts: network_controllers:&management_plane

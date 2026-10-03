@@ -58,19 +58,13 @@ minio_api_admin_actions:
   - admin:ListUserPolicies
 
 # --- TLS (CHG-0030) ------------------------------------------------------------
-# Off by default so the role stays usable where there is no site CA; a site with
-# OpenBao turns it on in the tenant_state group vars. On, the API port serves
-# HTTPS only, with a certificate from the site CA (ADR-0016), and every client -
+# Off by default so the role stays usable where there is no site PKI; a site
+# turns it on in the tenant_state group vars. On, the API port serves HTTPS
+# only, with a certificate from the Substrate CA (ADR-0031 §4), and every client -
 # tenants' Terraform, the Deevnet API, this role's own checks - verifies it.
 minio_tls_enabled: false
 minio_tls_dir: "{{ minio_data_root }}/certs"
 minio_scheme: "{{ 'https' if minio_tls_enabled | bool else 'http' }}"
-minio_openbao_addr: ""
-minio_openbao_ca_local: ""
-minio_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-minio_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-minio_openbao_pki_mount: pki
-minio_openbao_pki_role: platform
 # Tenants dial the name; the API dials the host address; the role's own health
 # check and mc dial 127.0.0.1.
 minio_tls_common_name: "tfstate.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
@@ -79,5 +73,4 @@ minio_tls_alt_names:
 minio_tls_ips:
   - "{{ env.interfaces.eth0.ip | default('') }}"
   - 127.0.0.1
-minio_tls_ttl: 8760h
 minio_tls_renew_before: 5184000

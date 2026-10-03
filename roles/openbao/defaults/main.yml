@@ -42,16 +42,11 @@ openbao_local_url: "https://127.0.0.1:{{ openbao_port }}"
 openbao_seal_key: "{{ vault_openbao_seal_key | default('') }}"
 openbao_seal_key_id: "{{ vault_openbao_seal_key_id | default('seal-1') }}"
 
-# The listener's own certificate is self-signed by this role: OpenBao is the CA
-# for everything else, but it has to answer TLS before its PKI exists. Clients
-# pin it through the copy fetched to the control node.
-openbao_tls_days: 3650
+# The listener's certificate comes from the Substrate CA (tasks/tls.yml), and
+# clients trust the Deevnet Root CA beside it. The pin fetched to the control
+# node for OpenBao's clients is that root, at its historical path.
+openbao_tls_ca: "{{ openbao_tls_dir }}/{{ site_root_ca_name }}"
 openbao_ca_local_path: "{{ playbook_dir }}/../.openbao/{{ inventory_hostname }}-listener.pem"
-# The site root (ADR-0030 §1): its certificate from the inventory, its key from
-# the vault. Used only on the control node, to sign this instance's
-# intermediate. Clients trust the root, never anything fetched from here.
-openbao_site_root_local: "{{ site_root_ca_file }}"
-openbao_site_root_key: "{{ vault_site_root_ca_key | default('') }}"
 
 # First initialisation writes the recovery key, the root token and Ansible's
 # AppRole credentials here, on the control node, root-readable only. Move them
@@ -79,39 +74,42 @@ openbao_build_kv_mount: image-factory
 # image-factory/proxmox/<node>. Each needs proxmox_token_id/_secret.
 openbao_build_hypervisors: "{{ groups['hypervisors'] | default([]) }}"
 openbao_transit_key: tenant-secrets
-openbao_pki_mount: pki
+# The site's Tenant Device CA (ADR-0031 §3): an issuing CA whose key is
+# generated inside OpenBao and never leaves. Only its request goes to the
+# Issuing CA ceremony; the signed certificate comes back through the inventory.
+# It issues tenant devices' client certificates only (CHG-0034); no substrate
+# certificate comes from OpenBao.
+openbao_tenant_device_mount: pki-tenant-device
 # The mount's ceiling, not a certificate's lifetime.
-openbao_pki_ttl: 87600h
-# The intermediate this instance issues from (ADR-0030 §2): five years.
-openbao_pki_common_name: "Deevnet {{ deevnet_substrate }} intermediate CA"
-openbao_pki_intermediate_days: 1826
-# Sign a new intermediate even though the current one chains to the root:
-# -e openbao_pki_rotate_intermediate=true, before the current one expires, or
-# as the drill. Certificates the old one signed stay valid until they are due.
-openbao_pki_rotate_intermediate: false
-# Certificates for Platform services, e.g. api.mobile.deevnet.net.
-openbao_pki_role: platform
-openbao_pki_role_domains:
-  - "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
-# One year (ADR-0030 §5).
-openbao_pki_role_max_ttl: 8760h
+openbao_tenant_device_mount_ttl: 87600h
+openbao_tenant_device_organization: Deevnet
+openbao_tenant_device_ou: "{{ deevnet_substrate | capitalize }} Site"
+openbao_tenant_device_common_name: "Deevnet {{ deevnet_substrate | capitalize }} Tenant Device CA"
+# From the ceremony, in the inventory beside the Site CA.
+openbao_tenant_device_csr_local: "{{ site_ca_file | dirname }}/deevnet-{{ deevnet_substrate }}-tenant-device-ca.csr"
+openbao_tenant_device_cert_local: "{{ site_tenant_device_ca_file | default(site_ca_file | dirname ~ '/deevnet-' ~ deevnet_substrate ~ '-tenant-device-ca.pem') }}"
+openbao_site_ca_local: "{{ site_ca_file }}"
+openbao_root_ca_local: "{{ site_root_ca_file }}"
+# Mounts to remove: the pre-ADR-0031 `pki` mount, once nothing serves a
+# certificate it issued (CHG-0033).
+openbao_retired_mounts: []
 
 # Policies, as HCL, by name. Written verbatim.
 openbao_policies:
-  # The Deevnet API: read its backend credentials, use its Transit key, get a
-  # certificate for itself, and wrap and unwrap enrollment records.
+  # The Deevnet API: read its backend credentials, use its Transit key, and
+  # wrap and unwrap enrollment records. Its own certificate is the Substrate
+  # CA's, laid down by Ansible.
   deevnet-api: |
     path "{{ openbao_kv_mount }}/data/backends" { capabilities = ["read"] }
     path "transit/encrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
     path "transit/decrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
-    path "{{ openbao_pki_mount }}/issue/{{ openbao_pki_role }}" { capabilities = ["update"] }
     path "sys/wrapping/wrap" { capabilities = ["update"] }
   # Ansible after bootstrap: configure mounts, auth, policies and roles, write
-  # the API's backend credentials, issue certificates. Not root: it cannot read
+  # the API's backend credentials, run the Tenant Device CA. Not root: it cannot read
   # other tokens, generate a root, or change the seal.
   ansible: |
     path "sys/mounts" { capabilities = ["read"] }
-    path "sys/mounts/*" { capabilities = ["create", "read", "update"] }
+    path "sys/mounts/*" { capabilities = ["create", "read", "update", "delete"] }
     path "sys/auth" { capabilities = ["read"] }
     path "sys/auth/*" { capabilities = ["create", "read", "update", "sudo"] }
     path "sys/policies/acl/*" { capabilities = ["create", "read", "update"] }
@@ -119,7 +117,7 @@ openbao_policies:
     path "{{ openbao_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
     path "{{ openbao_build_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
     path "transit/keys/*" { capabilities = ["create", "read", "update"] }
-    path "{{ openbao_pki_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
+    path "{{ openbao_tenant_device_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
 
   # The image factory and the tenant fabric at build time (CHG-0026): read the
   # Proxmox tokens, and nothing else - not the API's backends, not a mount,

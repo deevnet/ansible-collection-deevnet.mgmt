@@ -85,23 +85,13 @@ victorialogs_vmauth_operator_read_token: "{{ vault_victorialogs_operator_read_to
 victorialogs_vmauth_operator_partitions:
   - {account: 0, project: 0}
 
-# --- TLS, from the site CA in OpenBao (ADR-0016) ---------------------------------
-# Used on the CONTROL NODE, as in the vernemq role: this VM needs no path to
-# OpenBao. The address, the pinned listener CA and Ansible's AppRole are set in
-# inventory for the observability_store group.
-victorialogs_openbao_addr: ""
-victorialogs_openbao_ca_local: ""
-victorialogs_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-victorialogs_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-victorialogs_openbao_pki_mount: pki
-victorialogs_openbao_pki_role: platform
+# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ------
 
 # The name and the address: shippers dial the name, probes and the network
 # devices use the address.
 victorialogs_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 victorialogs_tls_alt_names: []
 victorialogs_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-victorialogs_tls_ttl: 8760h
 # Reissue when fewer than this many seconds remain (60 days).
 victorialogs_tls_renew_before: 5184000
 

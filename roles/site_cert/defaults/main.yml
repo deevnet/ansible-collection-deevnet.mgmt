@@ -1,14 +1,15 @@
 ---
-# One service's TLS certificate from the site CA (ADR-0030). Included by each
-# role that serves TLS; the caller sets the names and paths, this role decides
-# whether to issue and writes the files.
+# One service's TLS certificate from the site's Substrate CA (ADR-0031 §4),
+# signed on the control node by deevnet.builder.substrate_cert. Included by
+# each role that serves TLS; the caller sets the names and paths, this role
+# decides whether to issue and writes the files.
 
 # Where the files go on the host, and what they are called there.
 site_cert_dir: ""
-# Leaf, then intermediate: the full chain the service serves (ADR-0030 §4).
+# Leaf, then the Substrate CA and the Site CA: the chain the service serves.
 site_cert_cert_file: cert.pem
 site_cert_key_file: key.pem
-# The site root, the only trust anchor (ADR-0030 §4).
+# The Deevnet Root CA, the only trust anchor (ADR-0031 §1).
 site_cert_ca_file: "{{ site_root_ca_name }}"
 # The CA's name before CHG-0031, removed once the root is beside it.
 site_cert_old_ca_file: site-ca.pem
@@ -23,21 +24,18 @@ site_cert_common_name: ""
 site_cert_alt_names: []
 site_cert_ips: []
 
-# One year, reissued by any run with fewer than 60 days left (ADR-0030 §5).
-site_cert_ttl: 8760h
+# One year, reissued by any run with fewer than 60 days left (standard §4).
+site_cert_days: 365
 site_cert_renew_before: 5184000
 
 # The handler the caller wants run when anything here changes.
 site_cert_notify: []
 
-# The site root on the control node, from the inventory.
+# The Deevnet Root CA on the control node, from the inventory.
 site_cert_root_local: "{{ site_root_ca_file }}"
-
-# OpenBao, reached from the CONTROL NODE against the pinned listener, as
-# Ansible's AppRole. The service host needs no path to OpenBao.
-site_cert_openbao_addr: ""
-site_cert_openbao_ca_local: ""
-site_cert_openbao_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-site_cert_openbao_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-site_cert_pki_mount: pki
-site_cert_pki_role: platform
+# What goes in the CA file beside the certificate: the root, and during a
+# re-root the outgoing root too.
+# One line, double-quoted: in a folded scalar the '\n' stays literal.
+site_cert_ca_bundle: "{{ query('file', *([site_cert_root_local] + (site_root_ca_previous_files | default([])))) | map('trim') | join('\n') ~ '\n' }}"
+# Old CA file names to remove, relative to site_cert_dir.
+site_cert_retired_ca_files: "{{ site_root_ca_retired | default([]) }}"
