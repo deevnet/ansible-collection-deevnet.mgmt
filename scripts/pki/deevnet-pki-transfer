@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # The ONLINE half of the offline CA ceremony (runbook: Root of Trust > Issuing CA).
 #
-#   deevnet-pki-transfer prepare MEDIA --site mobile --ca substrate|tenant-device --csr FILE
+#   deevnet-pki-transfer prepare MEDIA --site mobile --ca substrate|tenant-device --csr FILE [--with-tools]
 #   deevnet-pki-transfer accept  MEDIA --csr FILE [--out DIR]
 #
 # prepare  cleans MEDIA/deevnet-transfer, checks the issuing CA's signing request
 #          (signature, subject, key), and writes it to MEDIA with the public
-#          certificates, the signing profile and the offline script, under a
-#          manifest of SHA-256 hashes. Fails if the transfer media carries any
+#          certificates, under a manifest of SHA-256 hashes: data only, for the
+#          pi-pki ceremony image, which carries the signing tool and profile.
+#          --with-tools adds both, manifested, for the fallback route (a live
+#          USB that does not). Fails if the transfer media carries any
 #          private key, before and after.
 # accept   checks what came back: the return manifest, that the certificate is
 #          for the original request's key and subject, and that it chains to the
@@ -47,13 +49,14 @@ subject() { openssl "$1" -in "$2" -noout -subject -nameopt RFC2253 | sed 's/^sub
 pubkey_hash() { openssl "$1" -in "$2" -noout -pubkey | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1; }
 
 cmd="${1:-}"; media="${2:-}"; shift 2 || true
-site=""; ca=""; csr=""; out=""
+site=""; ca=""; csr=""; out=""; with_tools=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --site) site="$2"; shift 2 ;;
     --ca)   ca="$2"; shift 2 ;;
     --csr)  csr="$2"; shift 2 ;;
     --out)  out="$2"; shift 2 ;;
+    --with-tools) with_tools=1; shift ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -83,7 +86,7 @@ if [[ "$cmd" == prepare ]]; then
   name="deevnet-$site-$ca-ca"
   cp "$csr" "$T/to-offline/$name.csr"
   cp "$ROOT_CERT" "$site_cert" "$T/to-offline/"
-  cp "$HERE/deevnet-pki.cnf" "$HERE/deevnet-pki-sign" "$T/to-offline/"
+  if [[ "$with_tools" == 1 ]]; then cp "$HERE/deevnet-pki.cnf" "$HERE/deevnet-pki-sign" "$T/to-offline/"; fi
   ( cd "$T/to-offline"
     { echo "# deevnet-transfer to-offline"
       echo "# created $(date -u +%FT%TZ) on $(hostname)"
