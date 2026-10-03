@@ -1,0 +1,20 @@
+# The site's Tenant Device CA in OpenBao (ADR-0031 §3), on its own (CHG-0033).
+# Run with the inventory decrypted (Ansible's AppRole is in the vault):
+#
+#   ansible-playbook playbooks/tenant-device-ca.yml
+#
+# First run: OpenBao makes the CA's key and request; the request is written to
+# pki/<site>/deevnet-<site>-tenant-device-ca.csr for the Issuing CA ceremony.
+# After `deevnet-pki-transfer accept` puts the signed certificate beside it,
+# run again: it is installed with the Site CA and made the default issuer.
+# Any later run checks it chains to the Deevnet Root CA and changes nothing.
+#
+# playbooks/openbao.yml runs the same steps as part of the whole role.
+- name: The Tenant Device CA
+  hosts: openbao
+  gather_facts: false
+  tasks:
+    - name: Run it
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: tenant_device_ca_only.yml
