@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # The OFFLINE step of the CA ceremony (runbook: Root of Trust > Issuing CA).
-# Runs on the offline machine, from the transfer media:
+# Runs on the offline machine. On the pi-pki ceremony image it is installed as
+# /usr/local/bin/deevnet-pki-sign with its profile, and the transfer media
+# carries data only:
 #
-#   bash /path/to/transfer/deevnet-transfer/to-offline/deevnet-pki-sign \
-#        /path/to/transfer --site-key /path/to/key-media/deevnet-mobile-site-ca.key
+#   deevnet-pki-sign /path/to/transfer --site-key /path/to/key-media/deevnet-mobile-site-ca.key
+#
+# On the fallback route (a Fedora live USB) both came on the transfer media
+# (deevnet-pki-transfer prepare --with-tools), under its manifest:
+#
+#   bash /path/to/transfer/deevnet-transfer/to-offline/deevnet-pki-sign /path/to/transfer --site-key ...
 #
 # It checks the manifest and that the transfer media holds no private key,
 # shows the request and what will be signed, asks the operator to confirm by
@@ -24,10 +30,16 @@ $hits"
 pubkey_hash() { openssl "$1" -in "$2" -noout -pubkey | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1; }
 
 media="${1:-}"; shift || true
-site_key=""; days=1826
+site_key=""; days=1826; profile=""
+# The earliest date this tool will sign on: an offline machine with no clock
+# boots with a wrong date, and a certificate's validity starts from it. The
+# ceremony image's build date, when there is one, is a later floor.
+DATE_FLOOR="2026-10-03"
+RELEASE="${DEEVNET_PKI_RELEASE:-/etc/deevnet-pki-release}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --site-key) site_key="$2"; shift 2 ;;
+    --profile)  profile="$2"; shift 2 ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -43,6 +55,26 @@ fi
 if ip -brief address 2>/dev/null | grep -v '^lo ' | grep -q UP; then
   die "a network interface is up - this machine must be offline (nmcli networking off)"
 fi
+
+# The profile: the image's, unless given; on the fallback route, the one that
+# came on the transfer media under the manifest.
+if [[ -z "$profile" ]]; then
+  if [[ -f /usr/local/share/deevnet-pki/deevnet-pki.cnf ]]; then profile=/usr/local/share/deevnet-pki/deevnet-pki.cnf
+  else profile="$IN/deevnet-pki.cnf"; fi
+fi
+[[ -f "$profile" ]] || die "no signing profile at $profile"
+
+echo "0. The clock"
+floor="$DATE_FLOOR"
+if [[ -f "$RELEASE" ]]; then
+  built="$(sed -n 's/^built=//p' "$RELEASE")"; [[ -n "$built" && "$built" > "$floor" ]] && floor="$built"
+fi
+today="$(date -u +%F)"
+[[ ! "$today" < "$floor" ]] || die "the clock says $today, before $floor - set it first: sudo date -u -s 'YYYY-MM-DD HH:MM'"
+say "now $(date -u '+%F %H:%M') UTC - the certificate's validity starts here"
+read -r -p "Is that today's date and time? (yes/no): " ok
+[[ "$ok" == yes ]] || die "set the clock first: sudo date -u -s 'YYYY-MM-DD HH:MM'"
+echo
 
 echo "1. Checking the transfer media"
 refuse_private_keys "$media"
@@ -72,7 +104,7 @@ echo "2. What will be signed"
 say "subject     $subj"
 say "public key  $(openssl req -in "$csr" -noout -text | grep -m1 -o "Public-Key: ([0-9]* bit)")  sha256 $(pubkey_hash req "$csr")"
 say "issued by   $(openssl x509 -in "$site_cert" -noout -subject -nameopt RFC2253 | sed 's/^subject=//')"
-say "for         $days days, CA:TRUE pathlen:0, keyCertSign cRLSign (the profile's v3_issuing)"
+say "for         $days days, CA:TRUE pathlen:0, keyCertSign cRLSign (v3_issuing in $profile)"
 say "requested extensions are ignored; only the profile's are applied"
 echo
 read -r -p "Type the CA's name exactly to sign it ($cn): " typed
@@ -82,7 +114,7 @@ echo
 echo "3. Signing"
 work="$(mktemp -d /dev/shm/deevnet-sign.XXXXXX)"; trap 'rm -rf "$work"; unset DEEVNET_SITE_KEY_PASS' EXIT
 openssl x509 -req -in "$csr" -CA "$site_cert" -CAkey "$site_key" -passin env:DEEVNET_SITE_KEY_PASS \
-  -extfile "$IN/deevnet-pki.cnf" -extensions v3_issuing -days "$days" -sha256 \
+  -extfile "$profile" -extensions v3_issuing -days "$days" -sha256 \
   -set_serial "0x$(openssl rand -hex 16)" -out "$work/$name.pem"
 
 echo "4. Checking the certificate"
