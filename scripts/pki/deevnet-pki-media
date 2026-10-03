@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Prepares and opens the ceremony's USB media on the OFFLINE machine (runbook:
+# Root of Trust > Preparing). On the pi-pki ceremony image it is installed as
+# /usr/local/bin/deevnet-pki-media, and the pki user runs it with sudo.
+#
+#   deevnet-pki-media list                         USB drives, and what each holds
+#   deevnet-pki-media keys init DEVICE primary|backup
+#                                                  ERASE: LUKS2 + ext4, label deevnet-keys-<copy>
+#   deevnet-pki-media keys open [primary|backup]   unlock, mount at /mnt/keys
+#   deevnet-pki-media keys close                   unmount, lock
+#   deevnet-pki-media transfer init DEVICE         ERASE: FAT32, label TRANSFER
+#   deevnet-pki-media transfer mount               mount at /mnt/transfer
+#   deevnet-pki-media transfer umount
+#
+# Key media are encrypted drives (LUKS2) holding the passphrase-encrypted key
+# files: a lost drive shows nothing, not even file names. Opening one needs
+# only the drive and its passphrase, on any Linux with cryptsetup: nothing ties
+# it to this machine (no TPM, no key file kept anywhere else). The transfer media is
+# plain FAT32: it carries only requests and certificates, the ceremony's tools
+# refuse a private key on it, and the online side reads it with no passphrase.
+#
+# init refuses anything that is not a whole USB disk, anything mounted, and the
+# disk the system booted from, and asks for the device name to be typed before
+# it erases.
+set -euo pipefail
+
+die() { echo "deevnet-pki-media: $*" >&2; exit 1; }
+say() { echo "  $*"; }
+
+KEYS_MNT="${DEEVNET_PKI_KEYS_MNT:-/mnt/keys}"
+TRANSFER_MNT="${DEEVNET_PKI_TRANSFER_MNT:-/mnt/transfer}"
+KEYS_MAPPER=deevnet-keys
+TRANSFER_LABEL=TRANSFER
+# Tests point this at loop devices; on the ceremony image it is always usb.
+ALLOW_TRAN="${DEEVNET_PKI_MEDIA_TRAN:-usb}"
+
+[[ $EUID -eq 0 ]] || die "run it with sudo"
+
+boot_disk() {
+  local src; src="$(findmnt -no SOURCE /media/root-ro 2>/dev/null || findmnt -no SOURCE /)"
+  lsblk -no PKNAME "$src" 2>/dev/null | head -1
+}
+
+check_disk() {
+  local dev="$1" name type tran
+  [[ -b "$dev" ]] || die "$dev is not a block device"
+  name="$(basename "$dev")"
+  type="$(lsblk -dno TYPE "$dev")"
+  tran="$(lsblk -dno TRAN "$dev" | tr -d ' ')"
+  [[ "$type" == disk || ( "$ALLOW_TRAN" != usb && "$type" == loop ) ]] \
+    || die "$dev is a $type, not a whole disk - give the disk (e.g. /dev/sda), not a partition"
+  [[ "$ALLOW_TRAN" != usb || "$tran" == usb ]] || die "$dev is not a USB drive (transport '${tran:-none}')"
+  [[ "$name" != "$(boot_disk)" ]] || die "$dev is the disk this machine booted from"
+  if lsblk -nro MOUNTPOINTS "$dev" | grep -q .; then die "$dev has something mounted - unmount it first"; fi
+}
+
+confirm_erase() {
+  local dev="$1" what="$2" answer
+  echo
+  lsblk -o NAME,SIZE,MODEL,LABEL,FSTYPE "$dev"
+  echo
+  echo "This ERASES $dev and makes it the $what."
+  read -r -p "Type the device name ($(basename "$dev")) to go on: " answer
+  [[ "$answer" == "$(basename "$dev")" ]] || die "not confirmed - nothing was changed"
+}
+
+keys_label() { echo "deevnet-keys-$1"; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  list)
+    lsblk -o NAME,SIZE,TRAN,MODEL,LABEL,FSTYPE,MOUNTPOINTS -e 1,7 | grep -v -e '^zram' || true
+    ;;
+
+  keys)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      init)
+        dev="${1:-}"; copy="${2:-}"
+        [[ -n "$dev" && "$copy" =~ ^(primary|backup)$ ]] || die "usage: keys init DEVICE primary|backup"
+        check_disk "$dev"
+        confirm_erase "$dev" "$copy key media (encrypted)"
+        wipefs -aq "$dev"
+        echo "Choose the key media's passphrase (asked twice). It unlocks the drive; the key files"
+        echo "inside keep their own passphrase."
+        # A fixed, modest key-derivation cost (argon2id, 256 MiB, 4 iterations), so
+        # any machine can unlock it, not only one with this one's memory: by
+        # default LUKS sizes it to the RAM of the machine that formats.
+        cryptsetup luksFormat --batch-mode --type luks2 --label "$(keys_label "$copy")" \
+          --pbkdf argon2id --pbkdf-memory 262144 --pbkdf-force-iterations 4 --pbkdf-parallel 4 \
+          --verify-passphrase "$dev"
+        cryptsetup open "$dev" "$KEYS_MAPPER"
+        mkfs.ext4 -q -L "$(keys_label "$copy")" "/dev/mapper/$KEYS_MAPPER"
+        mkdir -p "$KEYS_MNT"
+        mount "/dev/mapper/$KEYS_MAPPER" "$KEYS_MNT"
+        chown pki:pki "$KEYS_MNT" 2>/dev/null || true
+        chmod 0700 "$KEYS_MNT"
+        say "$(keys_label "$copy") is ready and open at $KEYS_MNT."
+        say "Write in the paper record: '$(keys_label "$copy")' made $(date -u +%F)."
+        say "To open it later you need only this drive and its passphrase, on any Linux"
+        say "machine with cryptsetup - this image on any Pi, or a Fedora live USB. It is not"
+        say "tied to this Pi or this card. The key files inside need their own passphrase."
+        say "Close it with: sudo deevnet-pki-media keys close"
+        ;;
+      open)
+        copy="${1:-}"
+        if [[ -n "$copy" ]]; then
+          [[ "$copy" =~ ^(primary|backup)$ ]] || die "usage: keys open [primary|backup]"
+          dev="$(blkid -o device -t LABEL="$(keys_label "$copy")" | while read -r d; do
+            [[ "$(blkid -s TYPE -o value "$d")" == crypto_LUKS ]] && echo "$d"; done | head -1)"
+        else
+          mapfile -t found < <(blkid -t TYPE=crypto_LUKS -o device | while read -r d; do
+            [[ "$(blkid -s LABEL -o value "$d")" == deevnet-keys-* ]] && echo "$d"; done)
+          [[ ${#found[@]} -le 1 ]] || die "more than one key media is plugged in - say which: keys open primary|backup"
+          dev="${found[0]:-}"
+        fi
+        [[ -n "$dev" ]] || die "no key media found - plug it in (deevnet-pki-media list)"
+        [[ ! -e "/dev/mapper/$KEYS_MAPPER" ]] || die "a key media is already open - keys close first"
+        cryptsetup open "$dev" "$KEYS_MAPPER"
+        mkdir -p "$KEYS_MNT"
+        mount "/dev/mapper/$KEYS_MAPPER" "$KEYS_MNT"
+        say "$(blkid -s LABEL -o value "$dev") is open at $KEYS_MNT:"
+        ls -l "$KEYS_MNT" | sed 's/^/    /'
+        ;;
+      close)
+        sync
+        if mountpoint -q "$KEYS_MNT"; then umount "$KEYS_MNT"; fi
+        if [[ -e "/dev/mapper/$KEYS_MAPPER" ]]; then cryptsetup close "$KEYS_MAPPER"; fi
+        say "key media closed - it can be unplugged"
+        ;;
+      *) die "usage: keys init|open|close" ;;
+    esac
+    ;;
+
+  transfer)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      init)
+        dev="${1:-}"
+        [[ -n "$dev" ]] || die "usage: transfer init DEVICE"
+        check_disk "$dev"
+        confirm_erase "$dev" "transfer media (plain FAT32, label $TRANSFER_LABEL)"
+        wipefs -aq "$dev"
+        # One partition, so any computer mounts it.
+        printf 'label: dos\n,,c\n' | sfdisk -q "$dev"
+        partprobe "$dev" 2>/dev/null || true; udevadm settle 2>/dev/null || true
+        part="$(lsblk -nro PATH "$dev" | sed -n 2p)"
+        [[ -b "$part" ]] || die "the new partition on $dev did not appear"
+        mkfs.vfat -F 32 -n "$TRANSFER_LABEL" "$part" >/dev/null
+        say "$dev is the transfer media (label $TRANSFER_LABEL). Mount it with: sudo deevnet-pki-media transfer mount"
+        ;;
+      mount)
+        dev="$(blkid -t LABEL="$TRANSFER_LABEL" -o device | head -1)"
+        [[ -n "$dev" ]] || die "no transfer media (label $TRANSFER_LABEL) found - plug it in"
+        mkdir -p "$TRANSFER_MNT"
+        mount -o uid=pki,gid=pki,umask=022 "$dev" "$TRANSFER_MNT" 2>/dev/null || mount "$dev" "$TRANSFER_MNT"
+        say "transfer media is mounted at $TRANSFER_MNT"
+        ;;
+      umount|unmount)
+        sync
+        if mountpoint -q "$TRANSFER_MNT"; then umount "$TRANSFER_MNT"; fi
+        say "transfer media unmounted - it can be unplugged"
+        ;;
+      *) die "usage: transfer init|mount|umount" ;;
+    esac
+    ;;
+
+  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
