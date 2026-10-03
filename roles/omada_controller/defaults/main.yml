@@ -65,7 +65,7 @@ omada_firewall_ports_retired:
 # First start initialises MongoDB and takes minutes, not seconds.
 omada_start_timeout: 600
 
-# --- TLS from the site CA (ADR-0030 §8, CHG-0032) ------------------------------
+# --- TLS from the Substrate CA (ADR-0031 §4; ADR-0030 §8, CHG-0032) -----------
 # The image's entrypoint turns /cert/tls.crt (the FULL chain, root included)
 # and /cert/tls.key into the Jetty keystore on every start (mbentley/omada-
 # controller README). Never install a certificate through the controller's UI
@@ -77,11 +77,4 @@ omada_tls_common_name: "omada.{{ deevnet_substrate | default('') }}.{{ deevnet_r
 # role's own check dial https://localhost / 127.0.0.1.
 omada_tls_alt_names: "{{ (site_cert_dns_names | default([])) + ['localhost'] }}"
 omada_tls_ips: "{{ (site_cert_ip_sans | default([])) + ['127.0.0.1'] }}"
-omada_tls_ttl: 8760h
 omada_tls_renew_before: 5184000
-omada_openbao_addr: ""
-omada_openbao_ca_local: ""
-omada_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-omada_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-omada_openbao_pki_mount: pki
-omada_openbao_pki_role: platform

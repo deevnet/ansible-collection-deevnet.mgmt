@@ -26,12 +26,5 @@
     site_cert_common_name: "{{ omada_tls_common_name }}"
     site_cert_alt_names: "{{ omada_tls_alt_names }}"
     site_cert_ips: "{{ omada_tls_ips }}"
-    site_cert_ttl: "{{ omada_tls_ttl }}"
     site_cert_renew_before: "{{ omada_tls_renew_before }}"
     site_cert_notify: restart omada controller
-    site_cert_openbao_addr: "{{ omada_openbao_addr }}"
-    site_cert_openbao_ca_local: "{{ omada_openbao_ca_local }}"
-    site_cert_openbao_role_id: "{{ omada_openbao_ansible_role_id }}"
-    site_cert_openbao_secret_id: "{{ omada_openbao_ansible_secret_id }}"
-    site_cert_pki_mount: "{{ omada_openbao_pki_mount }}"
-    site_cert_pki_role: "{{ omada_openbao_pki_role }}"

@@ -40,7 +40,7 @@
 # --- TLS, then directories and configuration -----------------------------------
 
 - name: Issue the log store's TLS material from the site CA
-  ansible.builtin.import_tasks: openbao.yml
+  ansible.builtin.import_tasks: tls.yml
 
 # Only the store's own data. The root and the configuration directory are
 # created by writer.yml, which owns their ownership because the writer has to

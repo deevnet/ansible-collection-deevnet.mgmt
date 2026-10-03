@@ -7,17 +7,17 @@
 API_URL="${DEEVNET_API_ENDPOINT:-https://api.mobile.deevnet.net:8080}"
 API_HOST="${DEEVNET_API_HOST:-a_autoprov@dv02prv001v01.mobile.deevnet.net}"
 DOWNLOADS="${DEEVNET_DOWNLOADS:-https://downloads.mobile.deevnet.net:8443}"
-# The site root (ADR-0030), under the name a tenant keeps it as too.
-SITE_CA_URL="${DEEVNET_SITE_CA_URL:-$DOWNLOADS/deevnet-mobile-root-ca.pem}"
+# The Deevnet Root CA (ADR-0031), under the name a tenant keeps it as too.
+SITE_CA_URL="${DEEVNET_SITE_CA_URL:-$DOWNLOADS/deevnet-root-ca.pem}"
 STATE_BUCKET="${DEEVNET_STATE_BUCKET:-tf-state}"
-CA="${DEEVNET_API_CACERT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/ansible-inventory-deevnet/pki/mobile/deevnet-mobile-root-ca.pem}"
+CA="${DEEVNET_API_CACERT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/ansible-inventory-deevnet/pki/deevnet-root-ca.pem}"
 
 die() { echo "$*" >&2; exit 2; }
 
 check_name() {
   [[ "$1" =~ ^[a-z][a-z0-9]{0,7}$ ]] ||
     die "'$1' is not a tenant name: 1-8 lowercase letters or digits, starting with a letter"
-  [[ -r "$CA" ]] || die "no site CA at $CA"
+  [[ -r "$CA" ]] || die "no Deevnet Root CA at $CA"
 }
 
 # Sets TOKEN. Callers unset it when they are done.

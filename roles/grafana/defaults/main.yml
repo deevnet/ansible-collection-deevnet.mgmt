@@ -54,19 +54,11 @@ grafana_admin_password: "{{ vault_grafana_admin_password | default('') }}"
 # until the API re-ensures every tenant.
 grafana_secret_key: "{{ vault_grafana_secret_key | default('') }}"
 
-# --- TLS, from the site CA in OpenBao (ADR-0016) -------------------------------------
-# The same settings as the log store's, used on the CONTROL NODE.
-grafana_openbao_addr: ""
-grafana_openbao_ca_local: ""
-grafana_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-grafana_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-grafana_openbao_pki_mount: pki
-grafana_openbao_pki_role: platform
+# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ----------
 
 grafana_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 grafana_tls_alt_names: []
 grafana_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-grafana_tls_ttl: 8760h
 grafana_tls_renew_before: 5184000
 
 # --- Server settings ---------------------------------------------------------------------

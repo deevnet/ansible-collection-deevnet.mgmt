@@ -141,18 +141,7 @@ vernemq_db_firewalld_zone: public
 # database. This default is only a fallback for a check-mode run.
 vernemq_db_podman_subnet: "10.89.0.0/16"
 
-# --- TLS from the site CA (ADR-0016) -----------------------------------------
-vernemq_openbao_addr: ""
-vernemq_openbao_ca_local: ""
-vernemq_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-vernemq_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-vernemq_openbao_pki_mount: pki
-# The `platform` PKI role is reused rather than a new one added: it already
-# allows subdomains of the site domain, which covers this host. The name reads
-# as the Platform SEGMENT, which this host is not on, so a dedicated
-# iot_backend role would be more honest - worth doing if per-zone constraints
-# are ever wanted, and not worth a change to the OpenBao role before then.
-vernemq_openbao_pki_role: platform
+# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ------
 vernemq_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 # The service name tenants and devices are told to use, beside the host's own.
 # A device is flashed with whatever its tenant was given, so the certificate
@@ -160,7 +149,6 @@ vernemq_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | defaul
 vernemq_tls_alt_names:
   - "mqtt.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 vernemq_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-vernemq_tls_ttl: 8760h
 vernemq_tls_renew_before: 5184000
 
 # Broker log level: info, or debug when chasing something.

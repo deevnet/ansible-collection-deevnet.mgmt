@@ -1,0 +1,147 @@
+---
+# The site's Tenant Device CA (ADR-0031 §3). Its key is generated inside
+# OpenBao and never leaves; the Site CA signs its request offline, in the
+# Issuing CA ceremony (Root of Trust runbook). Three states, each a run of this
+# role:
+#
+#   1. The mount has no CA and the inventory no request: generate the key and
+#      request, and write the request to the inventory. Take it to the ceremony.
+#   2. The inventory has the signed certificate (deevnet-pki-transfer accept):
+#      install it, with the Site CA, and make it the default issuer.
+#   3. The mount's CA chains to the Deevnet Root CA: nothing to do.
+#
+# To rotate: delete the request and certificate files from the inventory and
+# run with openbao_tenant_device_rotate=true, which starts again at 1.
+
+- name: Read the Tenant Device CA
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_tenant_device_mount }}/ca/pem"
+    ca_path: "{{ openbao_tls_ca }}"
+    status_code: [200, 204]
+    return_content: true
+  register: openbao_tdca
+
+- name: Check the Tenant Device CA chains to the Deevnet Root CA
+  ansible.builtin.shell:
+    cmd: >-
+      f=$(mktemp) && cat > "$f" &&
+      openssl verify -CAfile {{ openbao_root_ca_local | quote }}
+      -untrusted {{ openbao_site_ca_local | quote }} "$f"; rc=$?; rm -f "$f"; exit $rc
+    stdin: "{{ openbao_tdca.content }}"
+  register: openbao_tdca_chain
+  when: openbao_tdca.status == 200
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+
+- name: Decide what the Tenant Device CA needs
+  ansible.builtin.set_fact:
+    openbao_tdca_ready: >-
+      {{ openbao_tdca.status == 200 and openbao_tdca_chain.rc == 0
+         and not (openbao_tenant_device_rotate | default(false) | bool) }}
+    openbao_tdca_have_cert: "{{ openbao_tenant_device_cert_local is file }}"
+    openbao_tdca_have_csr: "{{ openbao_tenant_device_csr_local is file }}"
+
+# State 1. RSA 3072 (Certificates standard §4). The subject is O, OU, CN, which
+# the ceremony's tools check exactly; the profile adds the extensions.
+- name: Generate the Tenant Device CA's key and request
+  when:
+    - not openbao_tdca_ready | bool
+    - not openbao_tdca_have_cert | bool
+    - not openbao_tdca_have_csr | bool
+  block:
+    - name: Generate the key and request inside OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_tenant_device_mount }}/intermediate/generate/internal"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ openbao_tenant_device_common_name }}"
+          organization: "{{ openbao_tenant_device_organization }}"
+          ou: "{{ openbao_tenant_device_ou }}"
+          key_type: rsa
+          key_bits: 3072
+          exclude_cn_from_sans: true
+      register: openbao_tdca_csr
+      changed_when: true
+
+    - name: Write the request to the inventory
+      ansible.builtin.copy:
+        dest: "{{ openbao_tenant_device_csr_local }}"
+        content: "{{ openbao_tdca_csr.json.data.csr | trim }}\n"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Take the request to the Issuing CA ceremony
+      ansible.builtin.debug:
+        msg:
+          - "Wrote {{ openbao_tenant_device_csr_local }}."
+          - "Root of Trust > Issuing CA, with --ca tenant-device --csr {{ openbao_tenant_device_csr_local }}"
+          - "Then accept the certificate to {{ openbao_tenant_device_cert_local }} and run this role again."
+
+# State 2.
+- name: Install the signed Tenant Device CA
+  when:
+    - not openbao_tdca_ready | bool
+    - openbao_tdca_have_cert | bool
+  block:
+    - name: Check the certificate chains to the Deevnet Root CA through the Site CA
+      ansible.builtin.command:
+        argv: [openssl, verify, -CAfile, "{{ openbao_root_ca_local }}", -untrusted,
+               "{{ openbao_site_ca_local }}", "{{ openbao_tenant_device_cert_local }}"]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Install it with the Site CA
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_tenant_device_mount }}/intermediate/set-signed"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          # One line, double-quoted: in a folded scalar the '\n' stays literal.
+          certificate: "{{ [lookup('file', openbao_tenant_device_cert_local) | trim, lookup('file', openbao_site_ca_local) | trim] | join('\n') }}"
+      register: openbao_tdca_set
+      changed_when: true
+
+    # set-signed also imports the Site CA as an issuer with no key; the
+    # default must be the one whose key OpenBao holds.
+    - name: Find the imported issuer that has its key
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_tenant_device_mount }}/issuer/{{ item }}"
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+      loop: "{{ openbao_tdca_set.json.data.imported_issuers }}"
+      register: openbao_tdca_issuers
+
+    - name: Make it the default issuer
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_tenant_device_mount }}/config/issuers"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          default: >-
+            {{ (openbao_tdca_issuers.results | selectattr('json.data.key_id', 'truthy')
+                | map(attribute='item') | list | first) }}
+      changed_when: true
+
+    - name: Read the Tenant Device CA again
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_tenant_device_mount }}/ca/pem"
+        ca_path: "{{ openbao_tls_ca }}"
+        return_content: true
+      register: openbao_tdca_after
+
+    - name: Check OpenBao's Tenant Device CA is the ceremony's certificate
+      ansible.builtin.assert:
+        that: (openbao_tdca_after.content | trim) == (lookup('file', openbao_tenant_device_cert_local) | trim)
+        fail_msg: The mount's CA is not the certificate in {{ openbao_tenant_device_cert_local }}.
+        quiet: true

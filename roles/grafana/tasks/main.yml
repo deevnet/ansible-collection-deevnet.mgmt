@@ -52,7 +52,7 @@
   become: true
 
 - name: Issue Grafana's TLS material from the site CA
-  ansible.builtin.import_tasks: openbao.yml
+  ansible.builtin.import_tasks: tls.yml
 
 - name: Install the VictoriaLogs data source plugin
   ansible.builtin.import_tasks: plugin.yml

@@ -79,7 +79,7 @@ lines += [
     "",
     "For the tenant:",
     f"  1. Join {w.get('ssid', 'the network')} with the password above.",
-    "  2. Download the site root CA (keep its name, deevnet-mobile-root-ca.pem) and",
+    "  2. Download the Deevnet Root CA (keep its name, deevnet-root-ca.pem) and",
     "     check its SHA-256 fingerprint matches the one above.",
     "  3. export DEEVNET_API_TOKEN=<the enrollment token>, then make init && make apply.",
     "     The first apply spends the token and the Wi-Fi key becomes the tenant's own.",

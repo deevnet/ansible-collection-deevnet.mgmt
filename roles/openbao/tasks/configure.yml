@@ -9,7 +9,7 @@
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/auth/approle/login"
     method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     body_format: json
     body:
       role_id: "{{ openbao_ansible_role_id }}"
@@ -28,7 +28,7 @@
 - name: List secrets engines
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/mounts"
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
   register: openbao_mounts
 
@@ -36,7 +36,7 @@
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item.path }}"
     method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     body_format: json
     body: "{{ item.body }}"
@@ -45,7 +45,7 @@
     - { path: "{{ openbao_kv_mount }}", body: { type: kv, options: { version: "2" } } }
     - { path: "{{ openbao_build_kv_mount }}", body: { type: kv, options: { version: "2" } } }
     - { path: transit, body: { type: transit } }
-    - { path: "{{ openbao_pki_mount }}", body: { type: pki, config: { max_lease_ttl: "{{ openbao_pki_ttl }}" } } }
+    - { path: "{{ openbao_tenant_device_mount }}", body: { type: pki, config: { max_lease_ttl: "{{ openbao_tenant_device_mount_ttl }}" } } }
   when: (item.path ~ '/') not in openbao_mounts.json
   loop_control:
     label: "{{ item.path }}"
@@ -54,7 +54,7 @@
 - name: List auth methods
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/auth"
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
   register: openbao_auths
 
@@ -62,7 +62,7 @@
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/auth/approle"
     method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     body_format: json
     body: { type: approle }
@@ -70,153 +70,25 @@
   when: "'approle/' not in openbao_auths.json"
   changed_when: true
 
-# The site CA is an intermediate under the site root (ADR-0030 §2). The root
-# lives in the inventory, its key in the vault, and it never enters OpenBao;
-# the intermediate's key is generated here and never leaves. A new
-# intermediate is signed when the mount has no CA (a fresh or rebuilt OpenBao)
-# or when its default issuer does not chain to the inventory root (the old
-# internal root, before CHG-0031, or an intermediate under a retired root), or
-# when asked to (openbao_pki_rotate_intermediate: before the five years run
-# out, or as the drill).
-- name: Read the issuing CA
+- name: Run the Tenant Device CA
+  ansible.builtin.import_tasks: tenant_device_ca.yml
+
+- name: Remove retired mounts
   ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
-    status_code: [200, 204]
-    return_content: true
-  register: openbao_ca
-
-- name: Check the issuing CA chains to the site root
-  ansible.builtin.command:
-    argv: [openssl, verify, -CAfile, "{{ openbao_site_root_local }}", /dev/stdin]
-    stdin: "{{ openbao_ca.content }}"
-  register: openbao_ca_chain
-  when: openbao_ca.status == 200
-  delegate_to: localhost
-  become: false
-  changed_when: false
-  failed_when: false
-
-- name: Sign an intermediate under the site root
-  when: >-
-    openbao_ca.status == 204 or openbao_ca_chain.rc != 0
-    or openbao_pki_rotate_intermediate | bool
-  block:
-    # Without add_basic_constraints the request carries no extensions at all.
-    - name: Generate the intermediate's key and request
-      ansible.builtin.uri:
-        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/intermediate/generate/internal"
-        method: POST
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
-        headers: {X-Vault-Token: "{{ openbao_token }}"}
-        body_format: json
-        body:
-          common_name: "{{ openbao_pki_common_name }}"
-          key_type: ec
-          key_bits: 256
-          add_basic_constraints: true
-      register: openbao_intermediate_csr
-      changed_when: true
-
-    - name: Make a scratch directory for the request
-      ansible.builtin.tempfile:
-        state: directory
-      register: openbao_sign_dir
-      delegate_to: localhost
-      become: false
-      changed_when: false
-
-    # The request even with basic constraints has no key usage, and
-    # community.crypto's ownca provider copies a request's extensions rather
-    # than setting its own, so openssl signs with an explicit extension file.
-    # The root key goes in on stdin and never touches the disk.
-    - name: Sign the intermediate with the site root
-      ansible.builtin.shell:
-        cmd: >-
-          printf '%s\n' "$CSR" > csr.pem &&
-          printf '%s\n' 'basicConstraints=critical,CA:TRUE,pathlen:0'
-          'keyUsage=critical,keyCertSign,cRLSign' 'subjectKeyIdentifier=hash'
-          'authorityKeyIdentifier=keyid:always' > ext.cnf &&
-          openssl x509 -req -in csr.pem -CA {{ openbao_site_root_local | quote }} -CAkey /dev/stdin
-          -set_serial {{ (2 ** 120) | random }} -days {{ openbao_pki_intermediate_days }} -sha256 -extfile ext.cnf
-        chdir: "{{ openbao_sign_dir.path }}"
-        stdin: "{{ openbao_site_root_key }}"
-      environment:
-        CSR: "{{ openbao_intermediate_csr.json.data.csr }}"
-      register: openbao_intermediate_cert
-      delegate_to: localhost
-      become: false
-      changed_when: true
-      no_log: true
-
-    - name: Remove the scratch directory
-      ansible.builtin.file:
-        path: "{{ openbao_sign_dir.path }}"
-        state: absent
-      delegate_to: localhost
-      become: false
-      changed_when: false
-
-    - name: Install the signed intermediate
-      ansible.builtin.uri:
-        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/intermediate/set-signed"
-        method: POST
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
-        headers: {X-Vault-Token: "{{ openbao_token }}"}
-        body_format: json
-        body:
-          certificate: "{{ openbao_intermediate_cert.stdout }}"
-      register: openbao_set_signed
-      changed_when: true
-
-    # On a mount that already has an issuer (the old internal root), set-signed
-    # imports the intermediate but leaves the default where it was.
-    - name: Issue from the intermediate
-      ansible.builtin.uri:
-        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/config/issuers"
-        method: POST
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
-        headers: {X-Vault-Token: "{{ openbao_token }}"}
-        body_format: json
-        body:
-          default: "{{ openbao_set_signed.json.data.imported_issuers[0] }}"
-      changed_when: true
-
-    - name: Read the issuing CA again
-      ansible.builtin.uri:
-        url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/ca/pem"
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
-        return_content: true
-      register: openbao_ca_after
-
-    - name: Check OpenBao now issues under the site root
-      ansible.builtin.command:
-        argv: [openssl, verify, -CAfile, "{{ openbao_site_root_local }}", /dev/stdin]
-        stdin: "{{ openbao_ca_after.content }}"
-      delegate_to: localhost
-      become: false
-      changed_when: false
-
-- name: Write the Platform certificate role
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/{{ openbao_pki_mount }}/roles/{{ openbao_pki_role }}"
-    method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item }}"
+    method: DELETE
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
-    body_format: json
-    body:
-      allowed_domains: "{{ openbao_pki_role_domains }}"
-      allow_subdomains: true
-      allow_ip_sans: true
-      max_ttl: "{{ openbao_pki_role_max_ttl }}"
     status_code: [200, 204]
-  changed_when: false
+  loop: "{{ openbao_retired_mounts }}"
+  when: (item ~ '/') in openbao_mounts.json
+  changed_when: true
 
 - name: Create the Transit key for tenant secrets
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/transit/keys/{{ openbao_transit_key }}"
     method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     status_code: [200, 204]
   changed_when: false
@@ -225,7 +97,7 @@
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item.key }}"
     method: PUT
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     body_format: json
     body: { policy: "{{ item.value }}" }
@@ -239,7 +111,7 @@
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/auth/approle/role/{{ item.key }}"
     method: POST
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     body_format: json
     body: "{{ item.value }}"
@@ -255,7 +127,7 @@
     - name: Read Ansible's role ID
       ansible.builtin.uri:
         url: "{{ openbao_local_url }}/v1/auth/approle/role/ansible/role-id"
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        ca_path: "{{ openbao_tls_ca }}"
         headers: {X-Vault-Token: "{{ openbao_token }}"}
       register: openbao_ansible_role
 
@@ -263,7 +135,7 @@
       ansible.builtin.uri:
         url: "{{ openbao_local_url }}/v1/auth/approle/role/ansible/secret-id"
         method: POST
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        ca_path: "{{ openbao_tls_ca }}"
         headers: {X-Vault-Token: "{{ openbao_token }}"}
       register: openbao_ansible_secret
       no_log: true
@@ -286,7 +158,7 @@
       ansible.builtin.uri:
         url: "{{ openbao_local_url }}/v1/auth/token/revoke-self"
         method: POST
-        ca_path: "{{ openbao_tls_dir }}/listener.pem"
+        ca_path: "{{ openbao_tls_ca }}"
         headers: {X-Vault-Token: "{{ openbao_token }}"}
         status_code: [200, 204]
       changed_when: true

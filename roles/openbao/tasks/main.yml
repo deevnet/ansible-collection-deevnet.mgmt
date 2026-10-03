@@ -1,7 +1,8 @@
 ---
 # OpenBao around the shared podman_service role (ADR-0016). OpenBao's own steps:
-# the seal key, the listener certificate, first initialisation, and the
-# engines, policies and AppRoles the substrate uses.
+# the seal key, the listener certificate (from the Substrate CA), first
+# initialisation, the engines, policies and AppRoles the substrate uses, and the
+# Tenant Device CA (ADR-0031 §3).
 
 - name: Fail early without a seal key
   ansible.builtin.assert:
@@ -15,15 +16,16 @@
         head -c 32 /dev/urandom | base64
   no_log: true
 
-- name: Fail early without the site root
+- name: Fail early without the Deevnet PKI
   ansible.builtin.assert:
     that:
-      - openbao_site_root_local is file
-      - openbao_site_root_key | length > 0
+      - site_root_ca_file is file
+      - site_ca_file is file
     fail_msg: >-
-      OpenBao issues from an intermediate under the site root (ADR-0030 §2), so
-      it needs the root's certificate ({{ openbao_site_root_local }}) and its key
-      (vault_site_root_ca_key). Both come from playbooks/site-root-ca.yml, once per site.
+      OpenBao's listener certificate comes from the Substrate CA, and its Tenant Device CA
+      chains through the Site CA ({{ site_ca_file | default('site_ca_file') }}) to the Deevnet
+      Root CA ({{ site_root_ca_file | default('site_root_ca_file') }}): Root of Trust runbook.
+    quiet: true
   delegate_to: localhost
   become: false
 
@@ -97,18 +99,22 @@
 - name: Wait for OpenBao to answer
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/seal-status"
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
   register: openbao_seal_status
   retries: 30
   delay: 2
   until: openbao_seal_status.status is defined and openbao_seal_status.status == 200
 
-- name: Fetch the listener certificate to the control node
-  ansible.builtin.fetch:
-    src: "{{ openbao_tls_dir }}/listener.pem"
+# The pin every client of OpenBao reads (*_openbao_ca_local in the inventory,
+# scripts/pve-creds) is the Deevnet Root CA itself, kept at the path those
+# clients have always used.
+- name: Put the listener's trust anchor where OpenBao's clients pin it
+  ansible.builtin.copy:
+    src: "{{ site_root_ca_file }}"
     dest: "{{ openbao_ca_local_path }}"
-    flat: true
-  become: true
+    mode: "0644"
+  delegate_to: localhost
+  become: false
 
 - name: Initialise OpenBao on first run
   ansible.builtin.import_tasks: init.yml
@@ -117,7 +123,7 @@
 - name: Confirm OpenBao unsealed itself
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/seal-status"
-    ca_path: "{{ openbao_tls_dir }}/listener.pem"
+    ca_path: "{{ openbao_tls_ca }}"
   register: openbao_unsealed
   retries: 15
   delay: 2

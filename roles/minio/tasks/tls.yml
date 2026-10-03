@@ -29,15 +29,9 @@
     site_cert_key_file: private.key
     site_cert_ca_file: "CAs/{{ site_root_ca_name }}"
     site_cert_old_ca_file: CAs/site-ca.pem
+    site_cert_retired_ca_files: "{{ (site_root_ca_retired | default([])) | map('regex_replace', '^', 'CAs/') | list }}"
     site_cert_common_name: "{{ minio_tls_common_name }}"
     site_cert_alt_names: "{{ minio_tls_alt_names }}"
     site_cert_ips: "{{ minio_tls_ips }}"
-    site_cert_ttl: "{{ minio_tls_ttl }}"
     site_cert_renew_before: "{{ minio_tls_renew_before }}"
     site_cert_notify: restart minio
-    site_cert_openbao_addr: "{{ minio_openbao_addr }}"
-    site_cert_openbao_ca_local: "{{ minio_openbao_ca_local }}"
-    site_cert_openbao_role_id: "{{ minio_openbao_ansible_role_id }}"
-    site_cert_openbao_secret_id: "{{ minio_openbao_ansible_secret_id }}"
-    site_cert_pki_mount: "{{ minio_openbao_pki_mount }}"
-    site_cert_pki_role: "{{ minio_openbao_pki_role }}"

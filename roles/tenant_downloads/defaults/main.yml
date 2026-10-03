@@ -23,26 +23,16 @@ tenant_downloads_content_dir: "{{ tenant_downloads_root }}/content"
 tenant_downloads_conf_dir: "{{ tenant_downloads_root }}/conf.d"
 tenant_downloads_tls_dir: "{{ tenant_downloads_root }}/tls"
 
-# The site root (ADR-0030), served under its own name. The names it went by
-# before CHG-0031 serve the same file for one release, so instructions written
-# before it still fetch something - and the fingerprint check shows the change.
-tenant_downloads_ca_name: "{{ site_root_ca_name }}"
-tenant_downloads_ca_old_names:
-  - "deevnet-{{ deevnet_substrate | default('site') }}-ca.pem"
-  - site-ca.pem
+# The Deevnet Root CA (ADR-0031), served under its own name. During a re-root
+# the outgoing root is served under ITS name too, until it is retired, so a
+# tenant can fetch either and check its fingerprint against the tenant guide.
+tenant_downloads_roots: "{{ [site_root_ca_file] + (site_root_ca_previous_files | default([])) }}"
 
-# --- TLS, from the site CA in OpenBao (ADR-0016) ---------------------------------
-tenant_downloads_openbao_addr: ""
-tenant_downloads_openbao_ca_local: ""
-tenant_downloads_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default('') }}"
-tenant_downloads_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
-tenant_downloads_openbao_pki_mount: pki
-tenant_downloads_openbao_pki_role: platform
+# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ------
 
 # Tenants use the downloads name; the host name is kept so a probe by host works.
 tenant_downloads_tls_common_name: "downloads.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 tenant_downloads_tls_alt_names:
   - "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
 tenant_downloads_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-tenant_downloads_tls_ttl: 8760h
 tenant_downloads_tls_renew_before: 5184000
