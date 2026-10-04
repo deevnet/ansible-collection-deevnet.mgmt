@@ -13,6 +13,8 @@
 - name: The Tenant Device CA
   hosts: openbao
   gather_facts: false
+  # As playbooks/openbao.yml: the listener's files are readable by root only.
+  become: true
   tasks:
     - name: Run it
       ansible.builtin.include_role:
