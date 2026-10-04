@@ -107,6 +107,66 @@ wait_for_removal() {
     read -r -p "   Remove that drive ($dev), then press Enter. " a
   done
 }
+# A Pi 4 can drop one USB drive when another is plugged in (the new drive's
+# inrush current dips the bus), and a dropped drive keeps its name with a size
+# of zero: every write to it fails. So drives are checked before every write,
+# and a dropped one is reseated and reopened while the keys wait in RAM.
+alive() { local n; n="$(basename "$1")"; [[ -r "/sys/block/$n/size" && "$(cat "/sys/block/$n/size")" -gt 0 ]]; }
+backing_disk() {   # the disk under a mount point, through dm-crypt if need be
+  local src pk
+  src="$(findmnt -no SOURCE "$1" 2>/dev/null)" || return 1
+  if [[ "$src" == /dev/mapper/* ]]; then
+    src="/dev/$(ls "/sys/block/$(basename "$(readlink -f "$src")")/slaves" 2>/dev/null | head -1)"
+  fi
+  pk="$(lsblk -no PKNAME "$src" 2>/dev/null | head -1 || true)"
+  if [[ -n "$pk" ]]; then echo "/dev/$pk"; else echo "$src"; fi
+}
+writable() {       # mounted, its disk still there, and a write lands
+  local mnt="$1" disk
+  mountpoint -q "$mnt" || return 1
+  disk="$(backing_disk "$mnt")" && alive "$disk" || return 1
+  touch "$mnt/.deevnet-write-test" 2>/dev/null && rm -f "$mnt/.deevnet-write-test" && sync
+}
+recover_key_drive() {
+  local a dev
+  echo "   ${red}The key drive stopped responding${off} - most likely it dropped off the USB bus."
+  say "The keys made this session are safe in $WORK. Reseat the drive and the script"
+  say "will reopen it and copy them again. Use the black (USB 2) ports if you can."
+  sudo umount -l "$KEYS" 2>/dev/null || true
+  sudo cryptsetup close deevnet-keys 2>/dev/null || sudo dmsetup remove --force deevnet-keys 2>/dev/null || true
+  read -r -p "   Pull out the key drive (leave the transfer drive in), then press Enter. " a
+  dev="$(wait_for_drive "KEY drive again")"
+  key_drive primary "$dev"
+}
+recover_transfer_drive() {
+  local a dev
+  echo "   ${red}The transfer drive stopped responding${off} - most likely it dropped off the USB bus."
+  say "The certificates are safe in $WORK. Reseat it and the script will copy them again."
+  sudo umount -l "$TRANSFER" 2>/dev/null || true
+  read -r -p "   Pull out the transfer drive (leave the key drive in), then press Enter. " a
+  dev="$(wait_for_drive "TRANSFER drive again")"
+  transfer_drive "$dev"
+}
+# Copy files to a drive, check each landed byte for byte, and on any failure
+# recover the drive and try again.
+store() {
+  local where="$1"; shift
+  local mnt f ok
+  [[ "$where" == keys ]] && mnt="$KEYS" || mnt="$TRANSFER"
+  while true; do
+    ok=1
+    if writable "$mnt"; then
+      for f in "$@"; do
+        run cp "$f" "$mnt/" && sync && cmp -s "$f" "$mnt/$(basename "$f")" || { ok=0; break; }
+      done
+    else
+      ok=0
+    fi
+    [[ "$ok" == 1 ]] && return 0
+    if [[ "$where" == keys ]]; then recover_key_drive; else recover_transfer_drive; fi
+  done
+}
+
 # Opens the key drive in $dev (one already made), or offers to make it.
 key_drive() {
   local copy="$1" dev="$2" label a
@@ -195,10 +255,17 @@ say "already prepared is opened, a new one is formatted (after you agree; that"
 say "ERASES it). First, start with none plugged in."
 proceed
 wait_until_no_drives
-dev="$(wait_for_drive "KEY drive (the primary)")"
-key_drive primary "$dev"
-dev="$(wait_for_drive "TRANSFER drive")"
-transfer_drive "$dev"
+say "Both drives go in first, one after the other, before either is touched: plugging"
+say "a drive into a Pi can knock another one off the bus while it is busy."
+key_dev="$(wait_for_drive "KEY drive (the primary)")"
+transfer_dev="$(wait_for_drive "TRANSFER drive")"
+say "Waiting a few seconds for both to settle..."
+sleep 5
+alive "$key_dev" || die "the key drive ($key_dev) dropped off the bus when the transfer drive went in. Power off, use the black (USB 2) ports or a powered hub, and start again."
+alive "$transfer_dev" || die "the transfer drive ($transfer_dev) dropped off the bus. Power off, use the black (USB 2) ports or a powered hub, and start again."
+say "Both are in. Leave them in until the script says to take one out."
+key_drive primary "$key_dev"
+transfer_drive "$transfer_dev"
 say "${green}ready${off}: key drive open at $KEYS, transfer drive at $TRANSFER"
 
 # ---------------------------------------------------------------------------
@@ -235,10 +302,9 @@ if [[ "$path" == 1 ]]; then
   say "The key and certificate go on the key drive, and the key is checked to open"
   say "(it asks for the key's passphrase). The certificate alone goes on the transfer drive."
   proceed
-  run cp deevnet-root-ca.key deevnet-root-ca.pem "$KEYS/"
+  store keys deevnet-root-ca.key deevnet-root-ca.pem
   run openssl pkey -in "$KEYS/deevnet-root-ca.key" -noout
-  run cp deevnet-root-ca.pem "$TRANSFER/"
-  sync
+  store transfer deevnet-root-ca.pem
   say "${green}stored${off}: the root is on the key drive, its certificate on the transfer drive"
 fi
 
@@ -288,10 +354,9 @@ step "Site CA, 4 of 4: store it"
 say "The key and certificate go on the key drive, and the key is checked to open"
 say "(its passphrase). The certificate alone goes on the transfer drive."
 proceed
-run cp "deevnet-$site-site-ca.key" "deevnet-$site-site-ca.pem" "$KEYS/"
+store keys "deevnet-$site-site-ca.key" "deevnet-$site-site-ca.pem"
 run openssl pkey -in "$KEYS/deevnet-$site-site-ca.key" -noout
-run cp "deevnet-$site-site-ca.pem" "$TRANSFER/"
-sync
+store transfer "deevnet-$site-site-ca.pem"
 say "${green}stored${off}: the Site CA is on the key drive, its certificate on the transfer drive"
 
 # ---------------------------------------------------------------------------
@@ -310,9 +375,8 @@ if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
   done
   dev="$(wait_for_drive "BACKUP key drive")"
   key_drive backup "$dev"
-  run cp "$WORK"/deevnet-*.key "$WORK"/deevnet-*.pem "$KEYS/"
+  store keys "$WORK"/deevnet-*.key "$WORK"/deevnet-*.pem
   for k in "$KEYS"/deevnet-*.key; do run openssl pkey -in "$k" -noout; done
-  sync
   say "${green}backup done${off}"
 else
   say "${bold}No backup now: each key exists only once until you make it.${off}"
@@ -320,6 +384,8 @@ fi
 
 # ---------------------------------------------------------------------------
 step "Finish"
+# The backup swap plugs a drive in beside the transfer drive: check it is still there.
+writable "$TRANSFER" || { recover_transfer_drive; store transfer "$WORK"/deevnet-*.pem; }
 say "The transfer drive holds:"
 ls -1 "$TRANSFER"/*.pem | sed 's/^/     /'
 say "For the paper record:"
