@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# The Root CA and Site CA ceremonies, step by step (runbook: Root of Trust >
+# Root CA, Site CA). On the pi-pki ceremony image it is /home/pki/deevnet-pki-ceremony:
+#
+#   ./deevnet-pki-ceremony
+#
+# It runs the runbook's own commands, one step at a time: it says what the
+# next step does, asks Proceed? [Y/n], and waits for the operator's input
+# where a step needs it (a device, a site name, a passphrase). Answering n
+# stops it; nothing is lost that is not already on a key drive, and the
+# working directory in RAM is gone at power-off.
+#
+# Two paths:
+#   1. a new Deevnet Root CA and a Site CA - the first ceremony, or a re-root;
+#   2. a Site CA only, signed by the root already on the key drive - a new
+#      site, or a Site CA rotation.
+#
+# It never overwrites a key: a key drive that already holds the CA it would
+# make stops it. Issuing CAs are signed by deevnet-pki-sign, not here.
+set -euo pipefail
+
+PROFILE="${DEEVNET_PKI_PROFILE:-/usr/local/share/deevnet-pki/deevnet-pki.cnf}"
+RELEASE="${DEEVNET_PKI_RELEASE:-/etc/deevnet-pki-release}"
+MEDIA="${DEEVNET_PKI_MEDIA:-deevnet-pki-media}"
+WORK="${DEEVNET_PKI_WORK:-/dev/shm/pki}"
+KEYS="${DEEVNET_PKI_KEYS_MNT:-/mnt/keys}"
+TRANSFER="${DEEVNET_PKI_TRANSFER_MNT:-/mnt/transfer}"
+DATE_FLOOR="2026-10-03"
+
+ROOT_DAYS=7305   # 20 years
+SITE_DAYS=3653   # 10 years
+
+bold=$'\e[1m'; dim=$'\e[2m'; red=$'\e[31m'; green=$'\e[32m'; off=$'\e[0m'
+[[ -t 1 ]] || { bold=""; dim=""; red=""; green=""; off=""; }
+
+die()  { echo "${red}deevnet-pki-ceremony: $*${off}" >&2; exit 1; }
+step() { echo; echo "${bold}== $* ==${off}"; }
+say()  { echo "   $*"; }
+run()  { echo "${dim}   \$ $*${off}"; "$@"; }
+proceed() {
+  local a
+  read -r -p "   Proceed? [Y/n] " a
+  case "${a,,}" in ""|y|yes) return 0 ;; *) stopped ;; esac
+}
+stopped() {
+  echo
+  say "Stopped. Keys made this session are in $WORK until power-off, and on a key"
+  say "drive only if that step ran. To close the drives:"
+  say "  sudo $MEDIA keys close; sudo $MEDIA transfer umount"
+  exit 0
+}
+fingerprint() { openssl x509 -in "$1" -noout -fingerprint -sha256 | sed 's/^.*=//'; }
+show_cert() {
+  openssl x509 -in "$1" -noout -subject -issuer -enddate -ext basicConstraints,keyUsage -nameopt multiline,-esc_msb \
+    | sed 's/^/     /'
+  say "SHA-256 fingerprint: ${bold}$(fingerprint "$1")${off}"
+}
+paper=()   # what to write in the paper record, shown again at the end
+
+# ---------------------------------------------------------------------------
+step "Deevnet Root of Trust ceremony"
+say "This makes the Deevnet PKI's offline CAs, as the Root of Trust runbook does."
+say "Each step says what it does and asks before it runs. Have ready:"
+say "  - the key drive (and the backup key drive, if you have it), and the transfer drive;"
+say "  - the paper record;"
+say "  - the passphrases: one for each key drive, one for the key files."
+echo
+say "1. A new Deevnet Root CA, then a Site CA (first time, or a re-root)"
+say "2. A Site CA only, signed by the root already on the key drive (a new site, or a rotation)"
+read -r -p "   Which? [1/2] " path
+[[ "$path" == 1 || "$path" == 2 ]] || die "answer 1 or 2"
+
+# ---------------------------------------------------------------------------
+step "Check this machine is offline, and its clock"
+say "No network interface may be up. The clock must be right: every certificate's"
+say "validity starts from it, and a Pi has no battery clock."
+proceed
+if ip -brief address 2>/dev/null | grep -v '^lo ' | grep -q UP; then
+  die "a network interface is up - this machine must be offline"
+fi
+say "${green}offline${off}: only lo is up"
+floor="$DATE_FLOOR"
+if [[ -r "$RELEASE" ]]; then
+  built="$(sed -n 's/^built=//p' "$RELEASE")"; [[ -n "$built" && "$built" > "$floor" ]] && floor="$built"
+fi
+[[ ! "$(date -u +%F)" < "$floor" ]] || die "the clock says $(date -u +%F), before $floor - set it: sudo date -u -s 'YYYY-MM-DD HH:MM'"
+say "The clock says ${bold}$(date -u '+%F %H:%M') UTC${off}."
+read -r -p "   Is that today's date and time, in UTC? [y/N] " ok
+[[ "${ok,,}" == y || "${ok,,}" == yes ]] || die "set it first: sudo date -u -s 'YYYY-MM-DD HH:MM', then run this again"
+[[ -r "$PROFILE" ]] || die "no signing profile at $PROFILE"
+
+# ---------------------------------------------------------------------------
+step "Make the working directory in memory"
+say "Keys are made in $WORK, in RAM: nothing there survives power-off. The signing"
+say "profile is copied beside them."
+proceed
+mkdir -p -m 0700 "$WORK"
+cp "$PROFILE" "$WORK/deevnet-pki.cnf"
+cd "$WORK"
+say "${green}ready${off}: $WORK"
+
+# ---------------------------------------------------------------------------
+step "The drives"
+say "The key drive is encrypted; the transfer drive is plain. A new drive is"
+say "formatted first (this ERASES it); a drive already prepared is just opened."
+echo
+sudo "$MEDIA" list | sed 's/^/   /'
+echo
+read -r -p "   Is the key drive new and needs formatting? [y/N] " a
+if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
+  read -r -p "   Its device (e.g. /dev/sda): " dev
+  sudo "$MEDIA" keys init "$dev" primary
+  paper+=("Key drive deevnet-keys-primary made $(date -u +%F)")
+else
+  say "Opening the key drive: it asks for the drive's passphrase."
+  proceed
+  if ! mountpoint -q "$KEYS"; then sudo "$MEDIA" keys open; fi
+fi
+mountpoint -q "$KEYS" || die "the key drive is not open at $KEYS"
+read -r -p "   Is the transfer drive new and needs formatting? [y/N] " a
+if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
+  read -r -p "   Its device (e.g. /dev/sdb): " dev
+  sudo "$MEDIA" transfer init "$dev"
+fi
+mountpoint -q "$TRANSFER" || sudo "$MEDIA" transfer mount
+mountpoint -q "$TRANSFER" || die "the transfer drive is not mounted at $TRANSFER"
+
+# ---------------------------------------------------------------------------
+if [[ "$path" == 1 ]]; then
+  [[ ! -e "$KEYS/deevnet-root-ca.key" ]] \
+    || die "this key drive already holds deevnet-root-ca.key - a root is made once; nothing was changed"
+
+  step "Root CA, 1 of 4: generate the key"
+  say "An RSA 4096 key, encrypted with a passphrase as it is made. openssl asks for"
+  say "the passphrase twice. Without the passphrase the file is useless, and without"
+  say "the file the passphrase is."
+  proceed
+  run openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out deevnet-root-ca.key
+
+  step "Root CA, 2 of 4: self-sign"
+  say "The root signs its own certificate with the profile's v3_root extensions:"
+  say "O=Deevnet, OU=Deevnet PKI, CN=Deevnet Root CA; 20 years; CA, path length 2."
+  say "openssl asks for the key's passphrase."
+  proceed
+  run openssl req -x509 -new -config deevnet-pki.cnf -key deevnet-root-ca.key \
+    -extensions v3_root -days "$ROOT_DAYS" -sha256 \
+    -set_serial "0x$(openssl rand -hex 16)" -out deevnet-root-ca.pem
+
+  step "Root CA, 3 of 4: check it"
+  say "Check: subject and issuer are both Deevnet Root CA; it ends 20 years from today;"
+  say "CA:TRUE, pathlen:2; Certificate Sign, CRL Sign."
+  show_cert deevnet-root-ca.pem
+  say "${bold}Write the fingerprint, today's date and 'Deevnet Root CA, 20 years' in the paper record.${off}"
+  paper+=("Deevnet Root CA, 20 years, $(date -u +%F): $(fingerprint deevnet-root-ca.pem)")
+  read -r -p "   Does it read correctly, and is it written down? [y/N] " a
+  [[ "${a,,}" == y || "${a,,}" == yes ]] || stopped
+
+  step "Root CA, 4 of 4: store it"
+  say "The key and certificate go on the key drive, and the key is checked to open"
+  say "(it asks for the key's passphrase). The certificate alone goes on the transfer drive."
+  proceed
+  run cp deevnet-root-ca.key deevnet-root-ca.pem "$KEYS/"
+  run openssl pkey -in "$KEYS/deevnet-root-ca.key" -noout
+  run cp deevnet-root-ca.pem "$TRANSFER/"
+  sync
+  say "${green}stored${off}: the root is on the key drive, its certificate on the transfer drive"
+fi
+
+# ---------------------------------------------------------------------------
+[[ -r "$KEYS/deevnet-root-ca.key" && -r "$KEYS/deevnet-root-ca.pem" ]] \
+  || die "the key drive has no deevnet-root-ca.key and .pem - the Site CA needs the root"
+
+step "Site CA: which site"
+say "The site's name as in the naming standard, lower case (mobile, home, ...)."
+read -r -p "   Site [mobile]: " site
+site="${site:-mobile}"
+[[ "$site" =~ ^[a-z][a-z0-9]{1,15}$ ]] || die "'$site' is not a site name"
+SITE="${site^}"
+[[ ! -e "$KEYS/deevnet-$site-site-ca.key" ]] \
+  || die "this key drive already holds deevnet-$site-site-ca.key - to rotate it, move the old one aside first; nothing was changed"
+say "Site CA: O=Deevnet, OU=$SITE Site, CN=Deevnet $SITE Site CA"
+
+step "Site CA, 1 of 4: generate the key and request"
+say "An RSA 3072 key, encrypted with a passphrase as it is made (asked twice), and"
+say "a signing request naming the site. openssl asks for the key's passphrase again"
+say "to sign the request."
+proceed
+run openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -aes-256-cbc -out "deevnet-$site-site-ca.key"
+run openssl req -new -key "deevnet-$site-site-ca.key" \
+  -subj "/O=Deevnet/OU=$SITE Site/CN=Deevnet $SITE Site CA" -out "deevnet-$site-site-ca.csr"
+
+step "Site CA, 2 of 4: sign it with the root"
+say "The root signs the request with the profile's v3_site extensions only, never the"
+say "request's: 10 years; CA, path length 1. openssl asks for the ROOT key's passphrase."
+proceed
+run openssl x509 -req -in "deevnet-$site-site-ca.csr" \
+  -CA "$KEYS/deevnet-root-ca.pem" -CAkey "$KEYS/deevnet-root-ca.key" \
+  -extfile deevnet-pki.cnf -extensions v3_site -days "$SITE_DAYS" -sha256 \
+  -set_serial "0x$(openssl rand -hex 16)" -out "deevnet-$site-site-ca.pem"
+
+step "Site CA, 3 of 4: check the chain"
+say "Check: subject Deevnet $SITE Site CA, issuer the root; CA:TRUE, pathlen:1; ten years;"
+say "and it verifies against the root."
+show_cert "deevnet-$site-site-ca.pem"
+run openssl verify -CAfile "$KEYS/deevnet-root-ca.pem" "deevnet-$site-site-ca.pem"
+say "${bold}Write the fingerprint and 'Deevnet $SITE Site CA, 10 years' in the paper record.${off}"
+paper+=("Deevnet $SITE Site CA, 10 years, $(date -u +%F): $(fingerprint "deevnet-$site-site-ca.pem")")
+read -r -p "   Does it read correctly, and is it written down? [y/N] " a
+[[ "${a,,}" == y || "${a,,}" == yes ]] || stopped
+
+step "Site CA, 4 of 4: store it"
+say "The key and certificate go on the key drive, and the key is checked to open"
+say "(its passphrase). The certificate alone goes on the transfer drive."
+proceed
+run cp "deevnet-$site-site-ca.key" "deevnet-$site-site-ca.pem" "$KEYS/"
+run openssl pkey -in "$KEYS/deevnet-$site-site-ca.key" -noout
+run cp "deevnet-$site-site-ca.pem" "$TRANSFER/"
+sync
+say "${green}stored${off}: the Site CA is on the key drive, its certificate on the transfer drive"
+
+# ---------------------------------------------------------------------------
+step "The backup key drive"
+say "Every key should exist on two key drives, kept apart. If you have the second"
+say "drive now, this copies everything on the key drive onto it. If not, the runbook"
+say "has the steps for later (Preparing > A backup key drive later)."
+read -r -p "   Make the backup key drive now? [y/N] " a
+if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
+  run cp -n "$KEYS"/deevnet-* "$WORK/" 2>/dev/null || true
+  run sudo "$MEDIA" keys close
+  read -r -p "   Is the backup drive new and needs formatting? [Y/n] " a
+  if [[ "${a,,}" == n || "${a,,}" == no ]]; then
+    sudo "$MEDIA" keys open backup
+  else
+    read -r -p "   Its device: " dev
+    sudo "$MEDIA" keys init "$dev" backup
+    paper+=("Key drive deevnet-keys-backup made $(date -u +%F)")
+  fi
+  run cp "$WORK"/deevnet-*.key "$WORK"/deevnet-*.pem "$KEYS/"
+  for k in "$KEYS"/deevnet-*.key; do run openssl pkey -in "$k" -noout; done
+  sync
+  say "${green}backup made${off}"
+else
+  say "${bold}Until the backup exists, each key exists only once.${off}"
+fi
+
+# ---------------------------------------------------------------------------
+step "Finish"
+say "The transfer drive holds:"
+ls -1 "$TRANSFER"/*.pem | sed 's/^/     /'
+say "For the paper record:"
+for p in "${paper[@]}"; do say "  - $p"; done
+say "Next: close both drives and power off. Take the transfer drive to the Builder."
+proceed
+sudo "$MEDIA" keys close
+sudo "$MEDIA" transfer umount
+read -r -p "   Power off now? [Y/n] " a
+case "${a,,}" in n|no) say "Remember: $WORK holds keys until power-off." ;; *) sudo poweroff ;; esac
