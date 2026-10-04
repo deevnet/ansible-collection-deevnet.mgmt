@@ -117,7 +117,7 @@ site_cert="$PKI_DIR/$site/deevnet-$site-site-ca.pem"
 
 [[ "$(pubkey_hash x509 "$cert")" == "$(pubkey_hash req "$csr")" ]] || die "the certificate is not for the original request's key"
 [[ "$(subject x509 "$cert")" == "$(subject req "$csr")" ]] || die "the certificate's subject differs from the request's"
-openssl verify -CAfile "$ROOT_CERT" -untrusted "$site_cert" "$cert" >/dev/null 2>&1 \
+openssl verify -no-CApath -no-CAstore -CAfile "$ROOT_CERT" -untrusted "$site_cert" "$cert" >/dev/null 2>&1 \
   || die "the certificate does not chain to the Deevnet Root CA through the $site Site CA (inventory copies)"
 openssl x509 -in "$cert" -noout -ext basicConstraints | grep -q 'CA:TRUE, pathlen:0' \
   || die "the certificate is not an issuing CA (CA:TRUE, pathlen:0)"

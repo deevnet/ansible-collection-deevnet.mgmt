@@ -25,7 +25,7 @@
   ansible.builtin.shell:
     cmd: >-
       f=$(mktemp) && cat > "$f" &&
-      openssl verify -CAfile {{ openbao_root_ca_local | quote }}
+      openssl verify -no-CApath -no-CAstore -CAfile {{ openbao_root_ca_local | quote }}
       -untrusted {{ openbao_site_ca_local | quote }} "$f"; rc=$?; rm -f "$f"; exit $rc
     stdin: "{{ openbao_tdca.content }}"
   register: openbao_tdca_chain
@@ -91,7 +91,7 @@
   block:
     - name: Check the certificate chains to the Deevnet Root CA through the Site CA
       ansible.builtin.command:
-        argv: [openssl, verify, -CAfile, "{{ openbao_root_ca_local }}", -untrusted,
+        argv: [openssl, verify, -no-CApath, -no-CAstore, -CAfile, "{{ openbao_root_ca_local }}", -untrusted,
                "{{ openbao_site_ca_local }}", "{{ openbao_tenant_device_cert_local }}"]
       delegate_to: localhost
       become: false
