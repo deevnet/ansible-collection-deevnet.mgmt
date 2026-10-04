@@ -10,10 +10,13 @@
 # stops it; nothing is lost that is not already on a key drive, and the
 # working directory in RAM is gone at power-off.
 #
-# Two paths:
+# Three paths:
 #   1. a new Deevnet Root CA and a Site CA - the first ceremony, or a re-root;
 #   2. a Site CA only, signed by the root already on the key drive - a new
-#      site, or a Site CA rotation.
+#      site, or a Site CA rotation;
+#   3. sign an issuing CA from a request on the transfer drive, with
+#      deevnet-pki-sign.sh, as many as the operator brings, one round trip of
+#      the transfer drive each.
 #
 # It asks for each USB drive when it needs it (start with none plugged in) and
 # recognizes what arrives: a key drive or transfer drive already made is
@@ -21,7 +24,7 @@
 # The backup key drive is optional; it can be made later.
 #
 # It never overwrites a key: a key drive that already holds the CA it would
-# make stops it. Issuing CAs are signed by deevnet-pki-sign.sh, not here.
+# make stops it.
 set -euo pipefail
 
 PROFILE="${DEEVNET_PKI_PROFILE:-/usr/local/share/deevnet-pki/deevnet-pki.cnf}"
@@ -178,6 +181,7 @@ key_drive() {
   else
     lsblk -o NAME,SIZE,MODEL,LABEL,FSTYPE "$dev" | sed 's/^/     /'
     say "That drive is not a Deevnet key drive."
+    [[ "${can_format:-yes}" == yes ]] || die "signing needs the key drive that holds the Site CA - nothing was changed"
     read -r -p "   Make it the $copy key drive? This ERASES it. [y/N] " a
     [[ "${a,,}" == y || "${a,,}" == yes ]] || stopped
     sudo "$MEDIA" keys init "$dev" "$copy"
@@ -197,6 +201,7 @@ transfer_drive() {
   else
     lsblk -o NAME,SIZE,MODEL,LABEL,FSTYPE "$dev" | sed 's/^/     /'
     say "That drive is not a transfer drive."
+    [[ "${can_format:-yes}" == yes ]] || die "signing needs the transfer drive the Builder prepared - nothing was changed"
     read -r -p "   Make it the transfer drive (plain FAT32)? This ERASES it. [y/N] " a
     [[ "${a,,}" == y || "${a,,}" == yes ]] || stopped
     sudo "$MEDIA" transfer init "$dev"
@@ -216,8 +221,12 @@ say "  - the passphrases: one for each key drive, one for the key files."
 echo
 say "1. A new Deevnet Root CA, then a Site CA (first time, or a re-root)"
 say "2. A Site CA only, signed by the root already on the key drive (a new site, or a rotation)"
-read -r -p "   Which? [1/2] " path
-[[ "$path" == 1 || "$path" == 2 ]] || die "answer 1 or 2"
+say "3. Sign an issuing CA (Substrate or Tenant Device), from a request the Builder put on"
+say "   the transfer drive with deevnet-pki-transfer.sh prepare"
+read -r -p "   Which? [1/2/3] " path
+[[ "$path" == 1 || "$path" == 2 || "$path" == 3 ]] || die "answer 1, 2 or 3"
+# Path 3 only uses drives already made: it never formats one.
+can_format=yes; [[ "$path" == 3 ]] && can_format=no
 
 # ---------------------------------------------------------------------------
 step "Check this machine is offline, and its clock"
@@ -267,6 +276,74 @@ say "Both are in. Leave them in until the script says to take one out."
 key_drive primary "$key_dev"
 transfer_drive "$transfer_dev"
 say "${green}ready${off}: key drive open at $KEYS, transfer drive at $TRANSFER"
+
+# ---------------------------------------------------------------------------
+if [[ "$path" == 3 ]]; then
+  IN="$TRANSFER/deevnet-transfer/to-offline"
+  OUT="$TRANSFER/deevnet-transfer/to-online"
+  while true; do
+    [[ -f "$IN/MANIFEST" ]] || die "the transfer drive has no request - prepare it on the Builder first (deevnet-pki-transfer.sh prepare)"
+    csr="$(ls "$IN"/*.csr 2>/dev/null | head -1)"
+    [[ -n "$csr" ]] || die "no request (.csr) in $IN"
+    name="$(basename "$csr" .csr)"                       # deevnet-<site>-<ca>-ca
+    site="$(echo "$name" | sed -n 's/^deevnet-\([a-z0-9]*\)-.*/\1/p')"
+    site_key="$KEYS/deevnet-$site-site-ca.key"
+    [[ -r "$site_key" ]] || die "the key drive has no deevnet-$site-site-ca.key to sign $name with"
+
+    SITE_OF_SITE="${site^}"
+    step "Sign an issuing CA: $name"
+    say "The request on the transfer drive:"
+    openssl req -in "$csr" -noout -subject -nameopt RFC2253 | sed 's/^/     /'
+    say "deevnet-pki-sign.sh now checks the machine is offline, the transfer drive holds no"
+    say "private key, the manifest matches its files, and the request's signature. It shows"
+    say "the manifest's hash and the request's key hash: ${bold}compare both with the paper record${off}"
+    say "(the Builder printed them). It asks for the clock (answer yes), the $SITE_OF_SITE Site"
+    say "CA key's passphrase, and finally the CA's name, typed exactly: that is the decision"
+    say "to sign. It writes only the certificate and a manifest back to the transfer drive."
+    proceed
+    writable "$TRANSFER" || recover_transfer_drive
+    run deevnet-pki-sign.sh "$TRANSFER" --site-key "$site_key" || die "deevnet-pki-sign.sh stopped - nothing was signed, or see its message"
+    sync
+    cert="$OUT/$name.pem"
+    [[ -r "$cert" ]] || die "no certificate came back in $OUT"
+    paper+=("$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253 | sed 's/^subject=//'), 5 years, $(date -u +%F): $(fingerprint "$cert")")
+    say "${bold}Write the certificate's fingerprint in the paper record:${off} $(fingerprint "$cert")"
+
+    read -r -p "   Another request to sign in this session? [y/N] " a
+    [[ "${a,,}" == y || "${a,,}" == yes ]] || break
+    step "Swap the transfer drive"
+    say "The key drive closes while the transfer drive travels: nothing is plugged in"
+    say "beside an open key drive. Take the transfer drive to the Builder, have it accept"
+    say "this certificate and prepare the next request, then bring it back."
+    proceed
+    key_disk="$(backing_disk "$KEYS")"
+    sudo "$MEDIA" keys close
+    sudo "$MEDIA" transfer umount
+    while usb_disks | grep -vqx "$(basename "$key_disk")"; do
+      read -r -p "   Take out the transfer drive (leave the key drive in), then press Enter. " a
+    done
+    dev="$(wait_for_drive "TRANSFER drive, with the next request")"
+    sleep 3
+    alive "$key_disk" || die "the key drive dropped off the bus when the transfer drive went in. Power off, use the black (USB 2) ports, and start again."
+    transfer_drive "$dev"
+    say "Reopening the key drive: it asks for the drive's passphrase."
+    sudo "$MEDIA" keys open
+  done
+
+  step "Finish"
+  say "The transfer drive carries back:"
+  ls -1 "$OUT" | sed 's/^/     /'
+  say "For the paper record:"
+  for p in "${paper[@]}"; do say "  - $p"; done
+  say "Next: close both drives and power off. On the Builder, deevnet-pki-transfer.sh accept"
+  say "checks the certificate against the request and the inventory's root and Site CA."
+  proceed
+  sudo "$MEDIA" keys close
+  sudo "$MEDIA" transfer umount
+  read -r -p "   Power off now? [Y/n] " a
+  case "${a,,}" in n|no) ;; *) sudo poweroff ;; esac
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 if [[ "$path" == 1 ]]; then
