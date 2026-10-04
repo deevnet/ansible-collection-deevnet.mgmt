@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Prepares and opens the ceremony's USB media on the OFFLINE machine (runbook:
 # Root of Trust > Preparing). On the pi-pki ceremony image it is installed as
-# /usr/local/bin/deevnet-pki-media, and the pki user runs it with sudo.
+# /usr/local/bin/deevnet-pki-media.sh, and the pki user runs it with sudo.
 #
-#   deevnet-pki-media list                         USB drives, and what each holds
-#   deevnet-pki-media keys init DEVICE primary|backup
+#   deevnet-pki-media.sh list                         USB drives, and what each holds
+#   deevnet-pki-media.sh keys init DEVICE primary|backup
 #                                                  ERASE: LUKS2 + ext4, label deevnet-keys-<copy>
-#   deevnet-pki-media keys open [primary|backup]   unlock, mount at /mnt/keys
-#   deevnet-pki-media keys close                   unmount, lock
-#   deevnet-pki-media transfer init DEVICE         ERASE: FAT32, label TRANSFER
-#   deevnet-pki-media transfer mount               mount at /mnt/transfer
-#   deevnet-pki-media transfer umount
+#   deevnet-pki-media.sh keys open [primary|backup]   unlock, mount at /mnt/keys
+#   deevnet-pki-media.sh keys close                   unmount, lock
+#   deevnet-pki-media.sh transfer init DEVICE         ERASE: FAT32, label TRANSFER
+#   deevnet-pki-media.sh transfer mount               mount at /mnt/transfer
+#   deevnet-pki-media.sh transfer umount
 #
 # Key media are encrypted drives (LUKS2) holding the passphrase-encrypted key
 # files: a lost drive shows nothing, not even file names. Opening one needs
@@ -24,7 +24,7 @@
 # it erases.
 set -euo pipefail
 
-die() { echo "deevnet-pki-media: $*" >&2; exit 1; }
+die() { echo "deevnet-pki-media.sh: $*" >&2; exit 1; }
 say() { echo "  $*"; }
 
 KEYS_MNT="${DEEVNET_PKI_KEYS_MNT:-/mnt/keys}"
@@ -100,7 +100,7 @@ case "$cmd" in
         say "To open it later you need only this drive and its passphrase, on any Linux"
         say "machine with cryptsetup - this image on any Pi, or a Fedora live USB. It is not"
         say "tied to this Pi or this card. The key files inside need their own passphrase."
-        say "Close it with: sudo deevnet-pki-media keys close"
+        say "Close it with: sudo deevnet-pki-media.sh keys close"
         ;;
       open)
         copy="${1:-}"
@@ -114,7 +114,7 @@ case "$cmd" in
           [[ ${#found[@]} -le 1 ]] || die "more than one key media is plugged in - say which: keys open primary|backup"
           dev="${found[0]:-}"
         fi
-        [[ -n "$dev" ]] || die "no key media found - plug it in (deevnet-pki-media list)"
+        [[ -n "$dev" ]] || die "no key media found - plug it in (deevnet-pki-media.sh list)"
         [[ ! -e "/dev/mapper/$KEYS_MAPPER" ]] || die "a key media is already open - keys close first"
         cryptsetup open "$dev" "$KEYS_MAPPER"
         mkdir -p "$KEYS_MNT"
@@ -147,7 +147,7 @@ case "$cmd" in
         part="$(lsblk -nro PATH "$dev" | sed -n 2p)"
         [[ -b "$part" ]] || die "the new partition on $dev did not appear"
         mkfs.vfat -F 32 -n "$TRANSFER_LABEL" "$part" >/dev/null
-        say "$dev is the transfer media (label $TRANSFER_LABEL). Mount it with: sudo deevnet-pki-media transfer mount"
+        say "$dev is the transfer media (label $TRANSFER_LABEL). Mount it with: sudo deevnet-pki-media.sh transfer mount"
         ;;
       mount)
         dev="$(blkid -t LABEL="$TRANSFER_LABEL" -o device | head -1)"

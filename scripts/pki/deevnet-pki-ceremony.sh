@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The Root CA and Site CA ceremonies, step by step (runbook: Root of Trust >
-# Root CA, Site CA). On the pi-pki ceremony image it is /home/pki/deevnet-pki-ceremony:
+# Root CA, Site CA). On the pi-pki ceremony image it is /home/pki/deevnet-pki-ceremony.sh:
 #
-#   ./deevnet-pki-ceremony
+#   ./deevnet-pki-ceremony.sh
 #
 # It runs the runbook's own commands, one step at a time: it says what the
 # next step does, asks Proceed? [Y/n], and waits for the operator's input
@@ -15,13 +15,18 @@
 #   2. a Site CA only, signed by the root already on the key drive - a new
 #      site, or a Site CA rotation.
 #
+# It asks for each USB drive when it needs it (start with none plugged in) and
+# recognizes what arrives: a key drive or transfer drive already made is
+# opened, any other drive is formatted as one only after the operator agrees.
+# The backup key drive is optional; it can be made later.
+#
 # It never overwrites a key: a key drive that already holds the CA it would
-# make stops it. Issuing CAs are signed by deevnet-pki-sign, not here.
+# make stops it. Issuing CAs are signed by deevnet-pki-sign.sh, not here.
 set -euo pipefail
 
 PROFILE="${DEEVNET_PKI_PROFILE:-/usr/local/share/deevnet-pki/deevnet-pki.cnf}"
 RELEASE="${DEEVNET_PKI_RELEASE:-/etc/deevnet-pki-release}"
-MEDIA="${DEEVNET_PKI_MEDIA:-deevnet-pki-media}"
+MEDIA="${DEEVNET_PKI_MEDIA:-deevnet-pki-media.sh}"
 WORK="${DEEVNET_PKI_WORK:-/dev/shm/pki}"
 KEYS="${DEEVNET_PKI_KEYS_MNT:-/mnt/keys}"
 TRANSFER="${DEEVNET_PKI_TRANSFER_MNT:-/mnt/transfer}"
@@ -33,7 +38,7 @@ SITE_DAYS=3653   # 10 years
 bold=$'\e[1m'; dim=$'\e[2m'; red=$'\e[31m'; green=$'\e[32m'; off=$'\e[0m'
 [[ -t 1 ]] || { bold=""; dim=""; red=""; green=""; off=""; }
 
-die()  { echo "${red}deevnet-pki-ceremony: $*${off}" >&2; exit 1; }
+die()  { echo "${red}deevnet-pki-ceremony.sh: $*${off}" >&2; exit 1; }
 step() { echo; echo "${bold}== $* ==${off}"; }
 say()  { echo "   $*"; }
 run()  { echo "${dim}   \$ $*${off}"; "$@"; }
@@ -57,11 +62,95 @@ show_cert() {
 }
 paper=()   # what to write in the paper record, shown again at the end
 
+# --- USB drives -------------------------------------------------------------
+# The script asks for each drive when it needs it and sees which one arrived,
+# so nothing depends on knowing /dev/sda from /dev/sdb. Tests use loop devices
+# (DEEVNET_PKI_MEDIA_TRAN=loop, as deevnet-pki-media.sh does).
+usb_disks() {
+  if [[ "${DEEVNET_PKI_MEDIA_TRAN:-usb}" == loop ]]; then
+    lsblk -dnro NAME,TYPE,SIZE | awk '$2=="loop" && $3!="0B" {print $1}'
+  else
+    lsblk -dnro NAME,TRAN | awk '$2=="usb" {print $1}'
+  fi | sort
+}
+wait_until_no_drives() {
+  local a
+  while [[ -n "$(usb_disks)" ]]; do
+    say "Plugged in now: $(usb_disks | tr '\n' ' ')"
+    read -r -p "   Remove every USB drive (the keyboard can stay), then press Enter. " a
+  done
+}
+# Prints /dev/<name> of the one drive inserted after the prompt.
+wait_for_drive() {
+  local what="$1" before new a i
+  while true; do
+    before="$(usb_disks)"
+    read -r -p "   Insert the ${bold}$what${off}, then press Enter. " a </dev/tty
+    for i in $(seq 1 20); do
+      new="$(comm -13 <(echo "$before") <(usb_disks) | grep . || true)"
+      [[ -n "$new" ]] && break
+      sleep 1
+    done
+    if [[ -z "$new" ]]; then
+      echo "   No new drive appeared. Check it is pushed in, and try again." >&2; continue
+    fi
+    if [[ "$(echo "$new" | wc -l)" -gt 1 ]]; then
+      echo "   More than one new drive appeared ($(echo $new)). Remove the extra one and try again." >&2
+      continue
+    fi
+    echo "/dev/$new"; return
+  done
+}
+wait_for_removal() {
+  local dev="$1" a
+  while usb_disks | grep -qx "$(basename "$dev")"; do
+    read -r -p "   Remove that drive ($dev), then press Enter. " a
+  done
+}
+# Opens the key drive in $dev (one already made), or offers to make it.
+key_drive() {
+  local copy="$1" dev="$2" label a
+  label="$(blkid -s LABEL -o value "$dev" 2>/dev/null || true)"
+  if [[ "$(blkid -s TYPE -o value "$dev" 2>/dev/null)" == crypto_LUKS && "$label" == deevnet-keys-* ]]; then
+    say "That is ${bold}$label${off}. Opening it: it asks for the drive's passphrase."
+    [[ "$label" == "deevnet-keys-$copy" ]] || say "(It is labeled for the other copy; it is used as the $copy all the same.)"
+    sudo "$MEDIA" keys open "${label#deevnet-keys-}"
+  else
+    lsblk -o NAME,SIZE,MODEL,LABEL,FSTYPE "$dev" | sed 's/^/     /'
+    say "That drive is not a Deevnet key drive."
+    read -r -p "   Make it the $copy key drive? This ERASES it. [y/N] " a
+    [[ "${a,,}" == y || "${a,,}" == yes ]] || stopped
+    sudo "$MEDIA" keys init "$dev" "$copy"
+    paper+=("Key drive deevnet-keys-$copy made $(date -u +%F)")
+  fi
+  mountpoint -q "$KEYS" || die "the key drive is not open at $KEYS"
+}
+transfer_drive() {
+  local dev="$1" a
+  local p found=""
+  # blkid reads the drive itself; lsblk's labels come from udev's database.
+  for p in $(lsblk -nro PATH "$dev"); do
+    [[ "$(blkid -s LABEL -o value "$p" 2>/dev/null)" == TRANSFER ]] && found="$p"
+  done
+  if [[ -n "$found" ]]; then
+    say "That is the ${bold}transfer drive${off}."
+  else
+    lsblk -o NAME,SIZE,MODEL,LABEL,FSTYPE "$dev" | sed 's/^/     /'
+    say "That drive is not a transfer drive."
+    read -r -p "   Make it the transfer drive (plain FAT32)? This ERASES it. [y/N] " a
+    [[ "${a,,}" == y || "${a,,}" == yes ]] || stopped
+    sudo "$MEDIA" transfer init "$dev"
+  fi
+  sudo "$MEDIA" transfer mount
+  mountpoint -q "$TRANSFER" || die "the transfer drive is not mounted at $TRANSFER"
+}
+
 # ---------------------------------------------------------------------------
 step "Deevnet Root of Trust ceremony"
 say "This makes the Deevnet PKI's offline CAs, as the Root of Trust runbook does."
 say "Each step says what it does and asks before it runs. Have ready:"
-say "  - the key drive (and the backup key drive, if you have it), and the transfer drive;"
+say "  - the key drive and the transfer drive (and a backup key drive, if you have one),"
+say "    not plugged in yet: the script asks for each when it needs it;"
 say "  - the paper record;"
 say "  - the passphrases: one for each key drive, one for the key files."
 echo
@@ -101,29 +190,16 @@ say "${green}ready${off}: $WORK"
 
 # ---------------------------------------------------------------------------
 step "The drives"
-say "The key drive is encrypted; the transfer drive is plain. A new drive is"
-say "formatted first (this ERASES it); a drive already prepared is just opened."
-echo
-sudo "$MEDIA" list | sed 's/^/   /'
-echo
-read -r -p "   Is the key drive new and needs formatting? [y/N] " a
-if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
-  read -r -p "   Its device (e.g. /dev/sda): " dev
-  sudo "$MEDIA" keys init "$dev" primary
-  paper+=("Key drive deevnet-keys-primary made $(date -u +%F)")
-else
-  say "Opening the key drive: it asks for the drive's passphrase."
-  proceed
-  if ! mountpoint -q "$KEYS"; then sudo "$MEDIA" keys open; fi
-fi
-mountpoint -q "$KEYS" || die "the key drive is not open at $KEYS"
-read -r -p "   Is the transfer drive new and needs formatting? [y/N] " a
-if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
-  read -r -p "   Its device (e.g. /dev/sdb): " dev
-  sudo "$MEDIA" transfer init "$dev"
-fi
-mountpoint -q "$TRANSFER" || sudo "$MEDIA" transfer mount
-mountpoint -q "$TRANSFER" || die "the transfer drive is not mounted at $TRANSFER"
+say "The script asks for each drive when it needs it, and recognizes it: a drive"
+say "already prepared is opened, a new one is formatted (after you agree; that"
+say "ERASES it). First, start with none plugged in."
+proceed
+wait_until_no_drives
+dev="$(wait_for_drive "KEY drive (the primary)")"
+key_drive primary "$dev"
+dev="$(wait_for_drive "TRANSFER drive")"
+transfer_drive "$dev"
+say "${green}ready${off}: key drive open at $KEYS, transfer drive at $TRANSFER"
 
 # ---------------------------------------------------------------------------
 if [[ "$path" == 1 ]]; then
@@ -219,28 +295,27 @@ sync
 say "${green}stored${off}: the Site CA is on the key drive, its certificate on the transfer drive"
 
 # ---------------------------------------------------------------------------
-step "The backup key drive"
+step "The backup key drive (optional)"
 say "Every key should exist on two key drives, kept apart. If you have the second"
-say "drive now, this copies everything on the key drive onto it. If not, the runbook"
-say "has the steps for later (Preparing > A backup key drive later)."
-read -r -p "   Make the backup key drive now? [y/N] " a
+say "drive now, this copies everything on the primary onto it. If not, skip it and"
+say "make it later (the runbook has the steps): until then each key exists only once."
+read -r -p "   Make or update the backup key drive now? [y/N] " a
 if [[ "${a,,}" == y || "${a,,}" == yes ]]; then
-  run cp -n "$KEYS"/deevnet-* "$WORK/" 2>/dev/null || true
+  transfer_disk="$(lsblk -no PKNAME "$(findmnt -no SOURCE "$TRANSFER")")"
+  run cp "$KEYS"/deevnet-*.key "$KEYS"/deevnet-*.pem "$WORK/"
   run sudo "$MEDIA" keys close
-  read -r -p "   Is the backup drive new and needs formatting? [Y/n] " a
-  if [[ "${a,,}" == n || "${a,,}" == no ]]; then
-    sudo "$MEDIA" keys open backup
-  else
-    read -r -p "   Its device: " dev
-    sudo "$MEDIA" keys init "$dev" backup
-    paper+=("Key drive deevnet-keys-backup made $(date -u +%F)")
-  fi
+  say "Take out the primary key drive and put it aside; leave the transfer drive in."
+  while usb_disks | grep -vqx "$transfer_disk"; do
+    read -r -p "   Remove the primary key drive, then press Enter. " a
+  done
+  dev="$(wait_for_drive "BACKUP key drive")"
+  key_drive backup "$dev"
   run cp "$WORK"/deevnet-*.key "$WORK"/deevnet-*.pem "$KEYS/"
   for k in "$KEYS"/deevnet-*.key; do run openssl pkey -in "$k" -noout; done
   sync
-  say "${green}backup made${off}"
+  say "${green}backup done${off}"
 else
-  say "${bold}Until the backup exists, each key exists only once.${off}"
+  say "${bold}No backup now: each key exists only once until you make it.${off}"
 fi
 
 # ---------------------------------------------------------------------------

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # The OFFLINE step of the CA ceremony (runbook: Root of Trust > Issuing CA).
 # Runs on the offline machine. On the pi-pki ceremony image it is installed as
-# /usr/local/bin/deevnet-pki-sign with its profile, and the transfer media
+# /usr/local/bin/deevnet-pki-sign.sh with its profile, and the transfer media
 # carries data only:
 #
-#   deevnet-pki-sign /path/to/transfer --site-key /path/to/key-media/deevnet-mobile-site-ca.key
+#   deevnet-pki-sign.sh /path/to/transfer --site-key /path/to/key-media/deevnet-mobile-site-ca.key
 #
 # On the fallback route (a Fedora live USB) both came on the transfer media
-# (deevnet-pki-transfer prepare --with-tools), under its manifest:
+# (deevnet-pki-transfer.sh prepare --with-tools), under its manifest:
 #
-#   bash /path/to/transfer/deevnet-transfer/to-offline/deevnet-pki-sign /path/to/transfer --site-key ...
+#   bash /path/to/transfer/deevnet-transfer/to-offline/deevnet-pki-sign.sh /path/to/transfer --site-key ...
 #
 # It checks the manifest and that the transfer media holds no private key,
 # shows the request and what will be signed, asks the operator to confirm by
@@ -18,7 +18,7 @@
 # CA's key is read from the key media and never written anywhere.
 set -euo pipefail
 
-die() { echo "deevnet-pki-sign: $*" >&2; exit 1; }
+die() { echo "deevnet-pki-sign.sh: $*" >&2; exit 1; }
 say() { echo "  $*"; }
 refuse_private_keys() {
   local media="$1" hits

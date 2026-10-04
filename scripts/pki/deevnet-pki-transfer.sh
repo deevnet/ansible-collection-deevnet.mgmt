@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The ONLINE half of the offline CA ceremony (runbook: Root of Trust > Issuing CA).
 #
-#   deevnet-pki-transfer prepare MEDIA --site mobile --ca substrate|tenant-device --csr FILE [--with-tools]
-#   deevnet-pki-transfer accept  MEDIA --csr FILE [--out DIR]
+#   deevnet-pki-transfer.sh prepare MEDIA --site mobile --ca substrate|tenant-device --csr FILE [--with-tools]
+#   deevnet-pki-transfer.sh accept  MEDIA --csr FILE [--out DIR]
 #
 # prepare  cleans MEDIA/deevnet-transfer, checks the issuing CA's signing request
 #          (signature, subject, key), and writes it to MEDIA with the public
@@ -25,7 +25,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKI_DIR="${DEEVNET_PKI_DIR:-$(cd "$HERE/../../.." && pwd)/ansible-inventory-deevnet/pki}"
 ROOT_CERT="$PKI_DIR/deevnet-root-ca.pem"
 
-die() { echo "deevnet-pki-transfer: $*" >&2; exit 1; }
+die() { echo "deevnet-pki-transfer.sh: $*" >&2; exit 1; }
 say() { echo "  $*"; }
 
 # Any private key anywhere on the media - by name or by content - stops the run.
@@ -86,7 +86,7 @@ if [[ "$cmd" == prepare ]]; then
   name="deevnet-$site-$ca-ca"
   cp "$csr" "$T/to-offline/$name.csr"
   cp "$ROOT_CERT" "$site_cert" "$T/to-offline/"
-  if [[ "$with_tools" == 1 ]]; then cp "$HERE/deevnet-pki.cnf" "$HERE/deevnet-pki-sign" "$T/to-offline/"; fi
+  if [[ "$with_tools" == 1 ]]; then cp "$HERE/deevnet-pki.cnf" "$HERE/deevnet-pki-sign.sh" "$T/to-offline/"; fi
   ( cd "$T/to-offline"
     { echo "# deevnet-transfer to-offline"
       echo "# created $(date -u +%FT%TZ) on $(hostname)"
