@@ -6,7 +6,7 @@
 #
 #   1. The mount has no CA and the inventory no request: generate the key and
 #      request, and write the request to the inventory. Take it to the ceremony.
-#   2. The inventory has the signed certificate (deevnet-pki-transfer accept):
+#   2. The inventory has the signed certificate (deevnet-pki-transfer.sh accept):
 #      install it, with the Site CA, and make it the default issuer.
 #   3. The mount's CA chains to the Deevnet Root CA: nothing to do.
 #

@@ -5,7 +5,7 @@
 #
 # First run: OpenBao makes the CA's key and request; the request is written to
 # pki/<site>/deevnet-<site>-tenant-device-ca.csr for the Issuing CA ceremony.
-# After `deevnet-pki-transfer accept` puts the signed certificate beside it,
+# After `deevnet-pki-transfer.sh accept` puts the signed certificate beside it,
 # run again: it is installed with the Site CA and made the default issuer.
 # Any later run checks it chains to the Deevnet Root CA and changes nothing.
 #
