@@ -86,7 +86,7 @@ csr="$(find "$IN" -maxdepth 1 -name 'deevnet-*-ca.csr' | head -1)"
 [[ -n "$csr" ]] || die "no request in $IN"
 name="$(basename "$csr" .csr)"; site="$(echo "$name" | cut -d- -f2)"
 site_cert="$IN/deevnet-$site-site-ca.pem"; root_cert="$IN/deevnet-root-ca.pem"
-openssl verify -CAfile "$root_cert" "$site_cert" >/dev/null || die "the Site CA certificate does not chain to the root"
+openssl verify -no-CApath -no-CAstore -CAfile "$root_cert" "$site_cert" >/dev/null || die "the Site CA certificate does not chain to the root"
 # Asked once, used for the key check and the signature, and gone at exit.
 if [[ -z "${DEEVNET_SITE_KEY_PASS:-}" ]]; then
   read -r -s -p "Passphrase for $(basename "$site_key"): " DEEVNET_SITE_KEY_PASS; echo
@@ -118,7 +118,7 @@ openssl x509 -req -in "$csr" -CA "$site_cert" -CAkey "$site_key" -passin env:DEE
   -set_serial "0x$(openssl rand -hex 16)" -out "$work/$name.pem"
 
 echo "4. Checking the certificate"
-openssl verify -CAfile "$root_cert" -untrusted "$site_cert" "$work/$name.pem" >/dev/null || die "the new certificate does not chain - nothing written"
+openssl verify -no-CApath -no-CAstore -CAfile "$root_cert" -untrusted "$site_cert" "$work/$name.pem" >/dev/null || die "the new certificate does not chain - nothing written"
 [[ "$(pubkey_hash x509 "$work/$name.pem")" == "$(pubkey_hash req "$csr")" ]] || die "the certificate is not for the request's key"
 openssl x509 -in "$work/$name.pem" -noout -ext basicConstraints | grep -q 'CA:TRUE, pathlen:0' || die "pathlen is not 0"
 fp="$(openssl x509 -in "$work/$name.pem" -noout -fingerprint -sha256 | sed 's/.*=//')"

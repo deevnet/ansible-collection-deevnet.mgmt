@@ -432,7 +432,7 @@ say "Name Constraints permit only deevnet.net, localhost, and private and loopba
 say "addresses (so nothing under it can vouch for a public site); and it verifies"
 say "against the root."
 show_cert "deevnet-$site-site-ca.pem"
-run openssl verify -CAfile "$KEYS/deevnet-root-ca.pem" "deevnet-$site-site-ca.pem"
+run openssl verify -no-CApath -no-CAstore -CAfile "$KEYS/deevnet-root-ca.pem" "deevnet-$site-site-ca.pem"
 say "${bold}Write the fingerprint and 'Deevnet $SITE Site CA, 10 years' in the paper record.${off}"
 paper+=("Deevnet $SITE Site CA, 10 years, $(date -u +%F): $(fingerprint "deevnet-$site-site-ca.pem")")
 read -r -p "   Does it read correctly, and is it written down? [y/N] " a

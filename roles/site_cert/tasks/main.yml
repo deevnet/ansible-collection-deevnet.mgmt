@@ -58,7 +58,7 @@
   ansible.builtin.shell:
     cmd: >-
       f=$(mktemp) && cat > "$f" &&
-      openssl verify -CAfile {{ site_cert_root_local | quote }} -untrusted "$f" "$f";
+      openssl verify -no-CApath -no-CAstore -CAfile {{ site_cert_root_local | quote }} -untrusted "$f" "$f";
       rc=$?; rm -f "$f"; exit $rc
     stdin: "{{ (site_cert_current.content | b64decode) if site_cert_current.content is defined else '' }}"
   register: site_cert_chain
