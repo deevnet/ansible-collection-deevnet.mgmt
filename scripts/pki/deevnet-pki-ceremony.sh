@@ -173,8 +173,9 @@ store() {
 # Opens the key drive in $dev (one already made), or offers to make it.
 key_drive() {
   local copy="$1" dev="$2" label a
-  label="$(blkid -s LABEL -o value "$dev" 2>/dev/null || true)"
-  if [[ "$(blkid -s TYPE -o value "$dev" 2>/dev/null)" == crypto_LUKS && "$label" == deevnet-keys-* ]]; then
+  # sudo: as the pki user, blkid cannot read a raw drive and finds nothing.
+  label="$(sudo blkid -s LABEL -o value "$dev" 2>/dev/null || true)"
+  if [[ "$(sudo blkid -s TYPE -o value "$dev" 2>/dev/null)" == crypto_LUKS && "$label" == deevnet-keys-* ]]; then
     say "That is ${bold}$label${off}. Opening it: it asks for the drive's passphrase."
     [[ "$label" == "deevnet-keys-$copy" ]] || say "(It is labeled for the other copy; it is used as the $copy all the same.)"
     sudo "$MEDIA" keys open "${label#deevnet-keys-}"
@@ -192,9 +193,10 @@ key_drive() {
 transfer_drive() {
   local dev="$1" a
   local p found=""
-  # blkid reads the drive itself; lsblk's labels come from udev's database.
+  # blkid reads the drive itself (lsblk's labels come from udev's database), and
+  # needs sudo to do it as the pki user.
   for p in $(lsblk -nro PATH "$dev"); do
-    [[ "$(blkid -s LABEL -o value "$p" 2>/dev/null)" == TRANSFER ]] && found="$p"
+    [[ "$(sudo blkid -s LABEL -o value "$p" 2>/dev/null)" == TRANSFER ]] && found="$p"
   done
   if [[ -n "$found" ]]; then
     say "That is the ${bold}transfer drive${off}."
@@ -259,9 +261,15 @@ say "${green}ready${off}: $WORK"
 
 # ---------------------------------------------------------------------------
 step "The drives"
-say "The script asks for each drive when it needs it, and recognizes it: a drive"
-say "already prepared is opened, a new one is formatted (after you agree; that"
-say "ERASES it). First, start with none plugged in."
+if [[ "$path" == 3 ]]; then
+  say "The script asks for each drive when it needs it: the key drive holding the"
+  say "Site CA, then the transfer drive the Builder prepared. Nothing is formatted on"
+  say "this path. First, start with none plugged in."
+else
+  say "The script asks for each drive when it needs it, and recognizes it: a drive"
+  say "already prepared is opened, a new one is formatted (after you agree; that"
+  say "ERASES it). First, start with none plugged in."
+fi
 proceed
 wait_until_no_drives
 say "Both drives go in first, one after the other, before either is touched: plugging"
@@ -283,7 +291,7 @@ if [[ "$path" == 3 ]]; then
   OUT="$TRANSFER/deevnet-transfer/to-online"
   while true; do
     [[ -f "$IN/MANIFEST" ]] || die "the transfer drive has no request - prepare it on the Builder first (deevnet-pki-transfer.sh prepare)"
-    csr="$(ls "$IN"/*.csr 2>/dev/null | head -1)"
+    csr="$(ls "$IN"/*.csr 2>/dev/null | head -1 || true)"
     [[ -n "$csr" ]] || die "no request (.csr) in $IN"
     name="$(basename "$csr" .csr)"                       # deevnet-<site>-<ca>-ca
     site="$(echo "$name" | sed -n 's/^deevnet-\([a-z0-9]*\)-.*/\1/p')"
