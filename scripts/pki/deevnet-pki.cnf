@@ -19,6 +19,19 @@ basicConstraints       = critical, CA:TRUE, pathlen:1
 keyUsage               = critical, keyCertSign, cRLSign
 subjectKeyIdentifier   = hash
 authorityKeyIdentifier = keyid:always
+nameConstraints        = critical, @site_names
+
+# Everything under a Site CA may name only Deevnet's own names and private
+# addresses: a leaked key below it cannot vouch for a public site.
+[ site_names ]
+permitted;DNS.1 = deevnet.net
+permitted;DNS.2 = localhost
+permitted;IP.1  = 10.0.0.0/255.0.0.0
+permitted;IP.2  = 172.16.0.0/255.240.0.0
+permitted;IP.3  = 192.168.0.0/255.255.0.0
+permitted;IP.4  = 127.0.0.0/255.0.0.0
+permitted;IP.5  = fc00::/fe00::
+permitted;IP.6  = ::1/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 
 [ v3_issuing ]
 basicConstraints       = critical, CA:TRUE, pathlen:0

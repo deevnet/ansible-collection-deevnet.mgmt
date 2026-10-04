@@ -56,7 +56,7 @@ stopped() {
 }
 fingerprint() { openssl x509 -in "$1" -noout -fingerprint -sha256 | sed 's/^.*=//'; }
 show_cert() {
-  openssl x509 -in "$1" -noout -subject -issuer -enddate -ext basicConstraints,keyUsage -nameopt multiline,-esc_msb \
+  openssl x509 -in "$1" -noout -subject -issuer -enddate -ext basicConstraints,keyUsage,nameConstraints -nameopt multiline,-esc_msb \
     | sed 's/^/     /'
   say "SHA-256 fingerprint: ${bold}$(fingerprint "$1")${off}"
 }
@@ -333,7 +333,8 @@ run openssl req -new -key "deevnet-$site-site-ca.key" \
 
 step "Site CA, 2 of 4: sign it with the root"
 say "The root signs the request with the profile's v3_site extensions only, never the"
-say "request's: 10 years; CA, path length 1. openssl asks for the ROOT key's passphrase."
+say "request's: 10 years; CA, path length 1; name constraints. openssl asks for the"
+say "ROOT key's passphrase."
 proceed
 run openssl x509 -req -in "deevnet-$site-site-ca.csr" \
   -CA "$KEYS/deevnet-root-ca.pem" -CAkey "$KEYS/deevnet-root-ca.key" \
@@ -342,7 +343,9 @@ run openssl x509 -req -in "deevnet-$site-site-ca.csr" \
 
 step "Site CA, 3 of 4: check the chain"
 say "Check: subject Deevnet $SITE Site CA, issuer the root; CA:TRUE, pathlen:1; ten years;"
-say "and it verifies against the root."
+say "Name Constraints permit only deevnet.net, localhost, and private and loopback"
+say "addresses (so nothing under it can vouch for a public site); and it verifies"
+say "against the root."
 show_cert "deevnet-$site-site-ca.pem"
 run openssl verify -CAfile "$KEYS/deevnet-root-ca.pem" "deevnet-$site-site-ca.pem"
 say "${bold}Write the fingerprint and 'Deevnet $SITE Site CA, 10 years' in the paper record.${off}"
