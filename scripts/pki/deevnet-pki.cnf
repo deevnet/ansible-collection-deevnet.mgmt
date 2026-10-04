@@ -19,10 +19,14 @@ basicConstraints       = critical, CA:TRUE, pathlen:1
 keyUsage               = critical, keyCertSign, cRLSign
 subjectKeyIdentifier   = hash
 authorityKeyIdentifier = keyid:always
-nameConstraints        = critical, @site_names
+nameConstraints        = @site_names
 
 # Everything under a Site CA may name only Deevnet's own names and private
-# addresses: a leaked key below it cannot vouch for a public site.
+# addresses: a leaked key below it cannot vouch for a public site. Not marked
+# critical: mbedTLS (ESP-IDF, MicroPython) does not implement name constraints
+# and refuses to parse a certificate with a critical extension it does not
+# know, so a critical one would cut off every such device. OpenSSL, Go, Java,
+# Rust, Erlang, browsers and Windows enforce it either way.
 [ site_names ]
 permitted;DNS.1 = deevnet.net
 permitted;DNS.2 = localhost
