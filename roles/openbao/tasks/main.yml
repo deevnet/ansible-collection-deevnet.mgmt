@@ -41,7 +41,9 @@
     - "{{ openbao_config_dir }}"
     - "{{ openbao_storage_dir }}"
     - "{{ openbao_secrets_dir }}"
-    - "{{ openbao_tls_dir }}"
+  # The tls directory is site_cert's (tasks/tls.yml): root-owned, its key
+  # readable by the openbao user only. Setting it here too flipped its owner
+  # on every run.
   become: true
 
 - name: Write the seal key
