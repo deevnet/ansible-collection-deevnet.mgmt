@@ -34,12 +34,24 @@ MOUNTED=0
 log() { echo "deevnet-backup: $*"; }
 die() { echo "deevnet-backup: FAILED: $*" >&2; exit 1; }
 
+# A second run, or the timer's check, can hold the mount for a moment. Wait for
+# it rather than leave the drive mounted.
+unmount() {
+  for _ in $(seq 1 30); do
+    umount "$1" 2>/dev/null && return 0
+    mountpoint -q "$1" || return 0
+    sleep 2
+  done
+  umount "$1"
+}
+
 cleanup() {
   if [ "$MOUNTED" = 1 ]; then
     sync
-    umount "$BACKUP_MOUNT" || echo "deevnet-backup: could not unmount $BACKUP_MOUNT" >&2
+    unmount "$BACKUP_MOUNT" || echo "deevnet-backup: could not unmount $BACKUP_MOUNT" >&2
   fi
   [ -n "$WORK" ] && rm -rf "$WORK"
+  return 0
 }
 trap cleanup EXIT
 

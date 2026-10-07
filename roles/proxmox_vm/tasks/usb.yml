@@ -77,16 +77,17 @@
 - name: Attach each device to {{ proxmox_vm_name }}
   vars:
     _row: "{{ proxmox_vm_usb_before.json.data | selectattr('key', 'equalto', item.slot) | first | default({}) }}"
+    _value: "mapping={{ item.mapping }}{{ ',usb3=1' if item.usb3 | default(true) | bool else '' }}"
   ansible.builtin.uri:
     url: "{{ proxmox_vm_api_url }}/nodes/{{ proxmox_vm_node }}/qemu/{{ proxmox_vm_id }}/config"
     method: PUT
     headers:
       Authorization: "{{ proxmox_vm_api_auth }}"
     body_format: form-urlencoded
-    body: "{{ {item.slot: 'mapping=' ~ item.mapping} }}"
+    body: "{{ {item.slot: _value} }}"
     validate_certs: "{{ proxmox_vm_api_validate_certs }}"
   changed_when: true
-  when: (_row.pending | default(_row.value | default(''))) != 'mapping=' ~ item.mapping
+  when: (_row.pending | default(_row.value | default(''))) != _value
   loop: "{{ proxmox_vm_usb }}"
   loop_control:
     label: "{{ item.slot }} = {{ item.mapping }}"
@@ -116,14 +117,12 @@
 
 - name: Assert every declared device is attached or waiting
   vars:
-    _rows: "{{ proxmox_vm_usb_after.json.data | items2dict(key_name='key', value_name='value') }}"
-    _pending: >-
-      {{ proxmox_vm_usb_after.json.data | selectattr('pending', 'defined')
-         | items2dict(key_name='key', value_name='pending') }}
+    _row: "{{ proxmox_vm_usb_after.json.data | selectattr('key', 'equalto', item.slot) | first | default({}) }}"
+    _value: "mapping={{ item.mapping }}{{ ',usb3=1' if item.usb3 | default(true) | bool else '' }}"
   ansible.builtin.assert:
     that:
-      - (_pending[item.slot] | default(_rows[item.slot] | default(''))) == 'mapping=' ~ item.mapping
-    fail_msg: "{{ item.slot }} on {{ proxmox_vm_name }} is not mapping={{ item.mapping }}."
+      - (_row.pending | default(_row.value | default(''))) == _value
+    fail_msg: "{{ item.slot }} on {{ proxmox_vm_name }} is not {{ _value }}."
     quiet: true
   loop: "{{ proxmox_vm_usb }}"
   loop_control:

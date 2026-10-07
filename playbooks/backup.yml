@@ -114,10 +114,10 @@
     - name: Report, and fail when a due backup has not been taken
       vars:
         _last: >-
-          {{ dict((backup_last.content | default('') | b64decode).split('\n')
+          {{ dict((backup_last.content | default('') | b64decode).splitlines()
                   | select('match', '.+=.*') | map('split', '=', 1)) }}
         _age_hours: >-
-          {{ ((now(utc=true).timestamp() - (_last.epoch | default(0) | int)) / 3600) | round(1) }}
+          {{ ((now().timestamp() - (_last.epoch | default(0) | int)) / 3600) | round(1) }}
         _up_hours: "{{ ((backup_unit.stdout_lines[1] | int) / 3600) | round(1) }}"
         _due: "{{ _last.epoch is not defined or _age_hours | float > backup_interval_hours | float }}"
         _summary: >-

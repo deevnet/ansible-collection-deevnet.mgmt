@@ -90,18 +90,21 @@
           {{ backup_drive_matches[0].path }}
       changed_when: true
 
+    # On a mount point of its own: the job's timer may fire while this runs, and
+    # it owns the job's mount point.
     - name: Write the marker and this host's directory
       ansible.builtin.shell:
         executable: /bin/bash
         cmd: |
           set -euo pipefail
           udevadm settle
-          mount -o nosuid,nodev,noexec {{ backup_drive_matches[0].path }} {{ backup_drive_mount | quote }}
-          trap 'umount {{ backup_drive_mount | quote }}' EXIT
+          mnt=$(mktemp -d /run/deevnet-backup-drive.XXXXXX)
+          mount -o nosuid,nodev,noexec {{ backup_drive_matches[0].path }} "$mnt"
+          trap 'for i in $(seq 1 30); do umount "$mnt" 2>/dev/null && break; sleep 2; done; rmdir "$mnt"' EXIT
           echo "Deevnet backup drive. Prepared {{ now(utc=true).strftime('%Y-%m-%d') }}. Contents are encrypted archives." \
-            > {{ backup_drive_mount | quote }}/{{ backup_drive_marker | quote }}
-          mkdir -p {{ backup_drive_mount | quote }}/{{ backup_drive_dir | quote }}
-          chmod 700 {{ backup_drive_mount | quote }}
+            > "$mnt"/{{ backup_drive_marker | quote }}
+          mkdir -p "$mnt"/{{ backup_drive_dir | quote }}
+          chmod 700 "$mnt"
           sync
       changed_when: true
 

@@ -20,8 +20,19 @@ die() { echo "deevnet-backup-verify: FAILED: $*" >&2; exit 1; }
 
 WORK=""
 MOUNTED=0
+# A second run, or the timer's check, can hold the mount for a moment. Wait for
+# it rather than leave the drive mounted.
+unmount() {
+  for _ in $(seq 1 30); do
+    umount "$1" 2>/dev/null && return 0
+    mountpoint -q "$1" || return 0
+    sleep 2
+  done
+  umount "$1"
+}
+
 cleanup() {
-  [ "$MOUNTED" = 1 ] && umount "$BACKUP_MOUNT"
+  [ "$MOUNTED" = 1 ] && unmount "$BACKUP_MOUNT"
   [ -n "$WORK" ] && rm -rf "$WORK"
   return 0
 }

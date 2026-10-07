@@ -88,6 +88,11 @@ proxmox_vm_data_disk: "{{ mgmt_vm.data_disk | default({}) }}"
 #       - slot: usb0
 #         mapping: deevnet-backup   # the mapping's name in PVE
 #         id: "13fe:6300"           # vendor:product, as lsusb prints it
+#         usb3: true                # the default; false for a USB 2 controller
+#
+# usb3 is on unless declared off: without it PVE puts the device on the guest's
+# emulated USB 2 controller, and a drive linked at 5 Gb/s on the hypervisor
+# runs at 480 Mb/s in the guest.
 #
 # By vendor and product, so a replacement of the same model needs nothing, and
 # the device may be absent: the VM starts without it and takes it when it is
