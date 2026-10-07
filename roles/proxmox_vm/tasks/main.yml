@@ -327,6 +327,11 @@
   become: false
   when: proxmox_vm_os_disk_size | int > 0
 
+# Before the first start, so a new VM boots with its devices.
+- name: Pass USB devices through to {{ proxmox_vm_name }}
+  ansible.builtin.include_tasks: usb.yml
+  when: proxmox_vm_usb | length > 0
+
 - name: Start {{ proxmox_vm_name }}
   community.general.proxmox_kvm:
     api_host: "{{ proxmox_vm_api_host }}"

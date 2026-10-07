@@ -2,4 +2,4 @@
 dependencies: []
 galaxy_info:
   role_name: backup
-  description: Nightly encrypted backup of the API database and the state bucket to an attached drive (CHG-0039)
+  description: Encrypted backup of the API database and the state bucket to an attached drive (CHG-0039)

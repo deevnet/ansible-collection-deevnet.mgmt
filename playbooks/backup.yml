@@ -2,8 +2,9 @@
 # Operate the backup job (CHG-0039). The role installs it (site.yml --tags backup);
 # this runs it, checks it, and proves an archive can be read back.
 #
-#   make backup-status    the last good backup, and fail if it is too old
-#   make backup-now       run the job now, then report
+#   make backup-status    the last good backup, and fail if one is due and the
+#                         host has been up long enough to have taken it
+#   make backup-now       run the job now, whatever the interval, then report
 #   make backup-dry-run   build and encrypt an archive with no drive attached
 #   make backup-verify    decrypt the newest archive with the key from the vault
 #                         and check it against its own manifest (SOURCE=dry-run
@@ -98,31 +99,42 @@
       failed_when: false
       when: backup_action in ['status', 'run']
 
-    - name: Read the job's last result
-      ansible.builtin.command:
-        cmd: systemctl show deevnet-backup.service deevnet-backup.timer --property=Id,Result,ActiveState,NextElapseUSecRealtime
+    - name: Read the job's last result and the host's uptime
+      ansible.builtin.shell:
+        cmd: |
+          systemctl show deevnet-backup.service --property=Result --value
+          cut -d. -f1 /proc/uptime
       register: backup_unit
       changed_when: false
       when: backup_action in ['status', 'run']
 
-    - name: Report, and fail when the newest good backup is too old
+    # Due and overdue are different things on a kit that is mostly off. A backup
+    # is due when the newest is older than the interval; it is overdue, and this
+    # fails, only once the host has been up long enough to have taken one.
+    - name: Report, and fail when a due backup has not been taken
       vars:
         _last: >-
           {{ dict((backup_last.content | default('') | b64decode).split('\n')
                   | select('match', '.+=.*') | map('split', '=', 1)) }}
         _age_hours: >-
           {{ ((now(utc=true).timestamp() - (_last.epoch | default(0) | int)) / 3600) | round(1) }}
+        _up_hours: "{{ ((backup_unit.stdout_lines[1] | int) / 3600) | round(1) }}"
+        _due: "{{ _last.epoch is not defined or _age_hours | float > backup_interval_hours | float }}"
+        _summary: >-
+          {{ 'No backup has ever succeeded on this host.' if _last.epoch is not defined
+             else 'Newest good backup: ' ~ _last.archive ~ ', ' ~ _age_hours ~ ' hours old, '
+                  ~ _last.bytes ~ ' bytes, ' ~ _last.kept ~ ' archives on drive ' ~ _last.drive_uuid ~ '.' }}
       ansible.builtin.assert:
         that:
-          - _last.epoch is defined
-          - _age_hours | float <= backup_max_age_hours | float
+          - not (_due | bool) or _up_hours | float < backup_status_grace_hours | float
         fail_msg: >-
-          {{ 'No backup has ever succeeded on this host.' if _last.epoch is not defined
-             else 'The newest good backup is ' ~ _age_hours ~ ' hours old (' ~ _last.archive ~ '); the limit is ' ~ backup_max_age_hours ~ '.' }}
-          Is the drive attached? `journalctl -u deevnet-backup.service` on the host
-          gives the reason, on the line that starts "deevnet-backup: FAILED". Units: {{ backup_unit.stdout_lines | join(' ') }}
+          {{ _summary }} One is due (the interval is {{ backup_interval_hours }} hours) and the
+          host has been up {{ _up_hours }} hours without taking it; the last check ended
+          "{{ backup_unit.stdout_lines[0] }}". Is the drive attached?
+          `journalctl -u deevnet-backup.service` on the host gives the reason, on the line that
+          starts "deevnet-backup: FAILED".
         success_msg: >-
-          Newest good backup: {{ _last.archive | default('') }}, {{ _age_hours }} hours old,
-          {{ _last.bytes | default('?') }} bytes, {{ _last.kept | default('?') }} archives on drive
-          {{ _last.drive_uuid | default('?') }}.
+          {{ _summary }}
+          {{ 'One is due; the host has been up ' ~ _up_hours ~ ' hours and the next check takes it.'
+             if _due | bool else 'None is due for ' ~ ((backup_interval_hours | float) - (_age_hours | float)) | round(1) ~ ' hours.' }}
       when: backup_action in ['status', 'run']

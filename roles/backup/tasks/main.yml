@@ -1,5 +1,5 @@
 ---
-# Nightly encrypted backup to an attached drive (CHG-0039), on the host that
+# Encrypted backup to an attached drive (CHG-0039), on the host that
 # holds the API's database and the state bucket.
 #
 # The role installs the job and nothing else. It does not prepare a drive
@@ -63,9 +63,10 @@
     - deevnet-backup.timer
   register: backup_units
 
-- name: Enable the nightly timer
+- name: Enable the timer that checks whether a backup is due
   ansible.builtin.systemd:
     name: deevnet-backup.timer
     daemon_reload: "{{ backup_units is changed }}"
     enabled: true
-    state: started
+    # Restarted on a change: a running timer keeps the schedule it started with.
+    state: "{{ 'restarted' if backup_units is changed else 'started' }}"

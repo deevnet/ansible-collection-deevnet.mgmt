@@ -77,10 +77,11 @@
   roles:
     - deevnet_api
 
-# Nightly encrypted backup of the API's database and the state bucket to an
-# attached drive (CHG-0039). After both services, which it reads. The drive is
-# prepared separately (playbooks/backup-drive.yml); without one the job is
-# installed and fails each night until a drive is attached.
+# Encrypted backup of the API's database and the state bucket to an attached
+# drive (CHG-0039), taken whenever the host is up and the newest is older than
+# the interval. After both services, which it reads. The drive is prepared
+# separately (playbooks/backup-drive.yml); without one the job is installed and
+# every check fails until a drive is attached.
 - name: Configure the backup job
   hosts: backup
   become: true

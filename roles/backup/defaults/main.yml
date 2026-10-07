@@ -1,5 +1,5 @@
 ---
-# Nightly backup of the Deevnet API's database and the tenant state bucket to an
+# Backup of the Deevnet API's database and the tenant state bucket to an
 # attached drive (CHG-0039), on the host that holds both.
 #
 # A recovery shortcut, not the recovery path: tenants rebuild from their own
@@ -28,14 +28,22 @@ backup_drive_marker: .deevnet-backup
 backup_drive_dir: "{{ inventory_hostname }}"
 
 # --- Schedule and retention ----------------------------------------------------
-backup_on_calendar: "*-*-* 02:30:00"
-# The kit is often off at night. Persistent runs a missed backup at the next boot.
-backup_persistent: true
+# The kit is mobile and off most of the time, so there is no hour of the day a
+# backup can be promised at. Instead the job is DUE whenever the newest good
+# backup is older than backup_interval_hours, and the timer only asks the
+# question: shortly after every boot, then on backup_check_calendar while the
+# host stays up. A check that finds nothing due does nothing and succeeds.
+# `make backup-now` runs regardless of the interval.
+backup_interval_hours: 24
+# Long enough after boot for the database and the state store to be answering.
+backup_check_after_boot: 10min
+backup_check_calendar: hourly
 # Archives kept on each drive. They are small (state and a registry), so this
 # is weeks of history, not a space budget.
 backup_keep: 30
-# `make backup-status` fails when the newest good backup is older than this.
-backup_max_age_hours: 36
+# `make backup-status` fails when a backup is due and the host has been up this
+# long without taking one. Time spent powered off is not held against it.
+backup_status_grace_hours: 2
 
 # --- What is backed up ---------------------------------------------------------
 # Named here, not read from the deevnet_api and minio roles: one role's defaults

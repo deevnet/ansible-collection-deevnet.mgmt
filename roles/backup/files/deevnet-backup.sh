@@ -2,7 +2,10 @@
 # Deevnet backup (CHG-0039): the API's database and the state bucket, in one
 # archive, encrypted before it is written to the attached drive.
 #
-#   deevnet-backup             write an archive to the drive
+#   deevnet-backup             write an archive to the drive, now
+#   deevnet-backup --if-due    the same, but only when the newest good backup is
+#                              older than the interval; otherwise do nothing and
+#                              succeed. What the timer runs.
 #   deevnet-backup --dry-run   build and encrypt an archive without a drive, and
 #                              leave it under the state directory for a
 #                              decryption check
@@ -17,10 +20,12 @@ CONFIG=${DEEVNET_BACKUP_CONFIG:-/etc/deevnet/backup.conf}
 . "$CONFIG"
 
 DRY_RUN=0
+IF_DUE=0
 case "${1:-}" in
   "") ;;
   --dry-run) DRY_RUN=1 ;;
-  *) echo "usage: deevnet-backup [--dry-run]" >&2; exit 2 ;;
+  --if-due) IF_DUE=1 ;;
+  *) echo "usage: deevnet-backup [--if-due | --dry-run]" >&2; exit 2 ;;
 esac
 
 WORK=""
@@ -41,6 +46,18 @@ trap cleanup EXIT
 [ "$(id -u)" = 0 ] || die "must run as root"
 [ -n "$BACKUP_RECIPIENT" ] || die "no recipient key configured"
 command -v age >/dev/null || die "age is not installed"
+
+# --- Is one due? ----------------------------------------------------------------
+# Judged from this host's own record of its last good run, so a check costs
+# nothing and needs no drive. A clock that has gone backwards counts as due.
+if [ "$IF_DUE" = 1 ] && [ -f "$BACKUP_STATE_DIR/last-success" ]; then
+  LAST=$(sed -n 's/^epoch=//p' "$BACKUP_STATE_DIR/last-success")
+  NOW=$(date -u +%s)
+  if [ -n "$LAST" ] && [ "$NOW" -ge "$LAST" ] && [ $((NOW - LAST)) -lt $((BACKUP_INTERVAL_HOURS * 3600)) ]; then
+    log "not due: the newest good backup is $(( (NOW - LAST) / 3600 ))h old, the interval is ${BACKUP_INTERVAL_HOURS}h"
+    exit 0
+  fi
+fi
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 NAME="deevnet-backup-${BACKUP_HOST}-${STAMP}.tar.age"

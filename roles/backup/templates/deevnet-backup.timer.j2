@@ -1,10 +1,10 @@
 # {{ ansible_managed }}
 [Unit]
-Description=Nightly Deevnet backup (CHG-0039)
+Description=Check whether a Deevnet backup is due (CHG-0039)
 
 [Timer]
-OnCalendar={{ backup_on_calendar }}
-Persistent={{ backup_persistent | bool | ternary('true', 'false') }}
+OnBootSec={{ backup_check_after_boot }}
+OnCalendar={{ backup_check_calendar }}
 
 [Install]
 WantedBy=timers.target

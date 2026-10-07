@@ -80,6 +80,20 @@ proxmox_vm_os_disk_size: "{{ mgmt_vm.os_disk_size | default(0) }}"
 # the VM" here means "outlives the OS disk", not "outlives the VMID".
 proxmox_vm_data_disk: "{{ mgmt_vm.data_disk | default({}) }}"
 
+# USB devices on the hypervisor passed through to the VM - a backup drive, say.
+# Each is a PVE resource mapping this role creates, then a usbN entry on the VM:
+#
+#   mgmt_vm:
+#     usb:
+#       - slot: usb0
+#         mapping: deevnet-backup   # the mapping's name in PVE
+#         id: "13fe:6300"           # vendor:product, as lsusb prints it
+#
+# By vendor and product, so a replacement of the same model needs nothing, and
+# the device may be absent: the VM starts without it and takes it when it is
+# plugged in. See tasks/usb.yml for why a mapping and not a raw host device.
+proxmox_vm_usb: "{{ mgmt_vm.usb | default([]) }}"
+
 # The serial is what makes the disk findable from inside the guest. Without it
 # the guest-side role has to guess at /dev/sdX, which is assigned in discovery
 # order - so adding a disk later silently renumbers it and the guess formats the
@@ -170,6 +184,10 @@ proxmox_vm_api_token_secret: "{{ hostvars[proxmox_vm_hypervisor].proxmox_token_s
 # On once the hypervisors serve site certificates (CHG-0032); the Builder
 # trusts the root at the OS level, and proxmoxer verifies through it.
 proxmox_vm_api_validate_certs: "{{ site_verify_proxmox | default(false) }}"
+
+# For the calls community.general has no module for (tasks/usb.yml).
+proxmox_vm_api_url: "https://{{ proxmox_vm_api_host }}:8006/api2/json"
+proxmox_vm_api_auth: "PVEAPIToken={{ proxmox_vm_api_token_id }}={{ proxmox_vm_api_token_secret }}"
 
 # Seconds to wait for the guest to come up on SSH after first boot.
 proxmox_vm_boot_timeout: 300

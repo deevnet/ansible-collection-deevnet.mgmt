@@ -6,6 +6,6 @@ After={{ backup_db_container }}.service {{ backup_state_container }}.service net
 
 [Service]
 Type=oneshot
-ExecStart={{ backup_script }}
+ExecStart={{ backup_script }} --if-due
 # A run is seconds. Anything near this is a hung drive.
 TimeoutStartSec=900

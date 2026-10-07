@@ -58,7 +58,7 @@ help:
 "      Re-ensure tenants through the API (repairs what it owns, Grafana data sources included)" \
 "" \
 "  backup-status | backup-now | backup-dry-run" \
-"      The last good backup (fails when too old) | run the job now | build an archive with no drive" \
+"      The last good backup (fails when one is overdue) | back up now, whatever the interval | build an archive with no drive" \
 "" \
 "  backup-verify [SOURCE=drive|dry-run]" \
 "      Decrypt the newest archive with the key from the vault and check it against its manifest" \
@@ -157,7 +157,7 @@ unadmit:
 reconcile:
 	@./scripts/tenant-reconcile.sh $(NAME)
 
-# Backup to the attached drive (CHG-0039). The role installs the nightly job
+# Backup to the attached drive (CHG-0039). The role installs the job and the timer that runs it when one is due
 # (site.yml --tags backup); these run it, check it and read an archive back.
 BACKUP_PLAY = ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
 	  ansible-playbook playbooks/backup.yml
