@@ -41,7 +41,7 @@ trap cleanup EXIT
 case "$SOURCE" in
   drive)
     mapfile -t DRIVES < <(blkid -t "LABEL=$BACKUP_LABEL" -o device)
-    [ "${#DRIVES[@]}" -eq 1 ] || die "expected one filesystem labelled $BACKUP_LABEL, found ${#DRIVES[@]}"
+    [ "${#DRIVES[@]}" -eq 1 ] || die "expected one filesystem labeled $BACKUP_LABEL, found ${#DRIVES[@]}"
     mountpoint -q "$BACKUP_MOUNT" && die "$BACKUP_MOUNT is in use"
     mount -o ro,nosuid,nodev,noexec "${DRIVES[0]}" "$BACKUP_MOUNT" || die "could not mount ${DRIVES[0]}"
     MOUNTED=1

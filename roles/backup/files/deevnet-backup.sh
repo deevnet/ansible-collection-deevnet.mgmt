@@ -81,8 +81,8 @@ if [ "$DRY_RUN" = 1 ]; then
   rm -f "$DEST"/*.tar.age "$DEST"/*.partial
 else
   mapfile -t DRIVES < <(blkid -t "LABEL=$BACKUP_LABEL" -o device)
-  [ "${#DRIVES[@]}" -ge 1 ] || die "backup drive absent: no filesystem labelled $BACKUP_LABEL"
-  [ "${#DRIVES[@]}" -eq 1 ] || die "more than one filesystem labelled $BACKUP_LABEL: ${DRIVES[*]}"
+  [ "${#DRIVES[@]}" -ge 1 ] || die "backup drive absent: no filesystem labeled $BACKUP_LABEL"
+  [ "${#DRIVES[@]}" -eq 1 ] || die "more than one filesystem labeled $BACKUP_LABEL: ${DRIVES[*]}"
   DRIVE=${DRIVES[0]}
 
   mkdir -p "$BACKUP_MOUNT"
@@ -120,7 +120,7 @@ DB_VERSION=$(podman exec "$BACKUP_DB_CONTAINER" pg_dump --version)
 
 # --- The state bucket ----------------------------------------------------------
 # A one-shot container from the store's own image, for its client. Labelling is
-# off rather than relabelled: the CA directory belongs to the running store, and
+# off rather than relabeled: the CA directory belongs to the running store, and
 # relabelling it for this container would take it away from that one.
 S3_IMAGE=$(podman container inspect "$BACKUP_S3_CONTAINER" --format '{{.ImageName}}') \
   || die "the state store container $BACKUP_S3_CONTAINER does not exist"

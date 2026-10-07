@@ -112,4 +112,4 @@
       ansible.builtin.debug:
         msg: >-
           {{ backup_drive_matches[0].model | default('drive') | trim }} {{ backup_drive_serial }} is
-          labelled {{ backup_drive_label }} and ready. `make backup-now` writes the first archive.
+          labeled {{ backup_drive_label }} and ready. `make backup-now` writes the first archive.
