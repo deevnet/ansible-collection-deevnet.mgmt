@@ -105,6 +105,26 @@ deevnet_api_iot_trust_classes: >-
   {%- endfor -%}
   {{ out | join(',') }}
 
+# Fixed device addresses (ADR-0035). Projected from inventory like the trust
+# classes: a segment that declares tenant_range_start and tenant_range_end
+# becomes one entry, name=subnet:first-last, and the API hands tenants' devices
+# addresses from that part of the segment. No segment declaring one leaves this
+# empty, and the API then reserves none.
+#
+# Only PPSK segments are taken, the same test as the trust classes above: the
+# API refuses a range for a class it does not serve.
+deevnet_api_iot_address_ranges: >-
+  {%- set out = [] -%}
+  {%- for key, seg in (deevnet_vlans | default({})).items() -%}
+  {%- if (seg.wifi_security | default('psk')) == 'ppsk'
+        and seg.tenant_range_start is defined and seg.tenant_range_end is defined -%}
+  {%- set _ = out.append(key ~ '=' ~ seg.subnet ~ ':' ~ seg.tenant_range_start ~ '-' ~ seg.tenant_range_end) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ out | join(',') }}
+# One tenant's share of such a range. Empty takes the API's default.
+deevnet_api_iot_addresses_per_tenant: ""
+
 # Whether the state store serves TLS (CHG-0030). Set with the minio role's
 # minio_tls_enabled; deevnet_api_state_endpoint, what tenants are told, turns
 # https in the same commit.
