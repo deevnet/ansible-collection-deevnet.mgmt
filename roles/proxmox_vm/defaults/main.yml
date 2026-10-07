@@ -159,6 +159,19 @@ proxmox_vm_ipconfig: >-
 #     onboot: false
 proxmox_vm_onboot: "{{ mgmt_vm.onboot | default(true) }}"
 
+# Whether the guest upgrades every package on its first boot.
+#
+# Proxmox turns this on unless told otherwise: the cloud-init data it generates
+# carries package_upgrade, and a new clone downloads a full upgrade through the
+# core router before anything else happens to it. A host that must come up
+# without that says so:
+#
+#   mgmt_vm:
+#     ciupgrade: false
+#
+# Undeclared leaves Proxmox's default, which is what every host here has had.
+proxmox_vm_ciupgrade: "{{ mgmt_vm.ciupgrade | default(none) }}"
+
 # PVE start/stop ordering within the node, for hosts whose peers depend on them.
 # Format is PVE's own: "order=N,up=SECONDS,down=SECONDS" - order ascending on
 # boot and descending on shutdown, `up` a delay before the next VM starts, `down`
