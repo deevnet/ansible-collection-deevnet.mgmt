@@ -1,0 +1,78 @@
+---
+# Backup of the Deevnet API's database and the tenant state bucket to an
+# attached drive (CHG-0039), on the host that holds both.
+#
+# A recovery shortcut, not the recovery path: tenants rebuild from their own
+# repositories without it (ADR-0033). What it saves is time, and until device
+# secrets live in tenant code, a visit to every device.
+
+# --- Encryption ----------------------------------------------------------------
+# Every archive is encrypted with age to this public key BEFORE it reaches the
+# drive, whose filesystem is plain. The key can only encrypt, so this host
+# cannot read what it wrote and a lost drive is ciphertext. The private half is
+# in the vault and is read only for a restore; the role never installs it.
+backup_age_recipient: ""
+
+# --- The drive -----------------------------------------------------------------
+# Found by filesystem label, never by /dev/sdX. Every drive in the rotation
+# carries the same label, so swapping drives changes nothing here; the job
+# refuses to run when it finds more than one. `make backup-drive` prepares one.
+backup_drive_label: deevnet-backup
+backup_drive_fstype: ext4
+# Mounted only while a run writes, so the drive can be pulled at any other time.
+backup_drive_mount: /mnt/deevnet-backup
+# A file the preparation step writes. The job refuses a drive without it, so a
+# stranger's filesystem that happens to carry the label is never written to.
+backup_drive_marker: .deevnet-backup
+# Where on the drive this host's archives go.
+backup_drive_dir: "{{ inventory_hostname }}"
+
+# --- Schedule and retention ----------------------------------------------------
+# The kit is mobile and off most of the time, so there is no hour of the day a
+# backup can be promised at. Instead the job is DUE whenever the newest good
+# backup is older than backup_interval_hours, and the timer only asks the
+# question: shortly after every boot, then on backup_check_calendar while the
+# host stays up. A check that finds nothing due does nothing and succeeds.
+# `make backup-now` runs regardless of the interval.
+backup_interval_hours: 24
+# Long enough after boot for the database and the state store to be answering.
+backup_check_after_boot: 10min
+backup_check_calendar: hourly
+# Archives kept on each drive. They are small (state and a registry), so this
+# is weeks of history, not a space budget.
+backup_keep: 30
+# `make backup-status` fails when a backup is due and the host has been up this
+# long without taking one. Time spent powered off is not held against it.
+backup_status_grace_hours: 2
+
+# --- What is backed up ---------------------------------------------------------
+# Named here, not read from the deevnet_api and minio roles: one role's defaults
+# are not visible to another. These match theirs.
+#
+# The API's database: a pg_dump taken inside its container.
+backup_db_container: deevnet-api-db
+# Stopped while a restore replaces its database.
+backup_api_service: deevnet-api.service
+backup_db_name: deevnet_api
+backup_db_user: deevnet_api
+
+# The state bucket: its current objects, read over S3 with the store's own
+# client, in a one-shot container from the image the store is running. Not the
+# store's data directory, so a restore does not depend on the store being the
+# same software or version. Earlier object versions are not carried; the dated
+# archives are the history.
+backup_state_container: minio
+backup_state_env_file: "/etc/deevnet/env/{{ backup_state_container }}.env"
+backup_state_url: "{{ 'https' if minio_tls_enabled | default(false) | bool else 'http' }}://127.0.0.1:9000"
+backup_state_bucket: tf-state
+# Mounted read-only where the store's own environment says its trust anchor is.
+backup_state_ca_dir: /srv/minio/certs/CAs
+backup_state_ca_mount: /certs/CAs
+
+# --- Paths on the host ---------------------------------------------------------
+backup_script: /usr/local/sbin/deevnet-backup
+backup_verify_script: /usr/local/sbin/deevnet-backup-verify
+backup_restore_script: /usr/local/sbin/deevnet-backup-restore
+backup_config: /etc/deevnet/backup.conf
+# Where the last good run is recorded, for backup-status.
+backup_state_dir: /var/lib/deevnet-backup

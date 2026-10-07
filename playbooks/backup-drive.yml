@@ -1,0 +1,115 @@
+---
+# Prepare a drive for backups (CHG-0039). ERASES THE DRIVE.
+#
+#   make backup-drive SERIAL=<the drive's serial>
+#
+# Run once per drive in the rotation, with only that drive attached. The drive
+# is named by its serial and the serial is typed back, because the task that
+# follows cannot be undone. Refuses anything that is not a USB disk, that backs
+# a mounted filesystem, or that is not the only match.
+#
+# The filesystem is plain and carries the site's label and a marker file; what
+# the job later writes to it is already encrypted.
+
+- name: Prepare a backup drive
+  hosts: backup
+  become: true
+  gather_facts: false
+  vars_prompt:
+    - name: backup_drive_confirm
+      prompt: "This ERASES the drive. Type its serial to continue"
+      private: false
+  tasks:
+    - name: Load the backup role's defaults
+      ansible.builtin.include_role:
+        name: backup
+        defaults_from: main
+        tasks_from: noop
+        public: true
+
+    - name: Require the serial, typed twice
+      ansible.builtin.assert:
+        that:
+          - backup_drive_serial is defined
+          - backup_drive_serial | string | length >= 6
+          - backup_drive_confirm | string == backup_drive_serial | string
+        fail_msg: >-
+          Pass the drive's serial as SERIAL= (lsblk -o NAME,SIZE,TRAN,MODEL,SERIAL on
+          the host shows it) and type the same serial at the prompt.
+
+    - name: Find the disk with serial {{ backup_drive_serial }}
+      ansible.builtin.command:
+        cmd: lsblk --json --bytes --nodeps --output NAME,PATH,SIZE,TRAN,TYPE,MODEL,SERIAL
+      register: backup_lsblk
+      changed_when: false
+
+    - name: Select it
+      ansible.builtin.set_fact:
+        backup_drive_matches: >-
+          {{ (backup_lsblk.stdout | from_json).blockdevices
+             | selectattr('serial', 'equalto', backup_drive_serial | string) | list }}
+
+    - name: Refuse anything but exactly one USB disk
+      ansible.builtin.assert:
+        that:
+          - backup_drive_matches | length == 1
+          - backup_drive_matches[0].type == 'disk'
+          - backup_drive_matches[0].tran == 'usb'
+        fail_msg: >-
+          Expected exactly one USB disk with serial {{ backup_drive_serial }}; found
+          {{ backup_drive_matches | to_json }}. If the drive is attached to the
+          hypervisor but absent here, it is not passed through to this VM.
+
+    - name: Refuse a disk with anything mounted from it
+      ansible.builtin.command:
+        cmd: "lsblk --noheadings --output MOUNTPOINT {{ backup_drive_matches[0].path }}"
+      register: backup_drive_mounts
+      changed_when: false
+      failed_when: backup_drive_mounts.stdout | trim | length > 0
+
+    - name: Record what is on it now
+      ansible.builtin.command:
+        cmd: "lsblk --output NAME,SIZE,FSTYPE,LABEL {{ backup_drive_matches[0].path }}"
+      register: backup_drive_before
+      changed_when: false
+
+    - name: Show what is about to be erased
+      ansible.builtin.debug:
+        msg: "{{ backup_drive_before.stdout_lines }}"
+
+    - name: Erase every signature on {{ backup_drive_matches[0].path }}
+      ansible.builtin.command:
+        cmd: "wipefs --all --force {{ backup_drive_matches[0].path }}"
+      changed_when: true
+
+    # Whole disk, no partition table, as the data_disk role does.
+    - name: Create the filesystem
+      ansible.builtin.command:
+        cmd: >-
+          mkfs.{{ backup_drive_fstype }} -q -F -L {{ backup_drive_label }}
+          {{ backup_drive_matches[0].path }}
+      changed_when: true
+
+    # On a mount point of its own: the job's timer may fire while this runs, and
+    # it owns the job's mount point.
+    - name: Write the marker and this host's directory
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          udevadm settle
+          mnt=$(mktemp -d /run/deevnet-backup-drive.XXXXXX)
+          mount -o nosuid,nodev,noexec {{ backup_drive_matches[0].path }} "$mnt"
+          trap 'for i in $(seq 1 30); do umount "$mnt" 2>/dev/null && break; sleep 2; done; rmdir "$mnt"' EXIT
+          echo "Deevnet backup drive. Prepared {{ now(utc=true).strftime('%Y-%m-%d') }}. Contents are encrypted archives." \
+            > "$mnt"/{{ backup_drive_marker | quote }}
+          mkdir -p "$mnt"/{{ backup_drive_dir | quote }}
+          chmod 700 "$mnt"
+          sync
+      changed_when: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ backup_drive_matches[0].model | default('drive') | trim }} {{ backup_drive_serial }} is
+          labeled {{ backup_drive_label }} and ready. `make backup-now` writes the first archive.

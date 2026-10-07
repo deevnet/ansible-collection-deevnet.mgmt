@@ -1,0 +1,139 @@
+---
+# Pass USB devices on the hypervisor through to this VM.
+#
+# Through a PVE resource mapping, not `host=<vendor>:<product>`: Proxmox lets
+# only root@pam name a raw host device, and this role works with an API token.
+# A mapping is the form a token with Mapping.Modify and Mapping.Use may create
+# and attach. It names the device by vendor and product ID, so the device is
+# found whichever port it is in, and a second device of the same model takes
+# its place without a change here.
+#
+# Run on its own for a VM that already exists: playbooks/vm-usb.yml.
+
+- name: Check the declared USB devices
+  ansible.builtin.assert:
+    that:
+      - item.slot is match('^usb[0-4]$')
+      - item.mapping is match('^[A-Za-z][A-Za-z0-9_-]+$')
+      - item.id is match('^[0-9a-f]{4}:[0-9a-f]{4}$')
+    fail_msg: >-
+      Each mgmt_vm.usb entry needs slot (usb0..usb4), mapping (a name) and id
+      (vendor:product in lower-case hex, as `lsusb` prints it). Got {{ item }}.
+  loop: "{{ proxmox_vm_usb }}"
+
+- name: Read the USB mappings PVE holds
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/cluster/mapping/usb"
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    return_content: true
+  register: proxmox_vm_usb_mappings
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# Other nodes' entries in the same mapping are kept; only this node's is set.
+- name: Create or correct each mapping for {{ proxmox_vm_node }}
+  no_log: true
+  vars:
+    _existing: >-
+      {{ proxmox_vm_usb_mappings.json.data | selectattr('id', 'equalto', item.mapping) | list }}
+    _wanted: "node={{ proxmox_vm_node }},id={{ item.id }}"
+    _others: >-
+      {{ (_existing | first | default({})).map | default([])
+         | reject('search', '(^|,)node=' ~ proxmox_vm_node ~ '(,|$)') | list }}
+    _map: "{{ _others + [_wanted] }}"
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/cluster/mapping/usb{{ '/' ~ item.mapping if _existing | length > 0 else '' }}"
+    method: "{{ 'PUT' if _existing | length > 0 else 'POST' }}"
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    body_format: form-urlencoded
+    body: >-
+      {{ ([] if _existing | length > 0 else [['id', item.mapping]])
+         + (['map'] | product(_map) | list)
+         + [['description', 'Managed by deevnet.mgmt proxmox_vm for ' ~ proxmox_vm_name]] }}
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+  changed_when: true
+  when: _existing | length == 0 or _wanted not in ((_existing | first).map | default([]))
+  loop: "{{ proxmox_vm_usb }}"
+  loop_control:
+    label: "{{ item.mapping }} = {{ item.id }}"
+  delegate_to: localhost
+  become: false
+
+- name: Read {{ proxmox_vm_name }}'s configuration, pending changes included
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/nodes/{{ proxmox_vm_node }}/qemu/{{ proxmox_vm_id }}/pending"
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    return_content: true
+  register: proxmox_vm_usb_before
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Attach each device to {{ proxmox_vm_name }}
+  no_log: true
+  vars:
+    _row: "{{ proxmox_vm_usb_before.json.data | selectattr('key', 'equalto', item.slot) | first | default({}) }}"
+    _value: "mapping={{ item.mapping }}{{ ',usb3=1' if item.usb3 | default(true) | bool else '' }}"
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/nodes/{{ proxmox_vm_node }}/qemu/{{ proxmox_vm_id }}/config"
+    method: PUT
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    body_format: form-urlencoded
+    body: "{{ {item.slot: _value} }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+  changed_when: true
+  when: (_row.pending | default(_row.value | default(''))) != _value
+  loop: "{{ proxmox_vm_usb }}"
+  loop_control:
+    label: "{{ item.slot }} = {{ item.mapping }}"
+  delegate_to: localhost
+  become: false
+
+# PVE hot-plugs USB only for some guest types. Where it does not, the device is
+# recorded and reaches the guest at its next cold start. Read back which.
+- name: Read back what {{ proxmox_vm_name }} runs with
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/nodes/{{ proxmox_vm_node }}/qemu/{{ proxmox_vm_id }}/pending"
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    return_content: true
+  register: proxmox_vm_usb_after
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Record which devices wait for a cold start
+  ansible.builtin.set_fact:
+    proxmox_vm_usb_waiting: >-
+      {{ proxmox_vm_usb_after.json.data
+         | selectattr('key', 'in', proxmox_vm_usb | map(attribute='slot') | list)
+         | selectattr('pending', 'defined') | map(attribute='key') | list }}
+
+- name: Assert every declared device is attached or waiting
+  vars:
+    _row: "{{ proxmox_vm_usb_after.json.data | selectattr('key', 'equalto', item.slot) | first | default({}) }}"
+    _value: "mapping={{ item.mapping }}{{ ',usb3=1' if item.usb3 | default(true) | bool else '' }}"
+  ansible.builtin.assert:
+    that:
+      - (_row.pending | default(_row.value | default(''))) == _value
+    fail_msg: "{{ item.slot }} on {{ proxmox_vm_name }} is not {{ _value }}."
+    quiet: true
+  loop: "{{ proxmox_vm_usb }}"
+  loop_control:
+    label: "{{ item.slot }}"
+
+- name: Say when a cold start is needed
+  ansible.builtin.debug:
+    msg: >-
+      {{ proxmox_vm_usb_waiting | join(', ') }} on {{ proxmox_vm_name }} is recorded but not live:
+      this guest does not take USB hot-plug. It appears after the VM is stopped and
+      started (a reboot from inside is not enough).
+  when: proxmox_vm_usb_waiting | length > 0

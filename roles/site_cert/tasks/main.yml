@@ -115,7 +115,7 @@
 # file written here later gets the host's default label instead, and a
 # container that is merely restarted cannot read it: at CHG-0031 the broker's
 # new root file was var_t, its TLS listener reported running, and every
-# handshake was reset. A file already labelled like its directory is left
+# handshake was reset. A file already labeled like its directory is left
 # alone, and nothing is done where SELinux is off.
 - name: Give the files their directory's SELinux label
   ansible.builtin.shell:
@@ -125,7 +125,7 @@
         [ -e "$f" ] || continue
         d=$(dirname "$f")
         if [ "$(stat -c %C "$f")" != "$(stat -c %C "$d")" ]; then
-          chcon --reference="$d" "$f" && echo "relabelled $f"
+          chcon --reference="$d" "$f" && echo "relabeled $f"
         fi
       done
     chdir: "{{ site_cert_dir }}"

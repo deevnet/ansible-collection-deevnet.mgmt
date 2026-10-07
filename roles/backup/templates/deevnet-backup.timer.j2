@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Check whether a Deevnet backup is due (CHG-0039)
+
+[Timer]
+OnBootSec={{ backup_check_after_boot }}
+OnCalendar={{ backup_check_calendar }}
+
+[Install]
+WantedBy=timers.target

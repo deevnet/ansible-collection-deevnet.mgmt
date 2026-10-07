@@ -1,0 +1,73 @@
+---
+# Encrypted backup to an attached drive (CHG-0039), on the host that
+# holds the API's database and the state bucket.
+#
+# The role installs the job and nothing else. It does not prepare a drive
+# (playbooks/backup-drive.yml, which erases one and so asks first), and it never
+# places the private key: this host can write backups and cannot read them.
+
+- name: Fail early without a recipient key
+  ansible.builtin.assert:
+    that:
+      - backup_age_recipient is match('^age1[0-9a-z]{58}$')
+    fail_msg: >-
+      backup_age_recipient must be an age public key (age1...), the "public key"
+      line `age-keygen` prints; its private half goes in the vault as
+      vault_backup_age_identity and nowhere else.
+
+- name: Install age
+  ansible.builtin.dnf:
+    name: age
+    state: present
+
+- name: Create the backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ backup_config | dirname }}", mode: "0700" }
+    - { path: "{{ backup_state_dir }}", mode: "0700" }
+    - { path: "{{ backup_drive_mount }}", mode: "0700" }
+
+- name: Install the backup configuration
+  ansible.builtin.template:
+    src: backup.conf.j2
+    dest: "{{ backup_config }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install the backup, verify and restore scripts
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - { src: deevnet-backup.sh, dest: "{{ backup_script }}" }
+    - { src: deevnet-backup-verify.sh, dest: "{{ backup_verify_script }}" }
+    - { src: deevnet-backup-restore.sh, dest: "{{ backup_restore_script }}" }
+
+- name: Install the backup service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - deevnet-backup.service
+    - deevnet-backup.timer
+  register: backup_units
+
+- name: Enable the timer that checks whether a backup is due
+  ansible.builtin.systemd:
+    name: deevnet-backup.timer
+    daemon_reload: "{{ backup_units is changed }}"
+    enabled: true
+    # Restarted on a change: a running timer keeps the schedule it started with.
+    state: "{{ 'restarted' if backup_units is changed else 'started' }}"

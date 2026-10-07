@@ -1,0 +1,19 @@
+---
+# Pass the USB devices a management-plane VM declares (mgmt_vm.usb) through to
+# it, without running the rest of proxmox_vm against a VM that already exists.
+#
+#   ansible-playbook playbooks/vm-usb.yml --limit dv02prv001v01
+#
+# Changes the VM's hardware and nothing inside it. Where the guest does not
+# take USB hot-plug the play says so, and the device appears at the next cold
+# start, which is the operator's to schedule.
+
+- name: Pass USB devices through to management-plane VMs
+  hosts: management_plane
+  gather_facts: false
+  tasks:
+    - name: Apply the declared USB devices
+      ansible.builtin.include_role:
+        name: proxmox_vm
+        tasks_from: usb
+      when: (mgmt_vm.usb | default([])) | length > 0

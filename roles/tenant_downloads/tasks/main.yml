@@ -103,7 +103,7 @@
       for f in public public/*; do
         [ -e "$f" ] || continue
         if [ "$(stat -c %C "$f")" != "$(stat -c %C .)" ]; then
-          chcon --reference=. "$f" && echo "relabelled $f"
+          chcon --reference=. "$f" && echo "relabeled $f"
         fi
       done
     chdir: "{{ tenant_downloads_tls_dir }}"

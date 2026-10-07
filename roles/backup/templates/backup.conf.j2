@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# Read by {{ backup_script }}. No secret: the recipient is a public key.
+BACKUP_HOST={{ inventory_hostname | quote }}
+BACKUP_RECIPIENT={{ backup_age_recipient | quote }}
+BACKUP_LABEL={{ backup_drive_label | quote }}
+BACKUP_MOUNT={{ backup_drive_mount | quote }}
+BACKUP_MARKER={{ backup_drive_marker | quote }}
+BACKUP_DIR={{ backup_drive_dir | quote }}
+BACKUP_KEEP={{ backup_keep | int }}
+BACKUP_INTERVAL_HOURS={{ backup_interval_hours | int }}
+BACKUP_STATE_DIR={{ backup_state_dir | quote }}
+BACKUP_API_SERVICE={{ backup_api_service | quote }}
+BACKUP_DB_CONTAINER={{ backup_db_container | quote }}
+BACKUP_DB_NAME={{ backup_db_name | quote }}
+BACKUP_DB_USER={{ backup_db_user | quote }}
+BACKUP_S3_CONTAINER={{ backup_state_container | quote }}
+BACKUP_S3_ENV_FILE={{ backup_state_env_file | quote }}
+BACKUP_S3_URL={{ backup_state_url | quote }}
+BACKUP_S3_BUCKET={{ backup_state_bucket | quote }}
+BACKUP_S3_CA_DIR={{ backup_state_ca_dir | quote }}
+BACKUP_S3_CA_MOUNT={{ backup_state_ca_mount | quote }}
