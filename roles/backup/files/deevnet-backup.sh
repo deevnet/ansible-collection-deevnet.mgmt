@@ -71,6 +71,29 @@ if [ "$IF_DUE" = 1 ] && [ -f "$BACKUP_STATE_DIR/last-success" ]; then
   fi
 fi
 
+# --- Is there anything to back up? ---------------------------------------------
+ready=0
+for _ in $(seq 1 30); do
+  if podman exec "$BACKUP_DB_CONTAINER" pg_isready -q -U "$BACKUP_DB_USER" -d "$BACKUP_DB_NAME" 2>/dev/null; then
+    ready=1; break
+  fi
+  sleep 2
+done
+[ "$ready" = 1 ] || die "the database in $BACKUP_DB_CONTAINER does not answer"
+
+# A host its roles have just rebuilt has an empty registry until a backup is
+# restored into it. Backing that up would put an empty archive on the drive as
+# the newest one. No tenants table at all is the same thing, a moment earlier.
+TENANTS=$(podman exec "$BACKUP_DB_CONTAINER" \
+  psql -U "$BACKUP_DB_USER" -d "$BACKUP_DB_NAME" -Atc "select count(*) from tenants" 2>/dev/null || echo 0)
+if [ "$TENANTS" = 0 ]; then
+  if [ "$IF_DUE" = 1 ]; then
+    log "nothing to back up: the registry holds no tenants. A rebuilt host is restored before it is backed up"
+    exit 0
+  fi
+  die "the registry holds no tenants; refusing to write an empty backup"
+fi
+
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 NAME="deevnet-backup-${BACKUP_HOST}-${STAMP}.tar.age"
 
@@ -103,15 +126,6 @@ chmod 700 "$WORK"
 mkdir "$WORK/payload" "$WORK/payload/state"
 
 # --- The database --------------------------------------------------------------
-ready=0
-for _ in $(seq 1 30); do
-  if podman exec "$BACKUP_DB_CONTAINER" pg_isready -q -U "$BACKUP_DB_USER" -d "$BACKUP_DB_NAME" 2>/dev/null; then
-    ready=1; break
-  fi
-  sleep 2
-done
-[ "$ready" = 1 ] || die "the database in $BACKUP_DB_CONTAINER does not answer"
-
 podman exec "$BACKUP_DB_CONTAINER" \
   pg_dump -U "$BACKUP_DB_USER" -d "$BACKUP_DB_NAME" --format=custom \
   > "$WORK/payload/database.pgdump" || die "pg_dump failed"

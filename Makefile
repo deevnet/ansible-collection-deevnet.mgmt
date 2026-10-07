@@ -1,6 +1,6 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
         vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reconcile \
-        backup-status backup-now backup-dry-run backup-verify backup-drive \
+        backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -62,6 +62,9 @@ help:
 "" \
 "  backup-verify [SOURCE=drive|dry-run]" \
 "      Decrypt the newest archive with the key from the vault and check it against its manifest" \
+"" \
+"  backup-restore CONFIRM=<host> [ARCHIVE=<name>]" \
+"      Restore the newest (or named) archive into a rebuilt host whose registry and bucket are empty" \
 "" \
 "  backup-drive SERIAL=<serial>" \
 "      ERASE the USB drive with that serial and make it a backup drive (asks for the serial again)" \
@@ -173,6 +176,12 @@ backup-dry-run: install-dev
 
 backup-verify: install-dev
 	@$(BACKUP_PLAY) -e backup_action=verify -e backup_verify_source=$(or $(SOURCE),drive)
+
+# Into a host its roles have just rebuilt; refuses a registry or bucket that is
+# not empty. Followed by: make reconcile NAME=--all
+backup-restore: install-dev
+	@$(BACKUP_PLAY) -e backup_action=restore -e backup_restore_confirm=$(CONFIRM) \
+	  $(if $(ARCHIVE),-e backup_restore_archive=$(ARCHIVE),)
 
 # Erases the drive named by SERIAL and makes it a backup drive; asks for the
 # serial to be typed back.

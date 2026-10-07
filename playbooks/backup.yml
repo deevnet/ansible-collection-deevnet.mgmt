@@ -10,7 +10,12 @@
 #                         and check it against its own manifest (SOURCE=dry-run
 #                         reads the dry run's archive instead of the drive's)
 #
-# backup-verify is the only thing here that reads the private key. It is held in
+#   make backup-restore CONFIRM=<host> [ARCHIVE=<name>]
+#                         restore the newest archive (or the named one) into a
+#                         host whose registry and bucket are empty; then
+#                         make reconcile NAME=--all
+#
+# backup-verify and backup-restore are the only things here that read the private key. It is held in
 # memory on the host for the length of the check and removed whatever happens.
 
 - name: Operate the backup job
@@ -31,7 +36,7 @@
     - name: Check the action
       ansible.builtin.assert:
         that:
-          - backup_action in ['status', 'run', 'dry-run', 'verify']
+          - backup_action in ['status', 'run', 'dry-run', 'verify', 'restore']
           - backup_verify_source in ['drive', 'dry-run']
 
     - name: Run the backup job
@@ -47,8 +52,18 @@
       when: backup_action in ['run', 'dry-run']
 
     # --- verify --------------------------------------------------------------
-    - name: Verify the newest archive
-      when: backup_action == 'verify'
+    # A restore names its host twice, like every other step here that cannot be
+    # taken back: once as the play's target, once typed.
+    - name: Require the host's name to restore into it
+      ansible.builtin.assert:
+        that: backup_restore_confirm | default('') == inventory_hostname
+        fail_msg: >-
+          A restore replaces this host's registry and state bucket. Pass
+          CONFIRM={{ inventory_hostname }} to go ahead.
+      when: backup_action == 'restore'
+
+    - name: Read an archive back, or restore it
+      when: backup_action in ['verify', 'restore']
       block:
         - name: Fail without the private key
           ansible.builtin.assert:
@@ -80,10 +95,18 @@
             cmd: "{{ backup_verify_script }} {{ backup_verify_source }} {{ backup_verify_dir.path }}/identity"
           register: backup_verify
           changed_when: false
+          when: backup_action == 'verify'
 
-        - name: Show what was verified
+        - name: Restore the archive into the empty registry and bucket
+          ansible.builtin.command:
+            cmd: "{{ backup_restore_script }} {{ backup_verify_dir.path }}/identity {{ backup_restore_archive | default('') }}"
+          register: backup_restore
+          changed_when: true
+          when: backup_action == 'restore'
+
+        - name: Show what was done
           ansible.builtin.debug:
-            msg: "{{ backup_verify.stdout_lines }}"
+            msg: "{{ (backup_restore if backup_action == 'restore' else backup_verify).stdout_lines }}"
       always:
         - name: Remove the key and the decrypted copy
           ansible.builtin.file:

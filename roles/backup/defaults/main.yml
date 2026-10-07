@@ -51,6 +51,8 @@ backup_status_grace_hours: 2
 #
 # The API's database: a pg_dump taken inside its container.
 backup_db_container: deevnet-api-db
+# Stopped while a restore replaces its database.
+backup_api_service: deevnet-api.service
 backup_db_name: deevnet_api
 backup_db_user: deevnet_api
 
@@ -70,6 +72,7 @@ backup_state_ca_mount: /certs/CAs
 # --- Paths on the host ---------------------------------------------------------
 backup_script: /usr/local/sbin/deevnet-backup
 backup_verify_script: /usr/local/sbin/deevnet-backup-verify
+backup_restore_script: /usr/local/sbin/deevnet-backup-restore
 backup_config: /etc/deevnet/backup.conf
 # Where the last good run is recorded, for backup-status.
 backup_state_dir: /var/lib/deevnet-backup

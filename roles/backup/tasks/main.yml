@@ -40,7 +40,7 @@
     group: root
     mode: "0600"
 
-- name: Install the backup and verify scripts
+- name: Install the backup, verify and restore scripts
   ansible.builtin.copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
@@ -50,6 +50,7 @@
   loop:
     - { src: deevnet-backup.sh, dest: "{{ backup_script }}" }
     - { src: deevnet-backup-verify.sh, dest: "{{ backup_verify_script }}" }
+    - { src: deevnet-backup-restore.sh, dest: "{{ backup_restore_script }}" }
 
 - name: Install the backup service and timer
   ansible.builtin.template:
