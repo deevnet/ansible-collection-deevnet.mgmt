@@ -1,0 +1,128 @@
+---
+# Operate the backup job (CHG-0039). The role installs it (site.yml --tags backup);
+# this runs it, checks it, and proves an archive can be read back.
+#
+#   make backup-status    the last good backup, and fail if it is too old
+#   make backup-now       run the job now, then report
+#   make backup-dry-run   build and encrypt an archive with no drive attached
+#   make backup-verify    decrypt the newest archive with the key from the vault
+#                         and check it against its own manifest (SOURCE=dry-run
+#                         reads the dry run's archive instead of the drive's)
+#
+# backup-verify is the only thing here that reads the private key. It is held in
+# memory on the host for the length of the check and removed whatever happens.
+
+- name: Operate the backup job
+  hosts: backup
+  become: true
+  gather_facts: false
+  vars:
+    backup_action: status
+    backup_verify_source: drive
+  tasks:
+    - name: Load the backup role's defaults
+      ansible.builtin.include_role:
+        name: backup
+        defaults_from: main
+        tasks_from: noop
+        public: true
+
+    - name: Check the action
+      ansible.builtin.assert:
+        that:
+          - backup_action in ['status', 'run', 'dry-run', 'verify']
+          - backup_verify_source in ['drive', 'dry-run']
+
+    - name: Run the backup job
+      ansible.builtin.command:
+        cmd: "{{ backup_script }}{{ ' --dry-run' if backup_action == 'dry-run' else '' }}"
+      register: backup_run
+      changed_when: true
+      when: backup_action in ['run', 'dry-run']
+
+    - name: Show what the run reported
+      ansible.builtin.debug:
+        msg: "{{ backup_run.stdout_lines }}"
+      when: backup_action in ['run', 'dry-run']
+
+    # --- verify --------------------------------------------------------------
+    - name: Verify the newest archive
+      when: backup_action == 'verify'
+      block:
+        - name: Fail without the private key
+          ansible.builtin.assert:
+            that: backup_age_identity is match('^AGE-SECRET-KEY-1[0-9A-Z]+$')
+            fail_msg: >-
+              vault_backup_age_identity is empty or not an age private key. The
+              inventory must be decrypted, and the key present in
+              group_vars/backup/vault.yml.
+          no_log: true
+
+        - name: Make a working directory in memory
+          ansible.builtin.tempfile:
+            state: directory
+            path: /run
+            prefix: deevnet-backup-verify.
+          register: backup_verify_dir
+
+        - name: Place the private key there for the check
+          ansible.builtin.copy:
+            content: "{{ backup_age_identity }}\n"
+            dest: "{{ backup_verify_dir.path }}/identity"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Decrypt the newest archive and check it against its manifest
+          ansible.builtin.command:
+            cmd: "{{ backup_verify_script }} {{ backup_verify_source }} {{ backup_verify_dir.path }}/identity"
+          register: backup_verify
+          changed_when: false
+
+        - name: Show what was verified
+          ansible.builtin.debug:
+            msg: "{{ backup_verify.stdout_lines }}"
+      always:
+        - name: Remove the key and the decrypted copy
+          ansible.builtin.file:
+            path: "{{ backup_verify_dir.path }}"
+            state: absent
+          when: backup_verify_dir.path is defined
+
+    # --- status --------------------------------------------------------------
+    - name: Read the last good backup
+      ansible.builtin.slurp:
+        src: "{{ backup_state_dir }}/last-success"
+      register: backup_last
+      failed_when: false
+      when: backup_action in ['status', 'run']
+
+    - name: Read the job's last result
+      ansible.builtin.command:
+        cmd: systemctl show deevnet-backup.service deevnet-backup.timer --property=Id,Result,ActiveState,NextElapseUSecRealtime
+      register: backup_unit
+      changed_when: false
+      when: backup_action in ['status', 'run']
+
+    - name: Report, and fail when the newest good backup is too old
+      vars:
+        _last: >-
+          {{ dict((backup_last.content | default('') | b64decode).split('\n')
+                  | select('match', '.+=.*') | map('split', '=', 1)) }}
+        _age_hours: >-
+          {{ ((now(utc=true).timestamp() - (_last.epoch | default(0) | int)) / 3600) | round(1) }}
+      ansible.builtin.assert:
+        that:
+          - _last.epoch is defined
+          - _age_hours | float <= backup_max_age_hours | float
+        fail_msg: >-
+          {{ 'No backup has ever succeeded on this host.' if _last.epoch is not defined
+             else 'The newest good backup is ' ~ _age_hours ~ ' hours old (' ~ _last.archive ~ '); the limit is ' ~ backup_max_age_hours ~ '.' }}
+          Is the drive attached? `journalctl -u deevnet-backup.service` on the host
+          gives the reason, on the line that starts "deevnet-backup: FAILED". Units: {{ backup_unit.stdout_lines | join(' ') }}
+        success_msg: >-
+          Newest good backup: {{ _last.archive | default('') }}, {{ _age_hours }} hours old,
+          {{ _last.bytes | default('?') }} bytes, {{ _last.kept | default('?') }} archives on drive
+          {{ _last.drive_uuid | default('?') }}.
+      when: backup_action in ['status', 'run']

@@ -8,7 +8,8 @@ This is the `deevnet.mgmt` Ansible collection for management plane services. It 
 
 Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `powerdns` (ADR-0004), `minio` (ADR-0007),
 `deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013),
-`vernemq` (ADR-0012), `victorialogs` (ADR-0022, ADR-0027), `grafana` (ADR-0024; tenant dashboards, CHG-0024).
+`vernemq` (ADR-0012), `victorialogs` (ADR-0022, ADR-0027), `grafana` (ADR-0024; tenant dashboards, CHG-0024),
+`backup` (CHG-0039; a recovery shortcut under ADR-0033, not the recovery path).
 
 ## Rules that are easy to get wrong
 
@@ -53,6 +54,11 @@ Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `
   Issuing CAs are signed offline; `scripts/pki/` moves their requests and certificates.
 - **The Deevnet API holds only its AppRole.** Its backend credentials are written
   into OpenBao KV by the `deevnet_api` role, never into its env file.
+- **The backup host never holds the backup's private key.** The `backup` role encrypts to
+  `backup_age_recipient`, a public key; `vault_backup_age_identity` is read only by
+  `make backup-verify` and a restore, in memory. The drive's filesystem is plain on purpose:
+  what is written to it is already ciphertext. Preparing a drive erases it, so it is a
+  separate playbook that asks for the serial, never part of the role.
 - **TSIG secrets are imported from the vault, not generated on the server.**
   A generated key would not survive a rebuild, and every tenant's Terraform
   would need re-issuing.

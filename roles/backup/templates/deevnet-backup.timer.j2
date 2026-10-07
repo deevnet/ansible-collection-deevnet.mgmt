@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nightly Deevnet backup (CHG-0039)
+
+[Timer]
+OnCalendar={{ backup_on_calendar }}
+Persistent={{ backup_persistent | bool | ternary('true', 'false') }}
+
+[Install]
+WantedBy=timers.target

@@ -77,6 +77,17 @@
   roles:
     - deevnet_api
 
+# Nightly encrypted backup of the API's database and the state bucket to an
+# attached drive (CHG-0039). After both services, which it reads. The drive is
+# prepared separately (playbooks/backup-drive.yml); without one the job is
+# installed and fails each night until a drive is attached.
+- name: Configure the backup job
+  hosts: backup
+  become: true
+  tags: [backup]
+  roles:
+    - backup
+
 # The site's Omada controller, in the network management VM (ADR-0013 §7).
 #
 # Intersected with management_plane so this role can only ever land on a

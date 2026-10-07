@@ -1,5 +1,6 @@
 .PHONY: help default deps deps-force build install-dev install-user rebuild apply list \
         vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reconcile \
+        backup-status backup-now backup-dry-run backup-verify backup-drive \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -55,6 +56,15 @@ help:
 "" \
 "  reconcile NAME=<name>|--all" \
 "      Re-ensure tenants through the API (repairs what it owns, Grafana data sources included)" \
+"" \
+"  backup-status | backup-now | backup-dry-run" \
+"      The last good backup (fails when too old) | run the job now | build an archive with no drive" \
+"" \
+"  backup-verify [SOURCE=drive|dry-run]" \
+"      Decrypt the newest archive with the key from the vault and check it against its manifest" \
+"" \
+"  backup-drive SERIAL=<serial>" \
+"      ERASE the USB drive with that serial and make it a backup drive (asks for the serial again)" \
 "" \
 "  unadmit NAME=<name>" \
 "      Revoke an admission that was never used (its Wi-Fi key stops working)" \
@@ -146,6 +156,30 @@ unadmit:
 # the CA its Grafana data sources carry has changed (CHG-0031).
 reconcile:
 	@./scripts/tenant-reconcile.sh $(NAME)
+
+# Backup to the attached drive (CHG-0039). The role installs the nightly job
+# (site.yml --tags backup); these run it, check it and read an archive back.
+BACKUP_PLAY = ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook playbooks/backup.yml
+
+backup-status: install-dev
+	@$(BACKUP_PLAY) -e backup_action=status
+
+backup-now: install-dev
+	@$(BACKUP_PLAY) -e backup_action=run
+
+backup-dry-run: install-dev
+	@$(BACKUP_PLAY) -e backup_action=dry-run
+
+backup-verify: install-dev
+	@$(BACKUP_PLAY) -e backup_action=verify -e backup_verify_source=$(or $(SOURCE),drive)
+
+# Erases the drive named by SERIAL and makes it a backup drive; asks for the
+# serial to be typed back.
+backup-drive: install-dev
+	@test -n "$(SERIAL)" || { echo "usage: make backup-drive SERIAL=<serial>"; exit 2; }
+	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook playbooks/backup-drive.yml -e backup_drive_serial=$(SERIAL)
 
 # A new password for a tenant's Wi-Fi key; KEY defaults to the DVNTM-TD key
 # the tenant was admitted with (runbook: Tenant Admission).
