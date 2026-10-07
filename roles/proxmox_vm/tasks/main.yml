@@ -111,6 +111,8 @@
     # Omitted entirely when undeclared, so an unordered host renders exactly the
     # config it always did.
     startup: "{{ proxmox_vm_startup | default(omit, true) }}"
+    # Likewise: only a host that declares it overrides Proxmox's default.
+    ciupgrade: "{{ omit if proxmox_vm_ciupgrade is none else (proxmox_vm_ciupgrade | bool) }}"
     # The declared MAC is the whole point: the Kea reservation and the A record
     # key off it, so the address survives a rebuild.
     net:
