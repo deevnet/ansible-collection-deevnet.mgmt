@@ -1,18 +1,18 @@
 # {{ ansible_managed }}
-# Tenant downloads (CHG-0025): static, read-only, HTTPS only. The only server
-# in this container - the image's default port-80 server is not mounted.
+# Tenant downloads (CHG-0025): static and read-only, on loopback. Tenants reach
+# it over HTTPS through the host's service proxy (ADR-0036). The only server in
+# this container - the image's default port-80 server is not mounted.
 server {
-    listen {{ tenant_downloads_port }} ssl;
+    listen {{ tenant_downloads_listen_address }}:{{ tenant_downloads_port }};
     server_name _;
-
-    ssl_certificate     /tls/cert.pem;
-    ssl_certificate_key /tls/key.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
 
     root /content;
     autoindex on;
     autoindex_exact_size off;
     server_tokens off;
+    # Relative redirects: this server does not know the name, scheme or port
+    # the tenant dialed at the proxy, and must not put its own in a Location.
+    absolute_redirect off;
     add_header X-Content-Type-Options nosniff always;
 
     # Read-only: anything but GET and HEAD is refused. (limit_except is only
@@ -26,7 +26,7 @@ server {
     # guide before trusting anything it signs.
 {% for root in tenant_downloads_roots %}
     location = /{{ root | basename }} {
-        alias /tls/public/{{ root | basename }};
+        alias /roots/{{ root | basename }};
         default_type application/x-pem-file;
     }
 {% endfor %}

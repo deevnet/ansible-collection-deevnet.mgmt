@@ -29,7 +29,7 @@
     quiet: true
   no_log: true
 
-# --- Directories, TLS and the plugin ---------------------------------------------
+# --- Directories and the plugin -------------------------------------------------
 
 - name: Create Grafana's root directory
   ansible.builtin.file:
@@ -51,8 +51,13 @@
     mode: "0700"
   become: true
 
-- name: Issue Grafana's TLS material from the site CA
-  ansible.builtin.import_tasks: tls.yml
+# Grafana served TLS itself until CHG-0046. The service proxy holds the host's
+# certificate now, and the old key is not left on the disk for nothing to read.
+- name: Remove Grafana's retired certificate and key
+  ansible.builtin.file:
+    path: "{{ grafana_retired_tls_dir }}"
+    state: absent
+  become: true
 
 - name: Install the VictoriaLogs data source plugin
   ansible.builtin.import_tasks: plugin.yml
@@ -73,20 +78,18 @@
       - "{{ grafana_data_dir }}:/var/lib/grafana:Z"
       # Read-only: the container loads this code and cannot change it.
       - "{{ grafana_plugins_dir }}:/var/lib/grafana/plugins:ro,Z"
-      - "{{ grafana_tls_dir }}:/tls:ro,Z"
     podman_service_stop_timeout: 60
-    podman_service_firewall_ports:
-      - "{{ grafana_port }}/tcp"
+    # No podman_service_firewall_ports: Grafana listens on loopback only. The
+    # service proxy opens what tenants reach.
 
-- name: Restart now if the certificate or the plugin changed
+- name: Restart now if the plugin changed
   ansible.builtin.meta: flush_handlers
 
 # --- Readiness ---------------------------------------------------------------------
 
 - name: Wait for Grafana to report healthy
   ansible.builtin.uri:
-    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/health"
-    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
+    url: "{{ grafana_local_url }}/api/health"
   register: grafana_health
   retries: 45
   delay: 2
@@ -99,8 +102,7 @@
 # reset only when it fails.
 - name: Check the server admin's password works
   ansible.builtin.uri:
-    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/user"
-    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
+    url: "{{ grafana_local_url }}/api/user"
     url_username: "{{ grafana_admin_user }}"
     url_password: "{{ grafana_admin_password }}"
     force_basic_auth: true
@@ -119,15 +121,13 @@
 
 - name: Confirm Grafana refuses a request with no credentials
   ansible.builtin.uri:
-    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/org"
-    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
+    url: "{{ grafana_local_url }}/api/org"
     status_code: [401]
   become: true
 
 - name: Confirm the VictoriaLogs plugin is loaded and signed
   ansible.builtin.uri:
-    url: "https://{{ grafana_tls_ip }}:{{ grafana_port }}/api/plugins/{{ grafana_plugin_id }}/settings"
-    ca_path: "{{ grafana_tls_dir }}/{{ site_root_ca_name }}"
+    url: "{{ grafana_local_url }}/api/plugins/{{ grafana_plugin_id }}/settings"
     url_username: "{{ grafana_admin_user }}"
     url_password: "{{ grafana_admin_password }}"
     force_basic_auth: true
@@ -142,6 +142,6 @@
 - name: Report what Grafana is serving
   ansible.builtin.debug:
     msg:
-      - "Grafana {{ grafana_version }}: https://{{ grafana_service_name }}:{{ grafana_port }} ({{ grafana_tls_common_name }}, {{ grafana_tls_ip }})"
+      - "Grafana {{ grafana_version }}: {{ grafana_local_url }}, served as https://{{ grafana_service_name }} by the service proxy"
       - "Plugin {{ grafana_plugin_id }} {{ grafana_plugin_version }}, signature valid"
       - "Tenants' organisations are the Deevnet API's: reconcile a tenant to (re)create its own."

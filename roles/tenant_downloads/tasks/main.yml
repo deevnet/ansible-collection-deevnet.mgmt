@@ -1,6 +1,7 @@
 ---
 # Tenant downloads on the observability store (CHG-0025). Static files the
-# Builder curates, pushed here and served read-only over HTTPS to DVNTM-TD.
+# Builder curates, pushed here and served read-only to DVNTM-TD through the
+# host's service proxy (ADR-0036).
 
 - name: Refuse to put the downloads on the OS disk
   ansible.builtin.assert:
@@ -46,8 +47,13 @@
     - "{{ tenant_downloads_conf_dir }}"
   become: true
 
-- name: Issue the downloads server's TLS material from the site CA
-  ansible.builtin.import_tasks: tls.yml
+# This server held its own certificate until CHG-0046. The service proxy holds
+# the host's now, and the old key is not left on the disk for nothing to read.
+- name: Remove the downloads server's retired certificate and key
+  ansible.builtin.file:
+    path: "{{ tenant_downloads_retired_tls_dir }}"
+    state: absent
+  become: true
 
 # Mirrors the Builder's tree exactly: a file removed there is removed here, so
 # nothing stale stays downloadable. Root-owned and world-readable; the
@@ -63,12 +69,12 @@
       - "--chown=root:root"
   become: true
 
-# Each root on its own, under its own name, for tenants to fetch: the CA file
-# beside the certificate is a bundle during a re-root, and a tenant must be
-# able to check one root's fingerprint.
+# Each root on its own, under its own name, for tenants to fetch: during a
+# re-root there are two, and a tenant must be able to check one root's
+# fingerprint.
 - name: Make the directory for the served roots
   ansible.builtin.file:
-    path: "{{ tenant_downloads_tls_dir }}/public"
+    path: "{{ tenant_downloads_roots_dir }}"
     state: directory
     owner: root
     group: root
@@ -78,7 +84,7 @@
 - name: Place each root to serve
   ansible.builtin.copy:
     src: "{{ item }}"
-    dest: "{{ tenant_downloads_tls_dir }}/public/{{ item | basename }}"
+    dest: "{{ tenant_downloads_roots_dir }}/{{ item | basename }}"
     owner: root
     group: root
     mode: "0644"
@@ -88,25 +94,25 @@
 
 - name: Remove retired roots
   ansible.builtin.file:
-    path: "{{ tenant_downloads_tls_dir }}/public/{{ item }}"
+    path: "{{ tenant_downloads_roots_dir }}/{{ item }}"
     state: absent
   loop: "{{ site_root_ca_retired | default([]) }}"
   become: true
   notify: restart tenant downloads
 
-# The tls directory is mounted :Z, whose label podman applies only when it
+# The roots directory is mounted :Z, whose label podman applies only when it
 # creates the container; files added later must be given it (as site_cert does).
 - name: Give the served roots their directory's SELinux label
   ansible.builtin.shell:
     cmd: |
       selinuxenabled 2>/dev/null || exit 0
-      for f in public public/*; do
+      for f in *; do
         [ -e "$f" ] || continue
         if [ "$(stat -c %C "$f")" != "$(stat -c %C .)" ]; then
           chcon --reference=. "$f" && echo "relabeled $f"
         fi
       done
-    chdir: "{{ tenant_downloads_tls_dir }}"
+    chdir: "{{ tenant_downloads_roots_dir }}"
   register: tenant_downloads_relabel
   changed_when: tenant_downloads_relabel.stdout | length > 0
   become: true
@@ -136,19 +142,16 @@
       # The DIRECTORY replaces the image's conf.d, so its default server on
       # port 80 is never loaded.
       - "{{ tenant_downloads_conf_dir }}:/etc/nginx/conf.d:ro,Z"
-      - "{{ tenant_downloads_tls_dir }}:/tls:ro,Z"
-    podman_service_firewall_ports:
-      - "{{ tenant_downloads_port }}/tcp"
+      - "{{ tenant_downloads_roots_dir }}:/roots:ro,Z"
+    # No podman_service_firewall_ports: the server listens on loopback only.
+    # The service proxy opens what tenants reach.
 
-- name: Restart now if the certificate or configuration changed
+- name: Restart now if the roots or the configuration changed
   ansible.builtin.meta: flush_handlers
 
-- name: Wait for the index to answer over verified TLS
+- name: Wait for the index to answer
   ansible.builtin.uri:
-    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/"
-    ca_path: "{{ tenant_downloads_tls_dir }}/{{ site_root_ca_name }}"
-    validate_certs: true
-    headers: {Host: "{{ tenant_downloads_tls_common_name }}"}
+    url: "{{ tenant_downloads_local_url }}/"
   register: tenant_downloads_index
   retries: 20
   delay: 2
@@ -157,10 +160,9 @@
 
 - name: Confirm a write is refused
   ansible.builtin.uri:
-    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/probe"
+    url: "{{ tenant_downloads_local_url }}/probe"
     method: PUT
     body: "x"
-    ca_path: "{{ tenant_downloads_tls_dir }}/{{ site_root_ca_name }}"
     status_code: [403, 405]
   become: true
 
@@ -168,9 +170,7 @@
 # own name.
 - name: Fetch each root as a tenant would
   ansible.builtin.uri:
-    url: "https://{{ tenant_downloads_tls_ip }}:{{ tenant_downloads_port }}/{{ item | basename }}"
-    ca_path: "{{ tenant_downloads_tls_dir }}/{{ site_root_ca_name }}"
-    headers: {Host: "{{ tenant_downloads_tls_common_name }}"}
+    url: "{{ tenant_downloads_local_url }}/{{ item | basename }}"
     return_content: true
   loop: "{{ tenant_downloads_roots }}"
   register: tenant_downloads_served_root
@@ -187,4 +187,4 @@
 
 - name: Report what is served
   ansible.builtin.debug:
-    msg: "Tenant downloads: https://{{ tenant_downloads_tls_common_name }}:{{ tenant_downloads_port }}/ ({{ tenant_downloads_tls_ip }})"
+    msg: "Tenant downloads: {{ tenant_downloads_local_url }}, served as https://{{ tenant_downloads_service_name }}/ by the service proxy"

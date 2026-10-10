@@ -1,0 +1,63 @@
+# {{ ansible_managed }}
+# The service proxy (ADR-0036, CHG-0046). Included inside the image's http{}
+# block; the image's own conf.d, and its port-80 server, are not mounted.
+
+server_tokens off;
+
+ssl_certificate     /tls/cert.pem;
+ssl_certificate_key /tls/key.pem;
+ssl_protocols       TLSv1.2 TLSv1.3;
+
+# A pass-through: nothing is spooled to this host's disk in either direction,
+# and each service keeps its own limit on what it accepts.
+client_max_body_size    0;
+proxy_request_buffering off;
+proxy_buffering         off;
+proxy_http_version      1.1;
+proxy_read_timeout      {{ service_proxy_read_timeout }};
+proxy_send_timeout      {{ service_proxy_read_timeout }};
+
+# Upgrade is passed on when the client asks for it (Grafana's live channel).
+map $http_upgrade $service_proxy_connection {
+    default upgrade;
+    ''      close;
+}
+
+# A name this host does not serve gets no handshake at all. The servers below
+# are therefore the whole list of what answers on {{ service_proxy_port }} here.
+server {
+    listen {{ service_proxy_listen_address }}:{{ service_proxy_port }} ssl default_server;
+    ssl_reject_handshake on;
+}
+{% for vhost in service_proxy_vhosts %}
+
+server {
+    listen {{ service_proxy_listen_address }}:{{ service_proxy_port }} ssl;
+{% if vhost.legacy_port is defined %}
+    # Where this service used to listen. The only server on this port, so it
+    # answers by host name and by address, as the service itself did.
+    listen {{ service_proxy_listen_address }}:{{ vhost.legacy_port }} ssl;
+{% endif %}
+    server_name {{ vhost.name }}.{{ service_proxy_domain }};
+
+    location / {
+        proxy_pass {{ vhost.upstream }};
+{% if vhost.upstream is match('https://') %}
+        proxy_ssl_verify              on;
+        proxy_ssl_verify_depth        3;
+        proxy_ssl_trusted_certificate /tls/{{ site_root_ca_name }};
+        proxy_ssl_server_name         on;
+        proxy_ssl_name                {{ vhost.name }}.{{ service_proxy_domain }};
+{% endif %}
+        # The name and port the client dialed, unchanged: the state store
+        # checks a signature over it and Grafana compares it with Origin.
+        proxy_set_header Host              $http_host;
+        # Set, never appended to: what the caller claims about itself is dropped.
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $service_proxy_connection;
+    }
+}
+{% endfor %}

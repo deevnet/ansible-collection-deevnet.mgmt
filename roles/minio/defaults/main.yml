@@ -25,7 +25,11 @@ minio_policy_dir: "{{ minio_data_root }}/policies"
 
 minio_api_port: 9000
 minio_console_port: 9001
+# Where both ports are published. A site whose provisioning VM runs the service
+# proxy (ADR-0036) sets 127.0.0.1: the proxy is then the only way to the API
+# port, and the console is reachable from this host alone.
 minio_listen_address: "0.0.0.0"
+minio_loopback_only: "{{ minio_listen_address is match('127[.]') }}"
 
 # The bucket every stack's state lives in. One bucket, prefixed per consumer,
 # so a single policy shape covers both the fabric and every tenant.
@@ -58,10 +62,13 @@ minio_api_admin_actions:
   - admin:ListUserPolicies
 
 # --- TLS (CHG-0030) ------------------------------------------------------------
-# Off by default so the role stays usable where there is no site PKI; a site
-# turns it on in the tenant_state group vars. On, the API port serves HTTPS
-# only, with a certificate from the Substrate CA (ADR-0031 §4), and every client -
-# tenants' Terraform, the Deevnet API, this role's own checks - verifies it.
+# Off by default so the role stays usable where there is no site PKI. On, the
+# API port serves HTTPS only, with a certificate from the Substrate CA
+# (ADR-0031 §4), and every client verifies it.
+#
+# A site that publishes on loopback behind the service proxy (ADR-0036) leaves
+# it off: the proxy holds the certificate tenants verify, and this role then
+# removes a certificate and key left from when MinIO served TLS itself.
 minio_tls_enabled: false
 minio_tls_dir: "{{ minio_data_root }}/certs"
 minio_scheme: "{{ 'https' if minio_tls_enabled | bool else 'http' }}"

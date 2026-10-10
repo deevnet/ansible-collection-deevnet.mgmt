@@ -9,7 +9,8 @@ This is the `deevnet.mgmt` Ansible collection for management plane services. It 
 Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `powerdns` (ADR-0004), `minio` (ADR-0007),
 `deevnet_api` (ADR-0012, ADR-0015), `openbao` (ADR-0016), `omada_controller` (ADR-0009, ADR-0013),
 `vernemq` (ADR-0012), `victorialogs` (ADR-0022, ADR-0027), `grafana` (ADR-0024; tenant dashboards, CHG-0024),
-`backup` (CHG-0039; a recovery shortcut under ADR-0033, not the recovery path).
+`backup` (CHG-0039; a recovery shortcut under ADR-0033, not the recovery path),
+`service_proxy` (ADR-0036; HTTPS on 443 for a service VM's tenant-facing services, CHG-0046).
 
 ## Rules that are easy to get wrong
 
@@ -17,6 +18,13 @@ Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `
   a wiped database is repaired by reconciling tenants. Keep `GF_USERS_AUTO_ASSIGN_ORG` on: Grafana 13
   ignores the organisation the API names on user create when it is off.
 
+- **Tenant-facing HTTP services listen on loopback; `service_proxy` is their only listener** (ADR-0036).
+  One proxy per service VM, on the host's segment address, routing by name to `127.0.0.1`. It holds
+  the host's one server certificate; Grafana, vmauth, the tenant downloads and MinIO hold none. A new
+  service on such a host is a loopback listener, a DNS alias in the host's `cnames`, and an entry in
+  its `service_proxy_vhosts`: never a new port opened to the zone. The proxy's play runs last in
+  `site.yml`, after every service it fronts. It routes only: each service still authenticates its
+  own callers.
 - **No Terraform here.** Management-plane workloads are Ansible-only
   (`extended-services.md` §5). That is not an oversight to be corrected.
 - **Addressing follows the segment.** A domain VM on management is addressed by

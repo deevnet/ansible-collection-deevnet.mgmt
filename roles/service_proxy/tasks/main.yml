@@ -1,0 +1,175 @@
+---
+# The service proxy on a service VM (ADR-0036, CHG-0046). Runs AFTER the roles
+# of the services it fronts: each of those has to be on loopback before this
+# can bind the port it used to hold.
+
+# --- Refuse to start in a state that would be wrong ----------------------------
+
+- name: Refuse to run with nothing to serve or nowhere to listen
+  ansible.builtin.assert:
+    that:
+      - service_proxy_vhosts | length > 0
+      - service_proxy_listen_address | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} is in service_proxy but declares no
+      service_proxy_vhosts, or has no env.interfaces.eth0.ip to listen on.
+    quiet: true
+
+# A vhost whose name is not an alias of this host could not be resolved to it,
+# and the certificate, issued from the same aliases, would not carry it.
+- name: Refuse a vhost that is not one of this host's DNS aliases
+  ansible.builtin.assert:
+    that:
+      - (item.name ~ '.' ~ service_proxy_domain) in service_proxy_tls_alt_names
+      - item.upstream is match('https?://127[.]0[.]0[.]1:[0-9]+$')
+    fail_msg: >-
+      service_proxy vhost '{{ item.name }}': {{ item.name }}.{{ service_proxy_domain }}
+      must be in this host's env.interfaces.<if>.dns.cnames, and its upstream
+      must be http(s)://127.0.0.1:<port> with no path.
+    quiet: true
+  loop: "{{ service_proxy_vhosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# --- Configuration and certificate ----------------------------------------------
+
+- name: Create the proxy's directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ service_proxy_root }}"
+    - "{{ service_proxy_conf_dir }}"
+  become: true
+
+- name: Issue the service proxy's TLS material from the site CA
+  ansible.builtin.import_tasks: tls.yml
+
+- name: Write the proxy's configuration
+  ansible.builtin.template:
+    src: service-proxy.conf.j2
+    dest: "{{ service_proxy_conf_dir }}/service-proxy.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart service proxy
+
+# --- The container ---------------------------------------------------------------
+
+# Host networking: the services it forwards to are on this host's loopback, and
+# CHG-0016 measured that firewalld does not filter a published podman port.
+# nginx's master process is root in the container, so 443 needs no capability.
+- name: Run the service proxy
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: "{{ service_proxy_container_name }}"
+    podman_service_description: "Service proxy, HTTPS on {{ service_proxy_port }} for this host's services (ADR-0036)"
+    podman_service_image: "{{ service_proxy_image }}"
+    podman_service_tarball: "{{ service_proxy_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      # The DIRECTORY replaces the image's conf.d, so its default server on
+      # port 80 is never loaded.
+      - "{{ service_proxy_conf_dir }}:/etc/nginx/conf.d:ro,Z"
+      - "{{ service_proxy_tls_dir }}:/tls:ro,Z"
+    podman_service_firewall_ports: >-
+      {{ [service_proxy_port ~ '/tcp']
+         + (service_proxy_vhosts | selectattr('legacy_port', 'defined')
+            | map(attribute='legacy_port') | map('string')
+            | map('regex_replace', '$', '/tcp') | list) }}
+
+- name: Restart now if the certificate or configuration changed
+  ansible.builtin.meta: flush_handlers
+
+# --- What it serves, checked as a client would -------------------------------------
+# curl rather than the uri module: the name has to be presented in the
+# handshake while the address is this host's, whether or not the site's DNS has
+# the alias yet.
+
+# Any answer from the service proves the route: each one answers / differently
+# (a page, a redirect, a refusal). No answer, or the proxy's own 502/504, does not.
+- name: Confirm each service answers by name on {{ service_proxy_port }}
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --max-time
+      - "10"
+      - --cacert
+      - "{{ service_proxy_tls_dir }}/{{ site_root_ca_name }}"
+      - --resolve
+      - "{{ item.name }}.{{ service_proxy_domain }}:{{ service_proxy_port }}:{{ service_proxy_listen_address }}"
+      - "https://{{ item.name }}.{{ service_proxy_domain }}:{{ service_proxy_port }}/"
+  register: service_proxy_probe
+  changed_when: false
+  retries: 20
+  delay: 3
+  until:
+    - service_proxy_probe.rc == 0
+    - service_proxy_probe.stdout not in ['000', '502', '503', '504']
+  loop: "{{ service_proxy_vhosts }}"
+  loop_control:
+    label: "{{ item.name }}.{{ service_proxy_domain }}"
+  become: true
+
+- name: Confirm each legacy port still answers by address
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --max-time
+      - "10"
+      - --cacert
+      - "{{ service_proxy_tls_dir }}/{{ site_root_ca_name }}"
+      - "https://{{ service_proxy_listen_address }}:{{ item.legacy_port }}/"
+  register: service_proxy_legacy_probe
+  changed_when: false
+  failed_when: >-
+    service_proxy_legacy_probe.rc != 0
+    or service_proxy_legacy_probe.stdout in ['000', '502', '503', '504']
+  loop: "{{ service_proxy_vhosts | selectattr('legacy_port', 'defined') | list }}"
+  loop_control:
+    label: "{{ service_proxy_listen_address }}:{{ item.legacy_port }}"
+  become: true
+
+# The server list is the statement of what this host offers on 443, so a name
+# outside it must get nothing - not another service's page.
+- name: Confirm a name this host does not serve is refused
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --output
+      - /dev/null
+      - --max-time
+      - "10"
+      - --cacert
+      - "{{ service_proxy_tls_dir }}/{{ site_root_ca_name }}"
+      - --resolve
+      - "not-served.{{ service_proxy_domain }}:{{ service_proxy_port }}:{{ service_proxy_listen_address }}"
+      - "https://not-served.{{ service_proxy_domain }}:{{ service_proxy_port }}/"
+  register: service_proxy_refusal
+  changed_when: false
+  failed_when: service_proxy_refusal.rc == 0
+  become: true
+
+- name: Report what the proxy serves
+  ansible.builtin.debug:
+    msg: >-
+      {{ service_proxy_vhosts | map(attribute='name')
+         | map('regex_replace', '^', 'https://')
+         | map('regex_replace', '$', '.' ~ service_proxy_domain)
+         | list }}

@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: service_proxy
+  description: One HTTPS listener on 443 for a service VM's tenant-facing services (ADR-0036)

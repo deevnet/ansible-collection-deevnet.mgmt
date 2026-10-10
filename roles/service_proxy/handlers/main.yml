@@ -1,0 +1,7 @@
+---
+# A reissued certificate and a changed server list are both read at start.
+- name: restart service proxy
+  ansible.builtin.systemd:
+    name: "{{ service_proxy_container_name }}"
+    state: restarted
+  become: true

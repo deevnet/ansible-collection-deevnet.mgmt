@@ -1,0 +1,62 @@
+---
+# service_proxy - one HTTPS listener on 443 for every tenant-facing service on
+# a service VM (ADR-0036, CHG-0046).
+#
+# Several services share one host and one address, and only one process can
+# own 443. This is that process: nginx terminates TLS, chooses the service by
+# the name the client asked for, and forwards to the service on loopback. One
+# per service VM, never one for the site, so a host's services still fail with
+# their own host and no other (ADR-0036 §1).
+#
+# It routes and nothing else. It holds no tenant list and makes no decision
+# about who is calling: every service behind it still confines its own callers
+# (ADR-0020 §5), and Authorization reaches it untouched.
+
+# The same image the tenant downloads use; one nginx to patch.
+service_proxy_image: "docker.io/library/nginx:1.29.1-alpine"
+service_proxy_tarball: "nginx/nginx-1.29.1-alpine.tar"
+service_proxy_container_name: service-proxy
+
+# Configuration and the key only: the proxy has no data, so nothing here is on
+# the data disk and a rebuild is this role run again.
+service_proxy_root: /etc/deevnet/service-proxy
+service_proxy_conf_dir: "{{ service_proxy_root }}/conf.d"
+service_proxy_tls_dir: "{{ service_proxy_root }}/tls"
+
+# The host's address on its segment, never 0.0.0.0: the services behind it
+# keep their own port numbers on 127.0.0.1, and a wildcard bind here would
+# collide with them on every legacy port.
+service_proxy_listen_address: "{{ env.interfaces.eth0.ip | default('') }}"
+service_proxy_port: 443
+
+service_proxy_domain: "{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+
+# What this host serves. Declared in inventory, per host:
+#
+#   service_proxy_vhosts:
+#     - name: grafana                      # grafana.<site>.<root>, an alias of this host
+#       upstream: http://127.0.0.1:3000    # http on loopback, or https (verified)
+#       legacy_port: 3000                  # optional: also answer where it used to listen
+#
+# `name` must be one of the host's DNS aliases (env.interfaces.<if>.dns.cnames):
+# the certificate is issued for those, and a vhost nobody can resolve or verify
+# is refused before anything is written.
+#
+# An https upstream is verified against the Deevnet Root CA under the vhost's
+# own name, so the service must hold a certificate for it.
+#
+# `legacy_port` keeps an address tenants already hold working. On that port the
+# vhost answers whatever name or address was dialed, as the service did.
+service_proxy_vhosts: []
+
+# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ------
+# The names come from the inventory, the same data the site's DNS is published
+# from (Certificates standard 3.1): the host, every alias, every address. A new
+# alias reaches the certificate on the next run with no edit here.
+service_proxy_tls_common_name: "{{ inventory_hostname }}.{{ service_proxy_domain }}"
+service_proxy_tls_alt_names: "{{ site_cert_dns_names | default([]) }}"
+service_proxy_tls_ips: "{{ site_cert_ip_sans | default([service_proxy_listen_address]) }}"
+service_proxy_tls_renew_before: 5184000
+
+# A dashboard's live channel and a log tail are long-lived and often quiet.
+service_proxy_read_timeout: 3600s

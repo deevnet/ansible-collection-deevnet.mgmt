@@ -56,11 +56,11 @@ log_bridge_client_id: "{{ vernemq_bridge_client_id | default('deevnet-log-bridge
 log_bridge_topic: "+/log/#"
 
 # --- The store ---------------------------------------------------------------
-# vmauth's HTTPS port on the observability store, by NAME here, because that is
-# what its certificate carries.
+# The log store's service name, served on 443 by the store host's service
+# proxy (ADR-0036, CHG-0046). By NAME, because that is what its certificate
+# carries.
 log_bridge_store_url: >-
-  {{ ('https://' ~ ((groups['observability_store'] | default([])) | first | default('')) ~ '.' ~
-      deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':' ~ (victorialogs_vmauth_port | default(8427)))
+  {{ ('https://logs.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
      if (groups['observability_store'] | default([])) | length > 0 else '' }}
 
 # ONE token for every tenant. It names a tenant per request in a header; vmauth
