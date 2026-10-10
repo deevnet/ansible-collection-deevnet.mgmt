@@ -4,12 +4,12 @@
 #
 # One organisation per tenant, created by the Deevnet API, not by this role:
 # the API issues each tenant its login and data sources the way it issues its
-# log tokens. This role runs the server, gives it TLS and the VictoriaLogs
-# plugin, and keeps the server admin's credentials in line with the vault.
+# log tokens. This role runs the server, gives it the VictoriaLogs plugin, and
+# keeps the server admin's credentials in line with the vault.
 #
-# Host networking, like the log store's containers: CHG-0016 measured that
-# firewalld does not filter a published podman port, and the listener here is
-# one tenants reach.
+# Host networking, like the log store's containers, and on loopback: tenants
+# reach it through the host's service proxy (ADR-0036), which holds the
+# certificate and listens on 443.
 
 grafana_version: "13.2.2"
 # grafana/grafana is the OSS edition; grafana/grafana-oss has no 13.x tags.
@@ -27,11 +27,15 @@ grafana_uid: 472
 grafana_data_root: /srv/grafana
 grafana_data_dir: "{{ grafana_data_root }}/data"
 grafana_plugins_dir: "{{ grafana_data_root }}/plugins"
-grafana_tls_dir: "{{ grafana_data_root }}/tls"
+# Where Grafana's own certificate and key were before CHG-0046. Removed by the
+# role: a key nothing reads is still a key.
+grafana_retired_tls_dir: "{{ grafana_data_root }}/tls"
 
-# 3000, Grafana's own port, rather than 443: the image runs as an unprivileged
-# uid, and binding below 1024 would need a capability granted to it.
+# LOOPBACK ONLY, plain HTTP, on Grafana's own port. The service proxy is the
+# only thing that reaches it, and the only listener for it tenants can reach.
+grafana_listen_address: 127.0.0.1
 grafana_port: 3000
+grafana_local_url: "http://{{ grafana_listen_address }}:{{ grafana_port }}"
 
 # --- The VictoriaLogs data source plugin ------------------------------------------
 # Mirrored by the Builder's artifacts role (fetched-artifacts); this VM has no
@@ -54,38 +58,30 @@ grafana_admin_password: "{{ vault_grafana_admin_password | default('') }}"
 # until the API re-ensures every tenant.
 grafana_secret_key: "{{ vault_grafana_secret_key | default('') }}"
 
-# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ----------
+# --- The name tenants use -----------------------------------------------------------
 
-# The name tenants are told to use (CHG-0045), an alias for this host in the
-# substrate's zone. The API hands it out as dashboard_url, so the certificate
-# has to be valid for it and not only for the host Grafana happens to run on.
-# The host's own name stays, so a probe by host works and an address a tenant
-# kept from before still verifies.
+# An alias for this host in the substrate's zone (CHG-0045), served on 443 by
+# the service proxy (CHG-0046). The API hands it out as dashboard_url.
 grafana_service_name: "grafana.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
-
-grafana_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
-grafana_tls_alt_names:
-  - "{{ grafana_service_name }}"
-grafana_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-grafana_tls_renew_before: 5184000
 
 # --- Server settings ---------------------------------------------------------------------
 # Every one is a decision of ADR-0024 §3 or a consequence of this VM having no
 # internet; see the comments beside each.
 grafana_env:
-  GF_SERVER_PROTOCOL: https
+  GF_SERVER_PROTOCOL: http
+  GF_SERVER_HTTP_ADDR: "{{ grafana_listen_address }}"
   GF_SERVER_HTTP_PORT: "{{ grafana_port }}"
   # What Grafana calls itself in the links it prints. GF_SERVER_ENFORCE_DOMAIN
-  # stays unset, so a request by host name is answered and not redirected.
+  # stays unset, so a request on the legacy port is answered and not
+  # redirected. https and no port: that is what the service proxy serves.
   GF_SERVER_DOMAIN: "{{ grafana_service_name }}"
-  GF_SERVER_ROOT_URL: "https://{{ grafana_service_name }}:{{ grafana_port }}/"
-  GF_SERVER_CERT_FILE: /tls/cert.pem
-  GF_SERVER_CERT_KEY: /tls/key.pem
+  GF_SERVER_ROOT_URL: "https://{{ grafana_service_name }}/"
   GF_SECURITY_ADMIN_USER: "{{ grafana_admin_user }}"
   # Read only when the database is first created. After that the role checks
   # the password works and resets it if the vault moved (tasks/main.yml).
   GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
   GF_SECURITY_SECRET_KEY: "{{ grafana_secret_key }}"
+  # Still true behind the proxy: the browser's connection is HTTPS.
   GF_SECURITY_COOKIE_SECURE: "true"
   GF_SECURITY_DISABLE_GRAVATAR: "true"
   # Nobody signs themselves up or makes an organisation: the API does both.

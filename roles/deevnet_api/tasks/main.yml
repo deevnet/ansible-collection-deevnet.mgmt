@@ -96,8 +96,10 @@
       } | combine(deevnet_api_tenant_env | default({})) }}
     podman_service_after:
       - "{{ deevnet_api_db_container_name }}.service"
-    podman_service_firewall_ports:
-      - "{{ deevnet_api_port }}/tcp"
+    # Nothing to open when the port is on loopback: the service proxy opens
+    # what tenants reach.
+    podman_service_firewall_ports: >-
+      {{ [] if deevnet_api_loopback_only | bool else [deevnet_api_port ~ '/tcp'] }}
 
 # The TLS material notifies a restart, and handlers would otherwise run after
 # the readiness wait below - so a reissued certificate leaves the container

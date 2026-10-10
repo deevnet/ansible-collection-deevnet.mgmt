@@ -3,8 +3,9 @@
 #
 # Two containers in the observability store VM: VictoriaLogs, which stores and
 # partitions by (AccountID, ProjectID), and vmauth in front of it, which is the
-# only thing any other host can reach. VictoriaLogs "doesn't perform per-tenant
-# authorization"; vmauth does, by mapping a bearer token to a partition.
+# only way to it. VictoriaLogs "doesn't perform per-tenant authorization";
+# vmauth does, by mapping a bearer token to a partition. Other hosts reach
+# vmauth over HTTPS through this host's service proxy (ADR-0036, CHG-0046).
 #
 # ADR-0027 (CHG-0019) made the store tenants-only: no syslog listener, and no
 # substrate ingest users. vmauth's token check is now the only way in.
@@ -32,7 +33,9 @@ victorialogs_vmauth_container_name: vmauth
 victorialogs_data_root: /srv/victorialogs
 victorialogs_data_dir: "{{ victorialogs_data_root }}/data"
 victorialogs_etc_dir: "{{ victorialogs_data_root }}/etc"
-victorialogs_tls_dir: "{{ victorialogs_data_root }}/tls"
+# Where vmauth's own certificate and key were before CHG-0046. Removed by the
+# role: a key nothing reads is still a key.
+victorialogs_retired_tls_dir: "{{ victorialogs_data_root }}/tls"
 
 # --- VictoriaLogs --------------------------------------------------------------
 # LOOPBACK ONLY. Its HTTP API writes and reads any partition for whoever names
@@ -59,13 +62,17 @@ victorialogs_vmauth_config_check_interval: 30s
 victorialogs_retired_syslog_port: 6514
 
 # --- vmauth --------------------------------------------------------------------
-# The public listener, TLS only. 8427 is vmauth's own port; 443 is left free
-# for Grafana (ADR-0024), which lands on this VM too.
+# The listener tenants' requests arrive on, LOOPBACK ONLY and plain HTTP: the
+# host's service proxy (ADR-0036) holds the certificate and is the only thing
+# that reaches it. vmauth still authenticates every request itself; the proxy
+# passes Authorization through and decides nothing.
+victorialogs_vmauth_listen_address: 127.0.0.1
 victorialogs_vmauth_port: 8427
+victorialogs_vmauth_local_url: "http://{{ victorialogs_vmauth_listen_address }}:{{ victorialogs_vmauth_port }}"
 
 # Internal routes - /metrics, /flags, /debug/pprof and /-/reload - on their own
-# LOOPBACK listener, off the public one (vmauth docs, "Security"; available
-# from v1.111.0). The public listener is the one tenants will reach.
+# LOOPBACK listener, off the one above (vmauth docs, "Security"; available
+# from v1.111.0), so the service proxy cannot be asked for them.
 victorialogs_vmauth_internal_listen: "127.0.0.1:8426"
 
 # Where vmauth sends everything. Loopback, because of host networking.
@@ -84,16 +91,6 @@ victorialogs_vmauth_operator_read_token: "{{ vault_victorialogs_operator_read_to
 # (ADR-0022, Q1). Only the substrate partition exists in CHG-0018.
 victorialogs_vmauth_operator_partitions:
   - {account: 0, project: 0}
-
-# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ------
-
-# The name and the address: shippers dial the name, probes and the network
-# devices use the address.
-victorialogs_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
-victorialogs_tls_alt_names: []
-victorialogs_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-# Reissue when fewer than this many seconds remain (60 days).
-victorialogs_tls_renew_before: 5184000
 
 # The zone the syslog rich rules go in: eth0's zone on this VM.
 victorialogs_firewalld_zone: public

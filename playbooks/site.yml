@@ -157,3 +157,13 @@
   roles:
     - tenant_downloads
 
+# The service proxy (ADR-0036, CHG-0046): HTTPS on 443 for every tenant-facing
+# service on a service VM, by name. LAST, after every service it fronts: each
+# of those moves to loopback in its own play above, and the proxy cannot bind
+# a legacy port until the service has let go of it.
+- name: Configure the service proxy
+  hosts: service_proxy
+  become: true
+  tags: [service-proxy]
+  roles:
+    - service_proxy

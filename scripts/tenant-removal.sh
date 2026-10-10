@@ -26,11 +26,14 @@ confirm() {
   [[ "$answer" == "$name" ]] || die "not confirmed; nothing was changed"
 }
 
-# Runs inside the MinIO container on the provisioning VM.
+# Runs inside the MinIO container on the provisioning VM. Plain HTTP on the
+# container's own loopback where the service proxy holds the certificate
+# (ADR-0036), HTTPS where MinIO still serves TLS itself.
 minio() {
   ssh -o BatchMode=yes "$API_HOST" "sudo podman exec minio sh -c '
     export MC_CONFIG_DIR=/tmp/mc-tenant-removal
-    mc alias set local https://127.0.0.1:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" --insecure >/dev/null &&
+    { mc alias set local http://127.0.0.1:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null 2>&1 ||
+      mc alias set local https://127.0.0.1:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" --insecure >/dev/null; } &&
     $1
     rc=\$?; rm -rf /tmp/mc-tenant-removal; exit \$rc'"
 }

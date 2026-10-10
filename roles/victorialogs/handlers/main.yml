@@ -1,14 +1,4 @@
 ---
-# A reissued certificate is read by both listeners.
-- name: restart log store
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    state: restarted
-  loop:
-    - "{{ victorialogs_container_name }}"
-    - "{{ victorialogs_vmauth_container_name }}"
-  become: true
-
 # vmauth's users. A restart rather than /-/reload: reload is on the internal
 # listener, and a restart also proves the new file parses.
 - name: restart vmauth

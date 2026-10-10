@@ -22,6 +22,18 @@
   ansible.builtin.import_tasks: tls.yml
   when: minio_tls_enabled | bool
 
+# The directory stays - the backup job mounts its CAs/ - but a key nothing
+# reads is still a key.
+- name: Remove a certificate and key left from when MinIO served TLS
+  ansible.builtin.file:
+    path: "{{ minio_tls_dir }}/{{ item }}"
+    state: absent
+  loop:
+    - public.crt
+    - private.key
+  when: not (minio_tls_enabled | bool)
+  become: true
+
 # Published ports rather than host networking: unlike an authoritative DNS
 # server, MinIO has no per-request source-address policy that a port mapping
 # would defeat. Access control is the credential, and the credential is scoped
@@ -55,9 +67,31 @@
     podman_service_command: >-
       {{ ['server', '/data', '--console-address', ':9001']
          + (['--certs-dir', '/certs'] if minio_tls_enabled | bool else []) }}
-    podman_service_firewall_ports:
-      - "{{ minio_api_port }}/tcp"
-      - "{{ minio_console_port }}/tcp"
+    # Nothing to open when both ports are on loopback: the service proxy
+    # opens what tenants reach.
+    podman_service_firewall_ports: >-
+      {{ [] if minio_loopback_only | bool
+         else [minio_api_port ~ '/tcp', minio_console_port ~ '/tcp'] }}
+
+# The console was opened to the zone while it was published on every address
+# (CHG-0030's open follow-up). The API port is not closed here: the service
+# proxy answers on it for tenants who hold the old address.
+- name: Close the console port left open from before
+  when: minio_loopback_only | bool
+  block:
+    - name: Gather service facts (for firewalld detection)
+      ansible.builtin.service_facts:
+
+    - name: Close {{ minio_console_port }}/tcp in firewalld
+      ansible.posix.firewalld:
+        port: "{{ minio_console_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: disabled
+      when:
+        - "'firewalld.service' in ansible_facts.services"
+        - ansible_facts.services['firewalld.service'].state == 'running'
+      become: true
 
 # Asserts the outcome, not the API call: the container was created and started,
 # which says nothing about whether the service is answering.

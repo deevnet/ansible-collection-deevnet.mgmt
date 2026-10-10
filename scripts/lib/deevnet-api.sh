@@ -4,9 +4,9 @@
 # provisioning VM, over SSH, into the calling process only: it is never
 # printed and never written to disk.
 
-API_URL="${DEEVNET_API_ENDPOINT:-https://api.mobile.deevnet.net:8080}"
+API_URL="${DEEVNET_API_ENDPOINT:-https://api.mobile.deevnet.net}"
 API_HOST="${DEEVNET_API_HOST:-a_autoprov@dv02prv001v01.mobile.deevnet.net}"
-DOWNLOADS="${DEEVNET_DOWNLOADS:-https://downloads.mobile.deevnet.net:8443}"
+DOWNLOADS="${DEEVNET_DOWNLOADS:-https://downloads.mobile.deevnet.net}"
 # The Deevnet Root CA (ADR-0031), under the name a tenant keeps it as too.
 SITE_CA_URL="${DEEVNET_SITE_CA_URL:-$DOWNLOADS/deevnet-root-ca.pem}"
 STATE_BUCKET="${DEEVNET_STATE_BUCKET:-tf-state}"

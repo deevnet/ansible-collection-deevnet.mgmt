@@ -2,7 +2,8 @@
 # tenant_downloads - what a tenant developer's laptop needs, served from the
 # site to DVNTM-TD (CHG-0025): the deevnet provider and its scripts, the
 # grafana provider, Terraform, Pi Imager, MicroPython and the take-home Pi
-# image. Read-only static files over HTTPS.
+# image. Read-only static files, on loopback: tenants reach them over HTTPS
+# through the host's service proxy (ADR-0036), which holds the certificate.
 #
 # On Platform, not the Builder: the segmentation standard forbids tenant dev ->
 # management, and a meetup on library internet should not download these forty
@@ -14,25 +15,25 @@ tenant_downloads_image: "docker.io/library/nginx:1.29.1-alpine"
 tenant_downloads_tarball: "nginx/nginx-1.29.1-alpine.tar"
 tenant_downloads_container_name: tenant-downloads
 
+# LOOPBACK ONLY, plain HTTP. The service proxy is the only thing that reaches it.
+tenant_downloads_listen_address: 127.0.0.1
 tenant_downloads_port: 8443
+tenant_downloads_local_url: "http://{{ tenant_downloads_listen_address }}:{{ tenant_downloads_port }}"
 
 # The tree on the CONTROL NODE, and where it lands on the data disk.
 tenant_downloads_source: /srv/deevnet-http/tenant/
 tenant_downloads_root: /srv/tenant-downloads
 tenant_downloads_content_dir: "{{ tenant_downloads_root }}/content"
 tenant_downloads_conf_dir: "{{ tenant_downloads_root }}/conf.d"
-tenant_downloads_tls_dir: "{{ tenant_downloads_root }}/tls"
+tenant_downloads_roots_dir: "{{ tenant_downloads_root }}/roots"
+# Where this server's own certificate and key were before CHG-0046, with the
+# served roots beside them. Removed by the role: a key nothing reads is still a key.
+tenant_downloads_retired_tls_dir: "{{ tenant_downloads_root }}/tls"
 
 # The Deevnet Root CA (ADR-0031), served under its own name. During a re-root
 # the outgoing root is served under ITS name too, until it is retired, so a
 # tenant can fetch either and check its fingerprint against the tenant guide.
 tenant_downloads_roots: "{{ [site_root_ca_file] + (site_root_ca_previous_files | default([])) }}"
 
-# --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ------
-
-# Tenants use the downloads name; the host name is kept so a probe by host works.
-tenant_downloads_tls_common_name: "downloads.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
-tenant_downloads_tls_alt_names:
-  - "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
-tenant_downloads_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
-tenant_downloads_tls_renew_before: 5184000
+# The name tenants use, an alias for this host served by the service proxy.
+tenant_downloads_service_name: "downloads.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"

@@ -12,8 +12,12 @@ deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
 
+# Where the port is published. A site whose provisioning VM runs the service
+# proxy (ADR-0036) sets 127.0.0.1: tenants then reach the API on 443 through
+# the proxy, which verifies this certificate on the way in.
 deevnet_api_listen_address: "0.0.0.0"
 deevnet_api_port: 8080
+deevnet_api_loopback_only: "{{ deevnet_api_listen_address is match('127[.]') }}"
 # TLS whenever tenants are served; the certificate names 127.0.0.1 too, so the
 # role's own checks verify it.
 deevnet_api_local_url: "{{ 'https' if deevnet_api_site | length > 0 else 'http' }}://127.0.0.1:{{ deevnet_api_port }}"
@@ -125,9 +129,9 @@ deevnet_api_iot_address_ranges: >-
 # One tenant's share of such a range. Empty takes the API's default.
 deevnet_api_iot_addresses_per_tenant: ""
 
-# Whether the state store serves TLS (CHG-0030). Set with the minio role's
-# minio_tls_enabled; deevnet_api_state_endpoint, what tenants are told, turns
-# https in the same commit.
+# Whether deevnet_api_minio_endpoint is dialed over TLS (CHG-0030). True where
+# the state store serves TLS itself, and where the endpoint is the store's
+# service name on the service proxy (ADR-0036), whatever MinIO does behind it.
 deevnet_api_minio_tls: false
 
 # The class an admission issues a tenant developer key in (ADR-0029): the
@@ -200,11 +204,11 @@ deevnet_api_log_writer_addr: >-
 deevnet_api_log_writer_user: deevnet-logwriter
 
 # What a tenant is TOLD to ship logs to, which is not where the writer lives:
-# the writer is reached over SSH, the endpoint is vmauth's HTTPS port. By name,
-# because that is what the certificate carries.
+# the writer is reached over SSH, the endpoint is the log store's service name,
+# served on 443 by the store host's service proxy (ADR-0036, CHG-0046). Grafana
+# reads through the same address: each tenant's data sources carry it.
 deevnet_api_log_endpoint: >-
-  {{ ('https://' ~ ((groups['observability_store'] | default([])) | first | default('')) ~ '.' ~
-      deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':8427')
+  {{ ('https://logs.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
      if (groups['observability_store'] | default([])) | length > 0 else '' }}
 
 # Pinned at deploy time from the store itself, for the same reasons as the
@@ -230,9 +234,10 @@ deevnet_api_log_session_timeout: 30s
 #
 # Grafana's service name (CHG-0045), not the host it runs on: this is the
 # address tenants keep in bookmarks and state, and it should not move when
-# Grafana does. Deploy a Grafana whose certificate carries the name first.
+# Grafana does. No port: the store host's service proxy serves it on 443
+# (ADR-0036, CHG-0046). Deploy that proxy first.
 deevnet_api_grafana_url: >-
-  {{ ('https://grafana.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':3000')
+  {{ ('https://grafana.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
      if (groups['observability_store'] | default([])) | length > 0 else '' }}
 
 # OpenBao (ADR-0016). The address the API and this role use, and the pin the

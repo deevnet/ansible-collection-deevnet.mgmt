@@ -77,32 +77,19 @@
         name: vernemq
         tasks_from: tls.yml
 
-- name: The log store
-  hosts: observability_store
+# The one certificate for the services behind it: the log store, Grafana, the
+# tenant downloads and the state store hold none of their own (ADR-0036).
+- name: The service proxy
+  hosts: service_proxy
   become: true
   tasks:
-    - name: Issue the log store certificate
+    - name: Issue the service proxy's certificate
       ansible.builtin.include_role:
-        name: victorialogs
+        name: service_proxy
         tasks_from: tls.yml
 
-- name: Grafana
-  hosts: observability_store
-  become: true
-  tasks:
-    - name: Issue Grafana's certificate
-      ansible.builtin.include_role:
-        name: grafana
-        tasks_from: tls.yml
-
-- name: Tenant downloads
-  hosts: observability_store
-  become: true
-  tasks:
-    - name: Issue the downloads server's certificate
-      ansible.builtin.include_role:
-        name: tenant_downloads
-        tasks_from: tls.yml
+    - name: Restart now if the certificate changed
+      ansible.builtin.meta: flush_handlers
 
 - name: The Omada controller
   hosts: network_controllers:&management_plane

@@ -37,10 +37,15 @@
     quiet: true
   no_log: true
 
-# --- TLS, then directories and configuration -----------------------------------
+# --- Directories and configuration ---------------------------------------------
 
-- name: Issue the log store's TLS material from the site CA
-  ansible.builtin.import_tasks: tls.yml
+# vmauth served TLS itself until CHG-0046. The service proxy holds the host's
+# certificate now, and the old key is not left on the disk for nothing to read.
+- name: Remove the log store's retired certificate and key
+  ansible.builtin.file:
+    path: "{{ victorialogs_retired_tls_dir }}"
+    state: absent
+  become: true
 
 # Only the store's own data. The root and the configuration directory are
 # created by writer.yml, which owns their ownership because the writer has to
@@ -74,7 +79,6 @@
     podman_service_network: host
     podman_service_volumes:
       - "{{ victorialogs_data_dir }}:/victoria-logs-data:Z"
-      - "{{ victorialogs_tls_dir }}:/tls:ro,z"
     podman_service_command:
       - "-httpListenAddr={{ victorialogs_http_listen }}"
       - "-storageDataPath=/victoria-logs-data"
@@ -101,22 +105,18 @@
       # and a file mount would pin the container to the old inode. :z (shared),
       # not :Z, because the writer on the host must keep writing here.
       - "{{ victorialogs_auth_dir }}:/etc/vmauth:ro,z"
-      - "{{ victorialogs_tls_dir }}:/tls:ro,z"
-    # Two listeners, paired by position (vmauth docs, "Security"): the public
-    # one with TLS and no internal routes, and a loopback one with the internal
-    # routes and no TLS.
+    # Two listeners, paired by position (vmauth docs, "Security"): the one the
+    # service proxy forwards to, with no internal routes, and a second with
+    # the internal routes. Both loopback, both plain HTTP.
     podman_service_command:
       - "-auth.config=/etc/vmauth/auth.yml"
       - "-configCheckInterval={{ victorialogs_vmauth_config_check_interval }}"
-      - "-httpListenAddr=0.0.0.0:{{ victorialogs_vmauth_port }},"
+      - "-httpListenAddr={{ victorialogs_vmauth_listen_address }}:{{ victorialogs_vmauth_port }},"
       - "-httpInternalListenAddr=,{{ victorialogs_vmauth_internal_listen }}"
-      - "-tls=true,false"
-      - "-tlsCertFile=/tls/cert.pem"
-      - "-tlsKeyFile=/tls/key.pem"
     podman_service_after:
       - "{{ victorialogs_container_name }}.service"
-    podman_service_firewall_ports:
-      - "{{ victorialogs_vmauth_port }}/tcp"
+    # No podman_service_firewall_ports: vmauth listens on loopback only. The
+    # service proxy opens what tenants reach.
 
 # --- Remove ADR-0022's syslog rules ---------------------------------------------
 # The listener is gone (ADR-0027, CHG-0019). A rich rule left behind would keep
@@ -157,7 +157,7 @@
     state: absent
   become: true
 
-- name: Restart now if the certificate changed
+- name: Restart now if the users changed
   ansible.builtin.meta: flush_handlers
 
 # --- Readiness -------------------------------------------------------------------
@@ -190,18 +190,17 @@
   changed_when: false
   become: true
 
-# A token-less request must be REFUSED. This is a self-check from the host, over
-# the public listener; it is not a substitute for CHG-0018's tests from other
-# segments.
+# A token-less request must be REFUSED. This is a self-check from the host, on
+# the listener the service proxy forwards to; it is not a substitute for
+# CHG-0018's tests from other segments.
 - name: Confirm vmauth refuses a request with no token
   ansible.builtin.uri:
-    url: "https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }}/select/logsql/query?query=*"
-    ca_path: "{{ victorialogs_tls_dir }}/{{ site_root_ca_name }}"
+    url: "{{ victorialogs_vmauth_local_url }}/select/logsql/query?query=*"
     status_code: [401]
   become: true
 
 - name: Report what the store is serving
   ansible.builtin.debug:
     msg:
-      - "vmauth: https://{{ victorialogs_tls_ip }}:{{ victorialogs_vmauth_port }} (1 operator read user; tenants' users arrive with tenant tokens)"
+      - "vmauth: {{ victorialogs_vmauth_local_url }}, served over HTTPS by the service proxy (1 operator read user; tenants' users arrive with tenant tokens)"
       - "VictoriaLogs: {{ victorialogs_http_listen }} (loopback only), retention {{ victorialogs_retention_period }}, disk cap {{ victorialogs_max_disk_usage_percent }}%"
