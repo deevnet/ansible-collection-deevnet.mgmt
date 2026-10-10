@@ -142,6 +142,6 @@
 - name: Report what Grafana is serving
   ansible.builtin.debug:
     msg:
-      - "Grafana {{ grafana_version }}: https://{{ grafana_tls_common_name }}:{{ grafana_port }} ({{ grafana_tls_ip }})"
+      - "Grafana {{ grafana_version }}: https://{{ grafana_service_name }}:{{ grafana_port }} ({{ grafana_tls_common_name }}, {{ grafana_tls_ip }})"
       - "Plugin {{ grafana_plugin_id }} {{ grafana_plugin_version }}, signature valid"
       - "Tenants' organisations are the Deevnet API's: reconcile a tenant to (re)create its own."

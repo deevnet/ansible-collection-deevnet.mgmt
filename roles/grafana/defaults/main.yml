@@ -56,8 +56,16 @@ grafana_secret_key: "{{ vault_grafana_secret_key | default('') }}"
 
 # --- TLS, from the Substrate CA (ADR-0031 §4), signed on the control node ----------
 
+# The name tenants are told to use (CHG-0045), an alias for this host in the
+# substrate's zone. The API hands it out as dashboard_url, so the certificate
+# has to be valid for it and not only for the host Grafana happens to run on.
+# The host's own name stays, so a probe by host works and an address a tenant
+# kept from before still verifies.
+grafana_service_name: "grafana.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
+
 grafana_tls_common_name: "{{ inventory_hostname }}.{{ deevnet_substrate | default('') }}.{{ deevnet_root_domain | default('') }}"
-grafana_tls_alt_names: []
+grafana_tls_alt_names:
+  - "{{ grafana_service_name }}"
 grafana_tls_ip: "{{ env.interfaces.eth0.ip | default('') }}"
 grafana_tls_renew_before: 5184000
 
@@ -67,8 +75,10 @@ grafana_tls_renew_before: 5184000
 grafana_env:
   GF_SERVER_PROTOCOL: https
   GF_SERVER_HTTP_PORT: "{{ grafana_port }}"
-  GF_SERVER_DOMAIN: "{{ grafana_tls_common_name }}"
-  GF_SERVER_ROOT_URL: "https://{{ grafana_tls_common_name }}:{{ grafana_port }}/"
+  # What Grafana calls itself in the links it prints. GF_SERVER_ENFORCE_DOMAIN
+  # stays unset, so a request by host name is answered and not redirected.
+  GF_SERVER_DOMAIN: "{{ grafana_service_name }}"
+  GF_SERVER_ROOT_URL: "https://{{ grafana_service_name }}:{{ grafana_port }}/"
   GF_SERVER_CERT_FILE: /tls/cert.pem
   GF_SERVER_CERT_KEY: /tls/key.pem
   GF_SECURITY_ADMIN_USER: "{{ grafana_admin_user }}"

@@ -49,7 +49,7 @@ Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `
   key `vault_site_substrate_ca_key`), never by OpenBao: OpenBao's own listener included, so a
   substrate rebuilt from nothing has no cycle. Trust is the Deevnet Root CA from the inventory
   (`site_root_ca_file`, `pki/deevnet-root-ca.pem`). A cert is reissued when it stops chaining
-  to that root, not when the CA file differs. OpenBao's only PKI is the Tenant Device CA.
+  to that root, or lacks a name it is asked for (CHG-0045), not when the CA file differs. OpenBao's only PKI is the Tenant Device CA.
 - **The Root CA's and Site CA's keys are never here, in any form** (Certificates standard 5.1).
   Issuing CAs are signed offline; `scripts/pki/` moves their requests and certificates.
 - **The Deevnet API holds only its AppRole.** Its backend credentials are written

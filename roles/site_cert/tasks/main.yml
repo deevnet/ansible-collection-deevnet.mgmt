@@ -68,9 +68,43 @@
   failed_when: false
   check_mode: false
 
+# Nor is the chain. A service given a new name (an alias tenants are told to
+# use, CHG-0045) keeps a certificate that is valid, trusted and silent about
+# that name until it expires. A name the certificate is asked for and does not
+# carry is a reason to reissue; a name it carries and is no longer asked for
+# is not, and leaves at the next renewal.
+- name: Check whether the certificate carries every name it is asked for
+  ansible.builtin.shell:
+    cmd: |
+      f=$(mktemp) && cat > "$f" || exit 2
+      missing=""
+      for n in {{ site_cert_wanted_dns_names | map('quote') | join(' ') }}; do
+        openssl x509 -in "$f" -noout -checkhost "$n" 2>/dev/null | grep -q 'does match' || missing="$missing $n"
+      done
+      for n in {{ site_cert_ips | map('quote') | join(' ') }}; do
+        openssl x509 -in "$f" -noout -checkip "$n" 2>/dev/null | grep -q 'does match' || missing="$missing $n"
+      done
+      rm -f "$f"
+      echo $missing
+      [ -z "$missing" ]
+    stdin: "{{ (site_cert_current.content | b64decode) if site_cert_current.content is defined else '' }}"
+  register: site_cert_names
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Say which names the installed certificate lacks
+  ansible.builtin.debug:
+    msg: "The certificate in {{ site_cert_dir }} lacks {{ site_cert_names.stdout | trim }}: reissuing."
+  when:
+    - site_cert_current.content is defined
+    - site_cert_names.rc != 0
+
 - name: Decide whether the certificate must be issued
   ansible.builtin.set_fact:
-    site_cert_issued: "{{ site_cert_expiry.rc != 0 or site_cert_chain.rc != 0 }}"
+    site_cert_issued: "{{ site_cert_expiry.rc != 0 or site_cert_chain.rc != 0 or site_cert_names.rc != 0 }}"
 
 # Signed on the control node by the Substrate CA, never by OpenBao: the
 # substrate's certificates do not depend on the secret store (ADR-0031 §4).
@@ -82,7 +116,7 @@
         name: deevnet.builder.substrate_cert
       vars:
         substrate_cert_common_name: "{{ site_cert_common_name }}"
-        substrate_cert_dns_names: "{{ [site_cert_common_name] + (site_cert_alt_names | reject('equalto', site_cert_common_name) | list) }}"
+        substrate_cert_dns_names: "{{ site_cert_wanted_dns_names }}"
         substrate_cert_ips: "{{ site_cert_ips }}"
         substrate_cert_days: "{{ site_cert_days }}"
 

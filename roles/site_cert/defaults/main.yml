@@ -23,8 +23,13 @@ site_cert_key_owner: root
 site_cert_common_name: ""
 site_cert_alt_names: []
 site_cert_ips: []
+# Every DNS name the certificate is signed for, the CN first. Also what an
+# installed certificate is checked against: one that lacks any of these, or
+# any address above, is reissued.
+site_cert_wanted_dns_names: "{{ [site_cert_common_name] + (site_cert_alt_names | reject('equalto', site_cert_common_name) | list) }}"
 
-# One year, reissued by any run with fewer than 60 days left (standard §4).
+# One year, reissued by any run with fewer than 60 days left (standard §4),
+# or sooner when it stops chaining to the root or lacks a name it is asked for.
 site_cert_days: 365
 site_cert_renew_before: 5184000
 
