@@ -1,5 +1,6 @@
 ---
-# Engines, policies and AppRoles (ADR-0016 §3, §5). Every call is read, then
+# Engines, policies, AppRoles and the issuing CAs (ADR-0016 §3, §5; ADR-0031
+# §3; ADR-0037). Every call is read, then
 # written only if missing, or is a write OpenBao treats as idempotent: policy
 # PUT, AppRole role POST, Transit key POST and PKI role POST all succeed on an
 # existing object. Enabling a mount twice does not (400, "path is already in
@@ -25,6 +26,23 @@
          else openbao_login.json.auth.client_token }}
   no_log: true
 
+# Before anything that needs them. A token is judged by its policy as the
+# policy stands now, so a mount newly added to Ansible's own policy can be
+# enabled and used in this same run.
+- name: Write policies
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item.key }}"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: { policy: "{{ item.value }}" }
+    status_code: [200, 204]
+  loop: "{{ openbao_policies | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+
 - name: List secrets engines
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/mounts"
@@ -45,10 +63,24 @@
     - { path: "{{ openbao_kv_mount }}", body: { type: kv, options: { version: "2" } } }
     - { path: "{{ openbao_build_kv_mount }}", body: { type: kv, options: { version: "2" } } }
     - { path: transit, body: { type: transit } }
-    - { path: "{{ openbao_tenant_device_mount }}", body: { type: pki, config: { max_lease_ttl: "{{ openbao_tenant_device_mount_ttl }}" } } }
   when: (item.path ~ '/') not in openbao_mounts.json
   loop_control:
     label: "{{ item.path }}"
+  changed_when: true
+
+- name: Enable the issuing CAs' mounts
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ item.mount }}"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: { type: pki, config: { max_lease_ttl: "{{ item.mount_ttl }}" } }
+    status_code: [200, 204]
+  loop: "{{ openbao_issuing_cas }}"
+  when: (item.mount ~ '/') not in openbao_mounts.json
+  loop_control:
+    label: "{{ item.mount }}"
   changed_when: true
 
 - name: List auth methods
@@ -70,8 +102,15 @@
   when: "'approle/' not in openbao_auths.json"
   changed_when: true
 
-- name: Run the Tenant Device CA
-  ansible.builtin.import_tasks: tenant_device_ca.yml
+- name: Run the issuing CAs
+  ansible.builtin.include_tasks: issuing_ca.yml
+  loop: "{{ openbao_issuing_cas }}"
+  loop_control:
+    loop_var: openbao_ca
+    label: "{{ openbao_ca.name }}"
+
+- name: Write the PKI signing roles
+  ansible.builtin.import_tasks: pki_roles.yml
 
 - name: Remove retired mounts
   ansible.builtin.uri:
@@ -91,20 +130,6 @@
     ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     status_code: [200, 204]
-  changed_when: false
-
-- name: Write policies
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item.key }}"
-    method: PUT
-    ca_path: "{{ openbao_tls_ca }}"
-    headers: {X-Vault-Token: "{{ openbao_token }}"}
-    body_format: json
-    body: { policy: "{{ item.value }}" }
-    status_code: [200, 204]
-  loop: "{{ openbao_policies | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
   changed_when: false
 
 - name: Write AppRoles

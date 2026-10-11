@@ -1,0 +1,73 @@
+---
+# The roles a PKI mount signs through. A role is what the secret store itself
+# will and will not put in a certificate, whatever its caller asks for.
+#
+# Written whether or not the mount has its CA yet: a role on a mount with no
+# issuer can sign nothing.
+
+- name: Write the PKI signing roles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/roles/{{ item.name }}"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: "{{ item.body }}"
+    status_code: [200, 204]
+  loop: "{{ openbao_pki_roles }}"
+  loop_control:
+    label: "{{ item.mount }}/roles/{{ item.name }}"
+  changed_when: false
+
+# A role is read back because OpenBao accepts a field it does not know and
+# says nothing: a misspelt restriction would be no restriction.
+- name: Read the roles back
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/roles/{{ item.name }}"
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+  loop: "{{ openbao_pki_roles }}"
+  loop_control:
+    label: "{{ item.mount }}/roles/{{ item.name }}"
+  register: openbao_pki_roles_read
+
+- name: Check each role holds what was written
+  ansible.builtin.assert:
+    that: openbao_pki_role_differs == ''
+    fail_msg: >-
+      {{ item.item.mount }}/roles/{{ item.item.name }} does not hold what was written for:
+      {{ openbao_pki_role_differs }}.
+    quiet: true
+  loop: "{{ openbao_pki_roles_read.results }}"
+  loop_control:
+    label: "{{ item.item.mount }}/roles/{{ item.item.name }}"
+  vars:
+    # The fields that decide what a certificate may say. Durations are left
+    # out: they come back in seconds.
+    openbao_pki_role_checked:
+      - allowed_domains
+      - allow_glob_domains
+      - allow_bare_domains
+      - allow_subdomains
+      - allow_wildcard_certificates
+      - allow_localhost
+      - allow_any_name
+      - allow_ip_sans
+      - enforce_hostnames
+      - use_csr_common_name
+      - use_csr_sans
+      - server_flag
+      - client_flag
+      - code_signing_flag
+      - email_protection_flag
+      - key_usage
+      - organization
+      - ou
+    openbao_pki_role_differs: >-
+      {%- set differs = [] -%}
+      {%- for key in openbao_pki_role_checked if key in item.item.body -%}
+      {%- if key not in item.json.data or item.json.data[key] != item.item.body[key] -%}
+      {%- set _ = differs.append(key) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ differs | join(', ') }}

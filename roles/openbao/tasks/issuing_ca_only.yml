@@ -1,8 +1,21 @@
 ---
-# The Tenant Device CA on its own, without touching the listener or anything
-# else the role runs: playbooks/tenant-device-ca.yml. It lets the CA's request
-# be made, and its signed certificate installed, before the rest of the site
-# moves to the Deevnet PKI (CHG-0033), so one ceremony signs both issuing CAs.
+# One issuing CA on its own, without touching the listener or anything else
+# the role runs: playbooks/tenant-device-ca.yml and tenant-service-ca.yml,
+# which set openbao_ca_only to the CA's slug. It lets a CA's request be made,
+# and its signed certificate installed, without running the whole role
+# (CHG-0033, CHG-0047).
+
+- name: Find the issuing CA asked for
+  ansible.builtin.set_fact:
+    openbao_ca: "{{ openbao_issuing_cas | selectattr('slug', 'equalto', openbao_ca_only) | list | first | default(None) }}"
+
+- name: Fail on a CA this role does not know
+  ansible.builtin.assert:
+    that: openbao_ca is mapping
+    fail_msg: >-
+      openbao_ca_only={{ openbao_ca_only | default('(unset)') }} is not one of
+      {{ openbao_issuing_cas | map(attribute='slug') | join(', ') }}.
+    quiet: true
 
 # Before the re-root the listener is still its own self-signed certificate,
 # which is also its own CA; after it, the Deevnet Root CA sits beside it.
@@ -36,7 +49,7 @@
     openbao_token: "{{ openbao_login.json.auth.client_token }}"
   no_log: true
 
-# Ansible's own policy gains the new mount; the API's loses pki/issue.
+# Before the mount: Ansible's own policy is what lets this run use it.
 - name: Write the policies
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item.key }}"
@@ -60,18 +73,23 @@
   register: openbao_mounts
   become: true
 
-- name: Enable the Tenant Device CA's mount
+- name: "Enable the mount of the {{ openbao_ca.name }}"
   ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ openbao_tenant_device_mount }}"
+    url: "{{ openbao_local_url }}/v1/sys/mounts/{{ openbao_ca.mount }}"
     method: POST
     ca_path: "{{ openbao_tls_ca }}"
     headers: {X-Vault-Token: "{{ openbao_token }}"}
     body_format: json
-    body: { type: pki, config: { max_lease_ttl: "{{ openbao_tenant_device_mount_ttl }}" } }
+    body: { type: pki, config: { max_lease_ttl: "{{ openbao_ca.mount_ttl }}" } }
     status_code: [200, 204]
-  when: (openbao_tenant_device_mount ~ '/') not in openbao_mounts.json
+  when: (openbao_ca.mount ~ '/') not in openbao_mounts.json
   become: true
   changed_when: true
 
-- name: Run the Tenant Device CA
-  ansible.builtin.import_tasks: tenant_device_ca.yml
+- name: "Run the {{ openbao_ca.name }}"
+  ansible.builtin.include_tasks: issuing_ca.yml
+
+- name: Write the signing roles on its mount
+  ansible.builtin.import_tasks: pki_roles.yml
+  vars:
+    openbao_pki_roles: "{{ openbao_pki_roles_all | selectattr('mount', 'equalto', openbao_ca.mount) | list }}"
