@@ -1,0 +1,28 @@
+# The site's Tenant Service CA in OpenBao (ADR-0037), on its own (CHG-0047):
+# the CA that signs server certificates for names in a tenant's own zone.
+# Run with the inventory decrypted (Ansible's AppRole is in the vault):
+#
+#   ansible-playbook playbooks/tenant-service-ca.yml
+#
+# First run: OpenBao makes the CA's key and request; the request is written to
+# pki/<site>/deevnet-<site>-tenant-service-ca.csr for the Issuing CA ceremony
+# (--ca tenant-service). After `deevnet-pki-transfer.sh accept` puts the signed
+# certificate beside it, run again: it is installed with the Site CA and made
+# the default issuer. Any later run changes nothing.
+#
+# Every run also writes the one role the CA signs through, which a mount with
+# no CA yet cannot use.
+#
+# playbooks/openbao.yml runs the same steps as part of the whole role.
+- name: The Tenant Service CA
+  hosts: openbao
+  gather_facts: false
+  # As playbooks/openbao.yml: the listener's files are readable by root only.
+  become: true
+  tasks:
+    - name: Run it
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: issuing_ca_only.yml
+      vars:
+        openbao_ca_only: tenant-service

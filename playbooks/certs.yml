@@ -41,7 +41,7 @@
   roles:
     - deevnet.net.opnsense_cert
 
-# OpenBao's listener certificate, and its Tenant Device CA.
+# OpenBao's listener certificate, and the issuing CAs it holds.
 - name: OpenBao
   hosts: openbao
   become: true

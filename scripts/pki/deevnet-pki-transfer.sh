@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The ONLINE half of the offline CA ceremony (runbook: Root of Trust > Issuing CA).
 #
-#   deevnet-pki-transfer.sh prepare MEDIA --site mobile --ca substrate|tenant-device --csr FILE [--with-tools]
+#   deevnet-pki-transfer.sh prepare MEDIA --site mobile --ca substrate|tenant-device|tenant-service --csr FILE [--with-tools]
 #   deevnet-pki-transfer.sh accept  MEDIA --csr FILE [--out DIR]
 #
 # prepare  cleans MEDIA/deevnet-transfer, checks the issuing CA's signing request
@@ -42,7 +42,8 @@ ca_cn() {                                       # site, ca -> expected CN
   case "$2" in
     substrate)     echo "Deevnet $(title "$1") Substrate CA" ;;
     tenant-device) echo "Deevnet $(title "$1") Tenant Device CA" ;;
-    *) die "--ca must be substrate or tenant-device" ;;
+    tenant-service) echo "Deevnet $(title "$1") Tenant Service CA" ;;
+    *) die "--ca must be substrate, tenant-device or tenant-service" ;;
   esac
 }
 subject() { openssl "$1" -in "$2" -noout -subject -nameopt RFC2253 | sed 's/^subject=//'; }

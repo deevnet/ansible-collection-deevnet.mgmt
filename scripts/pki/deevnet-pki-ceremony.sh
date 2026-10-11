@@ -223,7 +223,7 @@ say "  - the passphrases: one for each key drive, one for the key files."
 echo
 say "1. A new Deevnet Root CA, then a Site CA (first time, or a re-root)"
 say "2. A Site CA only, signed by the root already on the key drive (a new site, or a rotation)"
-say "3. Sign an issuing CA (Substrate or Tenant Device), from a request the Builder put on"
+say "3. Sign an issuing CA (Substrate, Tenant Device or Tenant Service), from a request the Builder put on"
 say "   the transfer drive with deevnet-pki-transfer.sh prepare"
 read -r -p "   Which? [1/2/3] " path
 [[ "$path" == 1 || "$path" == 2 || "$path" == 3 ]] || die "answer 1, 2 or 3"

@@ -1,0 +1,159 @@
+---
+# One of the site's issuing CAs that live in OpenBao: the Tenant Device CA
+# (ADR-0031 §3) or the Tenant Service CA (ADR-0037). Run once for each, with
+# `openbao_ca` set to its entry in openbao_issuing_cas.
+#
+# The key is generated inside OpenBao and never leaves; the Site CA signs its
+# request offline, in the Issuing CA ceremony (Root of Trust runbook). Three
+# states, each a run of this role:
+#
+#   1. The mount has no CA and the inventory no request: generate the key and
+#      request, and write the request to the inventory. Take it to the ceremony.
+#   2. The inventory has the signed certificate (deevnet-pki-transfer.sh accept)
+#      and the mount's CA is not it: install it, with the Site CA, and make it
+#      the default issuer.
+#   3. The mount's CA is the inventory's certificate and chains to the Deevnet
+#      Root CA: nothing to do.
+#
+# To rotate: delete the request and certificate files from the inventory and
+# run with the CA's rotate variable true, which starts again at 1. The run that
+# installs the new certificate needs no flag: the inventory then holds a
+# certificate the mount does not, which is state 2.
+
+- name: "Read the {{ openbao_ca.name }}"
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ openbao_ca.mount }}/ca/pem"
+    ca_path: "{{ openbao_tls_ca }}"
+    status_code: [200, 204]
+    return_content: true
+  register: openbao_ica
+
+- name: "Check the {{ openbao_ca.name }} chains to the Deevnet Root CA"
+  ansible.builtin.shell:
+    cmd: >-
+      f=$(mktemp) && cat > "$f" &&
+      openssl verify -no-CApath -no-CAstore -CAfile {{ openbao_root_ca_local | quote }}
+      -untrusted {{ openbao_site_ca_local | quote }} "$f"; rc=$?; rm -f "$f"; exit $rc
+    stdin: "{{ openbao_ica.content }}"
+  register: openbao_ica_chain
+  when: openbao_ica.status == 200
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+
+# Ready means the mount serves the certificate the inventory holds. Chaining
+# to the root is not enough by itself: after a rotation the old CA still
+# chains, and the new certificate would never be installed.
+- name: "Decide what the {{ openbao_ca.name }} needs"
+  ansible.builtin.set_fact:
+    openbao_ica_have_cert: "{{ openbao_ca.cert_local is file }}"
+    openbao_ica_have_csr: "{{ openbao_ca.csr_local is file }}"
+    openbao_ica_ready: >-
+      {{ openbao_ica.status == 200 and openbao_ica_chain.rc == 0
+         and not (openbao_ca.rotate | default(false) | bool)
+         and ((openbao_ca.cert_local is not file)
+              or ((openbao_ica.content | trim) == (lookup('file', openbao_ca.cert_local) | trim))) }}
+
+# State 1. RSA 3072 (Certificates standard §4). The subject is O, OU, CN, which
+# the ceremony's tools check exactly; the profile adds the extensions.
+- name: "Generate the key and request of the {{ openbao_ca.name }}"
+  when:
+    - not openbao_ica_ready | bool
+    - not openbao_ica_have_cert | bool
+    - not openbao_ica_have_csr | bool
+  block:
+    - name: Generate the key and request inside OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_ca.mount }}/intermediate/generate/internal"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          common_name: "{{ openbao_ca.common_name }}"
+          organization: "{{ openbao_ca.organization }}"
+          ou: "{{ openbao_ca.ou }}"
+          key_type: rsa
+          key_bits: 3072
+          exclude_cn_from_sans: true
+      register: openbao_ica_csr
+      changed_when: true
+
+    - name: Write the request to the inventory
+      ansible.builtin.copy:
+        dest: "{{ openbao_ca.csr_local }}"
+        content: "{{ openbao_ica_csr.json.data.csr | trim }}\n"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Take the request to the Issuing CA ceremony
+      ansible.builtin.debug:
+        msg:
+          - "Wrote {{ openbao_ca.csr_local }}."
+          - "Root of Trust > Issuing CA, with --ca {{ openbao_ca.slug }} --csr {{ openbao_ca.csr_local }}"
+          - "Then accept the certificate to {{ openbao_ca.cert_local }} and run this role again."
+
+# State 2.
+- name: "Install the signed {{ openbao_ca.name }}"
+  when:
+    - not openbao_ica_ready | bool
+    - openbao_ica_have_cert | bool
+  block:
+    - name: Check the certificate chains to the Deevnet Root CA through the Site CA
+      ansible.builtin.command:
+        argv: [openssl, verify, -no-CApath, -no-CAstore, -CAfile, "{{ openbao_root_ca_local }}", -untrusted,
+               "{{ openbao_site_ca_local }}", "{{ openbao_ca.cert_local }}"]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Install it with the Site CA
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_ca.mount }}/intermediate/set-signed"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          # One line, double-quoted: in a folded scalar the '\n' stays literal.
+          certificate: "{{ [lookup('file', openbao_ca.cert_local) | trim, lookup('file', openbao_site_ca_local) | trim] | join('\n') }}"
+      register: openbao_ica_set
+      changed_when: true
+
+    # set-signed also imports the Site CA as an issuer with no key; the
+    # default must be the one whose key OpenBao holds.
+    - name: Find the imported issuer that has its key
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_ca.mount }}/issuer/{{ item }}"
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+      loop: "{{ openbao_ica_set.json.data.imported_issuers }}"
+      register: openbao_ica_issuers
+
+    - name: Make it the default issuer
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_ca.mount }}/config/issuers"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          default: >-
+            {{ (openbao_ica_issuers.results | selectattr('json.data.key_id', 'truthy')
+                | map(attribute='item') | list | first) }}
+      changed_when: true
+
+    - name: "Read the {{ openbao_ca.name }} again"
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/{{ openbao_ca.mount }}/ca/pem"
+        ca_path: "{{ openbao_tls_ca }}"
+        return_content: true
+      register: openbao_ica_after
+
+    - name: "Check OpenBao's {{ openbao_ca.name }} is the ceremony's certificate"
+      ansible.builtin.assert:
+        that: (openbao_ica_after.content | trim) == (lookup('file', openbao_ca.cert_local) | trim)
+        fail_msg: The mount's CA is not the certificate in {{ openbao_ca.cert_local }}.
+        quiet: true
