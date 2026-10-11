@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.10.0"
+deevnet_api_version: "v0.11.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -250,6 +250,16 @@ deevnet_api_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | def
 deevnet_api_openbao_kv_mount: deevnet-api
 deevnet_api_openbao_kv_path: backends
 deevnet_api_openbao_approle: deevnet-api
+
+# The Tenant Service CA's mount in OpenBao, which the API signs tenants' server
+# certificates through (ADR-0037, CHG-0047). On when the inventory holds that
+# CA's certificate - that is, once the site has held its ceremony - and off
+# until then: an API told of a mount with no CA would accept every request and
+# fail each one. The openbao role makes the mount, the role and the API's
+# policy; the names here match its defaults.
+deevnet_api_tenant_service_ca_local: "{{ site_tenant_service_ca_file | default(site_ca_file | dirname ~ '/deevnet-' ~ deevnet_substrate ~ '-tenant-service-ca.pem') }}"
+deevnet_api_tenant_service_mount: "{{ 'pki-tenant-service' if deevnet_api_tenant_service_ca_local is file else '' }}"
+deevnet_api_tenant_service_role: tenant-service
 
 # The KV secret's fields, as the API reads them. Set in inventory from the vault;
 # every value must be non-empty. token_hmac_key is base64 of at least 32 bytes.

@@ -1,0 +1,19 @@
+# What the Tenant Service CA's signing role will and will not issue (ADR-0037,
+# CHG-0047 step 4). Run after the CA is installed, and after any change to the
+# role:
+#
+#   ansible-playbook playbooks/tenant-service-ca-verify.yml
+#
+# It issues one certificate, for a name under a tenant that does not exist,
+# from a request that asks for a substrate name, a public name, an address, a
+# CA and client authentication, and checks that none of those is in it. Then
+# it asks for eleven names the role must refuse. The key is deleted at the end.
+- name: Verify the Tenant Service CA's signing role
+  hosts: openbao
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run it
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: tenant_service_verify.yml

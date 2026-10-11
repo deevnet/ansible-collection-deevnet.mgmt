@@ -1,0 +1,204 @@
+---
+# Asks the Tenant Service CA's signing role for certificates it must issue and
+# certificates it must refuse (ADR-0037 §3-§4), and reads what it issues
+# against the Certificates standard. playbooks/tenant-service-ca-verify.yml.
+#
+# It signs as Ansible, which may do anything on the mount, so what is tested
+# is the role and nothing about who may call it. The request it sends is as
+# hostile as a request can be: it names a substrate host, a public name, asks
+# to be a CA and asks for client authentication. None of that may reach a
+# certificate.
+#
+# Each run issues one real certificate, for a name under a tenant that does
+# not exist, whose key is made here and deleted at the end.
+
+- name: Look for the Deevnet Root CA beside the listener
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_dir }}/{{ site_root_ca_name }}"
+  register: openbao_tsv_root_on_host
+  become: true
+
+- name: Trust whatever the listener chains to today
+  ansible.builtin.set_fact:
+    openbao_tls_ca: >-
+      {{ (openbao_tls_dir ~ '/' ~ site_root_ca_name) if openbao_tsv_root_on_host.stat.exists
+         else (openbao_tls_dir ~ '/listener.pem') }}
+    openbao_tsv_zone: "{{ openbao_tenant_service_site_zone }}"
+    openbao_tsv_sign: "{{ openbao_local_url }}/v1/{{ openbao_tenant_service_mount }}/sign/{{ openbao_tenant_service_role }}"
+
+- name: Log in as Ansible
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    body_format: json
+    body:
+      role_id: "{{ openbao_ansible_role_id }}"
+      secret_id: "{{ openbao_ansible_secret_id }}"
+  register: openbao_tsv_login
+  become: true
+  no_log: true
+
+- name: Make somewhere to work
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: tenant-service-verify.
+  register: openbao_tsv_dir
+  delegate_to: localhost
+  become: false
+
+- name: Verify, and clean up whatever happens
+  block:
+    - name: Make a key and a request that asks for everything it may not have
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -new
+          - -newkey
+          - ec
+          - -pkeyopt
+          - ec_paramgen_curve:P-256
+          - -nodes
+          - -keyout
+          - "{{ openbao_tsv_dir.path }}/probe.key"
+          - -out
+          - "{{ openbao_tsv_dir.path }}/probe.csr"
+          - -subj
+          - "/O=Somebody Else/CN=grafana.{{ openbao_tsv_zone }}"
+          - -addext
+          - "subjectAltName=DNS:grafana.{{ openbao_tsv_zone }},DNS:example.com,IP:10.20.25.21"
+          - -addext
+          - "basicConstraints=critical,CA:TRUE"
+          - -addext
+          - "extendedKeyUsage=clientAuth"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Ask for a name in a tenant's zone, with one beside it and ten years
+      ansible.builtin.uri:
+        url: "{{ openbao_tsv_sign }}"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_tsv_login.json.auth.client_token }}"}
+        body_format: json
+        body:
+          csr: "{{ lookup('file', openbao_tsv_dir.path ~ '/probe.csr') }}"
+          common_name: "probe.chg0047.{{ openbao_tsv_zone }}"
+          alt_names: "www.chg0047.{{ openbao_tsv_zone }}"
+          ttl: 87600h
+          format: pem
+      register: openbao_tsv_issued
+      become: true
+
+    - name: Keep what came back
+      ansible.builtin.copy:
+        dest: "{{ openbao_tsv_dir.path }}/{{ item.name }}"
+        content: "{{ item.content }}\n"
+        mode: "0600"
+      loop:
+        - {name: leaf.pem, content: "{{ openbao_tsv_issued.json.data.certificate }}"}
+        - {name: chain.pem, content: "{{ openbao_tsv_issued.json.data.ca_chain | join('\n') }}"}
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read the certificate
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, "{{ openbao_tsv_dir.path }}/leaf.pem", -noout, -subject, -nameopt, RFC2253,
+               -ext, "subjectAltName,basicConstraints,keyUsage,extendedKeyUsage", -startdate, -enddate, -dateopt, iso_8601]
+      register: openbao_tsv_text
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    # With the root alone as the anchor, and only what the signer returned to
+    # build the chain from: what a browser does.
+    - name: Verify it as a client that holds only the root would
+      ansible.builtin.command:
+        argv: [openssl, verify, -no-CApath, -no-CAstore, -CAfile, "{{ openbao_root_ca_local }}",
+               -untrusted, "{{ openbao_tsv_dir.path }}/chain.pem", -purpose, sslserver,
+               -verify_hostname, "probe.chg0047.{{ openbao_tsv_zone }}", "{{ openbao_tsv_dir.path }}/leaf.pem"]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Hold the certificate to the Certificates standard
+      vars:
+        text: "{{ openbao_tsv_text.stdout }}"
+        not_before: "{{ (text | regex_search('notBefore=(\\S+ \\S+)', '\\1') | first) | regex_replace('Z$', '') }}"
+        not_after: "{{ (text | regex_search('notAfter=(\\S+ \\S+)', '\\1') | first) | regex_replace('Z$', '') }}"
+        days: "{{ ((not_after | to_datetime) - (not_before | to_datetime)).days }}"
+      ansible.builtin.assert:
+        that:
+          # 2: exactly O, OU, CN, the issuer's and not the request's.
+          - "('subject=CN=probe.chg0047.' ~ openbao_tsv_zone ~ ',OU=' ~ (deevnet_substrate | capitalize) ~ ' Tenant Services,O=Deevnet') in text"
+          - "'Somebody Else' not in text"
+          # 3.4: the names asked for beside the request, and none from it.
+          - "('DNS:probe.chg0047.' ~ openbao_tsv_zone) in text"
+          - "('DNS:www.chg0047.' ~ openbao_tsv_zone) in text"
+          - "'grafana' not in text"
+          - "'example.com' not in text"
+          - "'IP Address' not in text"
+          - "(text | regex_findall('DNS:') | length) == 2"
+          # 4: not a CA, a server and only a server, one year whatever was asked.
+          - "'CA:FALSE' in text"
+          - "'CA:TRUE' not in text"
+          - "'TLS Web Server Authentication' in text"
+          - "'TLS Web Client Authentication' not in text"
+          - "'Digital Signature, Key Encipherment' in text"
+          - "'Certificate Sign' not in text"
+          - "(days | int) >= 364 and (days | int) <= 366"
+          # What a server presents after the leaf: the issuing CA and the Site CA.
+          - "(openbao_tsv_issued.json.data.ca_chain | length) == 2"
+        fail_msg: "The role issued a certificate the standard does not allow:\n{{ openbao_tsv_text.stdout }}"
+        success_msg: "Issued as the standard says: {{ openbao_tsv_text.stdout_lines[0] }}, {{ days }} days."
+
+    # A name the role admits and the API does not is not tested here: the role
+    # permits any name two or more labels below the site's zone, and the API
+    # narrows that to one label in the caller's own zone.
+    - name: Ask for names it must refuse
+      ansible.builtin.uri:
+        url: "{{ openbao_tsv_sign }}"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_tsv_login.json.auth.client_token }}"}
+        body_format: json
+        body: "{{ {'csr': lookup('file', openbao_tsv_dir.path ~ '/probe.csr'), 'format': 'pem'} | combine(item.ask) }}"
+        status_code: [200, 400]
+      loop:
+        - {why: a substrate service, ask: {common_name: "grafana.{{ openbao_tsv_zone }}"}}
+        - {why: the substrate's API, ask: {common_name: "api.{{ openbao_tsv_zone }}"}}
+        - {why: the site's zone itself, ask: {common_name: "{{ openbao_tsv_zone }}"}}
+        - {why: a tenant's zone itself, ask: {common_name: "chg0047.{{ openbao_tsv_zone }}"}}
+        - {why: a wildcard, ask: {common_name: "*.chg0047.{{ openbao_tsv_zone }}"}}
+        - {why: another site's zone, ask: {common_name: "probe.chg0047.elsewhere.{{ deevnet_root_domain }}"}}
+        - {why: a public name, ask: {common_name: "example.com"}}
+        - {why: a substrate name beside a good one, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", alt_names: "grafana.{{ openbao_tsv_zone }}"}}
+        - {why: an address, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", ip_sans: "10.20.25.21"}}
+        - {why: a URI, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", uri_sans: "urn:deevnet:mobile:tenant:eds:device:x"}}
+        - {why: no name at all, ask: {}}
+      loop_control:
+        label: "{{ item.why }}"
+      register: openbao_tsv_refused
+      become: true
+
+    - name: Check every one was refused
+      ansible.builtin.assert:
+        that: item.status == 400
+        fail_msg: "The role SIGNED {{ item.item.why }}: {{ item.item.ask }}"
+        quiet: true
+      loop: "{{ openbao_tsv_refused.results }}"
+      loop_control:
+        label: "{{ item.item.why }}: {{ item.status }}"
+
+  always:
+    - name: Remove the key and everything made with it
+      ansible.builtin.file:
+        path: "{{ openbao_tsv_dir.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false

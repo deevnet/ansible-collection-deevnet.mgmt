@@ -393,6 +393,16 @@
            'DEEVNET_LOG_SESSION_TIMEOUT': deevnet_api_log_session_timeout}) }}
   when: deevnet_api_log_writer_addr | length > 0
 
+- name: Add the Tenant Service CA when this site has one
+  # No credential of its own: the API signs with the AppRole it already holds,
+  # on the one path the openbao role's policy gives it.
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'OPENBAO_TENANT_SERVICE_MOUNT': deevnet_api_tenant_service_mount,
+           'OPENBAO_TENANT_SERVICE_ROLE': deevnet_api_tenant_service_role}) }}
+  when: deevnet_api_tenant_service_mount | length > 0
+
 - name: Add the dashboard server when this site has one
   # Verified with the site CA the container already mounts: Grafana's
   # certificate comes from the same CA as the API's own.
