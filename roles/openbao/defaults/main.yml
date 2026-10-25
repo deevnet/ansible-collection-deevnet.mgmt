@@ -237,15 +237,34 @@ openbao_policies:
     path "{{ openbao_build_kv_mount }}/data/proxmox/*" { capabilities = ["read"] }
 
 # AppRoles, by name.
+# Where each AppRole may log in from, and use its token from (CHG-0036), as
+# OpenBao sees the caller's address: its audit log says, and the inventory
+# sets them. Empty binds nothing. Ansible's own calls on this host reach
+# OpenBao through podman's bridge, so they come from its gateway; anything
+# else on this host does too, so that address is only as narrow as the host.
+openbao_api_cidrs: []
+openbao_ansible_cidrs: []
+openbao_image_factory_cidrs: []
+# The API's secret ID expires, and the deevnet_api role issues a new one when
+# fewer than deevnet_api_secret_id_renew_days remain.
+openbao_api_secret_id_ttl: 8760h
+
 openbao_approles:
   deevnet-api:
     token_policies: [deevnet-api]
     token_ttl: 1h
     token_max_ttl: 24h
+    secret_id_ttl: "{{ openbao_api_secret_id_ttl }}"
+    secret_id_bound_cidrs: "{{ openbao_api_cidrs }}"
+    token_bound_cidrs: "{{ openbao_api_cidrs }}"
+  # Root-equivalent in practice: it writes every policy, the others' included.
+  # Its secret ID is held in the vault only.
   ansible:
     token_policies: [ansible]
     token_ttl: 30m
     token_max_ttl: 2h
+    secret_id_bound_cidrs: "{{ openbao_ansible_cidrs }}"
+    token_bound_cidrs: "{{ openbao_ansible_cidrs }}"
   # One build's worth: scripts/pve-creds logs in, reads once and revokes its
   # own token, so three uses and fifteen minutes is all a token ever gets.
   image-factory:
@@ -253,3 +272,5 @@ openbao_approles:
     token_ttl: 15m
     token_max_ttl: 1h
     token_num_uses: 3
+    secret_id_bound_cidrs: "{{ openbao_image_factory_cidrs }}"
+    token_bound_cidrs: "{{ openbao_image_factory_cidrs }}"

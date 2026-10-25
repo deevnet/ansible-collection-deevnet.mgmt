@@ -100,21 +100,33 @@
           | select('match', '^OPENBAO_SECRET_ID=') | first | default('=')).split('=', 1)[1] }}
   no_log: true
 
-- name: Check the held secret ID still logs in
+# Looked up, not tried: the API's secret ID logs in from the API's host only
+# (CHG-0036), so a login from here would always fail.
+- name: Look up the secret ID the API holds
   ansible.builtin.uri:
-    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/login"
+    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/role/{{ deevnet_api_openbao_approle }}/secret-id/lookup"
     method: POST
     ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
     body_format: json
-    body:
-      role_id: "{{ deevnet_api_role_id.json.data.role_id }}"
-      secret_id: "{{ deevnet_api_held_secret_id }}"
-    status_code: [200, 400, 403]
-  register: deevnet_api_held_login
+    body: { secret_id: "{{ deevnet_api_held_secret_id }}" }
+    status_code: [200, 204]
+  register: deevnet_api_held_lookup
   when: deevnet_api_held_secret_id | length > 0
   delegate_to: localhost
   become: false
   no_log: true
+
+# 204 is a secret ID OpenBao does not know. One with no expiry predates the
+# AppRole's TTL and is replaced once.
+- name: Decide whether the API needs a new secret ID
+  ansible.builtin.set_fact:
+    deevnet_api_secret_id_renew: >-
+      {{ deevnet_api_held_secret_id | length == 0
+         or deevnet_api_held_lookup.status | default(0) != 200
+         or (deevnet_api_held_lookup.json.data.expiration_time | default('0001-01-01'))[:4] == '0001'
+         or ((deevnet_api_held_lookup.json.data.expiration_time[:19] | to_datetime('%Y-%m-%dT%H:%M:%S'))
+             - now(utc=True)).days < deevnet_api_secret_id_renew_days }}
 
 - name: Issue a secret ID for the API
   ansible.builtin.uri:
@@ -123,7 +135,7 @@
     ca_path: "{{ deevnet_api_openbao_ca_local }}"
     headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
   register: deevnet_api_new_secret_id
-  when: deevnet_api_held_secret_id | length == 0 or deevnet_api_held_login.status | default(0) != 200
+  when: deevnet_api_secret_id_renew | bool
   delegate_to: localhost
   become: false
   changed_when: true

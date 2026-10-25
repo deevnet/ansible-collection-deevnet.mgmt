@@ -131,6 +131,26 @@
       refuses tenant work. Unseal OpenBao and run this again to finish the deploy.
   when: deevnet_api_ready.status != 200
 
+# The secret ID a new one replaced is destroyed once the API is up on the new
+# one, so only one is ever valid and the running API is never without one.
+- name: Destroy the secret ID it replaces
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/role/{{ deevnet_api_openbao_approle }}/secret-id/destroy"
+    method: POST
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+    headers: {X-Vault-Token: "{{ deevnet_api_bao_token }}"}
+    body_format: json
+    body: { secret_id: "{{ deevnet_api_held_secret_id }}" }
+    status_code: [200, 204]
+  when:
+    - deevnet_api_secret_id_renew | default(false) | bool
+    - deevnet_api_held_lookup.status | default(0) == 200
+    - deevnet_api_ready.status == 200
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  no_log: true
+
 - name: Read the API's version
   ansible.builtin.uri:
     url: "{{ deevnet_api_local_url }}/version"
