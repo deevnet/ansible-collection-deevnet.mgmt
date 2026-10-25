@@ -32,17 +32,7 @@
          else (openbao_tls_dir ~ '/listener.pem') }}
 
 - name: Log in as Ansible
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/auth/approle/login"
-    method: POST
-    ca_path: "{{ openbao_tls_ca }}"
-    body_format: json
-    body:
-      role_id: "{{ openbao_ansible_role_id }}"
-      secret_id: "{{ openbao_ansible_secret_id }}"
-  register: openbao_login
-  become: true
-  no_log: true
+  ansible.builtin.include_tasks: ansible_login.yml
 
 - name: Use its token
   ansible.builtin.set_fact:

@@ -1,0 +1,48 @@
+---
+# Ansible's login, and the lock-in stop (CHG-0036, INC-0003). After a first
+# initialisation, Ansible's new AppRole exists only in the init output on the
+# control node until the operator moves it into the vault. A run in between
+# would fail at login with nothing to say why, and a rebuild run then would
+# initialise nothing and lock everyone out. So a login that is refused stops
+# the run and names what to do, and the init output left behind is reported.
+
+- name: Look for an init output on the control node
+  ansible.builtin.stat:
+    path: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json"
+  register: openbao_init_left
+  delegate_to: localhost
+  become: false
+
+- name: Log in as Ansible
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/approle/login"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    body_format: json
+    body:
+      role_id: "{{ openbao_ansible_role_id }}"
+      secret_id: "{{ openbao_ansible_secret_id }}"
+    status_code: [200, 400, 403]
+  register: openbao_login
+  no_log: true
+
+- name: Stop if the vault's AppRole does not log in
+  ansible.builtin.fail:
+    msg: >-
+      {% if openbao_init_left.stat.exists %}OpenBao was initialised and Ansible's new AppRole is in
+      {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json, not in the vault. Move
+      vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id and the recovery key into the
+      openbao vault, then make vault, commit and push, and only then delete the file. Run this
+      again after.{% else %}The vault's AppRole for Ansible (vault_openbao_ansible_role_id,
+      vault_openbao_ansible_secret_id) does not log in to OpenBao (HTTP {{ openbao_login.status }}),
+      and there is no init output to take a new one from. Do not reinitialise: check the vault is
+      the current one, then see the OpenBao drills runbook.{% endif %}
+  when: openbao_login.status != 200
+
+- name: Say the init output is still there
+  ansible.builtin.debug:
+    msg: >-
+      {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json is still on the control
+      node, and the vault's AppRole logs in. Once the vault holding it is committed and pushed,
+      delete the file.
+  when: openbao_init_left.stat.exists
