@@ -85,7 +85,7 @@
         body_format: json
         body:
           csr: "{{ lookup('file', openbao_tsv_dir.path ~ '/probe.csr') }}"
-          common_name: "probe.chg0047.{{ openbao_tsv_zone }}"
+          common_name: "probe.chg0047.{{ deevnet_root_domain }}"
           alt_names: "www.chg0047.{{ openbao_tsv_zone }}"
           ttl: 87600h
           format: pem
@@ -121,7 +121,7 @@
       ansible.builtin.command:
         argv: [openssl, verify, -no-CApath, -no-CAstore, -CAfile, "{{ openbao_root_ca_local }}",
                -untrusted, "{{ openbao_tsv_dir.path }}/chain.pem", -purpose, sslserver,
-               -verify_hostname, "probe.chg0047.{{ openbao_tsv_zone }}", "{{ openbao_tsv_dir.path }}/leaf.pem"]
+               -verify_hostname, "probe.chg0047.{{ deevnet_root_domain }}", "{{ openbao_tsv_dir.path }}/leaf.pem"]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -135,10 +135,10 @@
       ansible.builtin.assert:
         that:
           # 2: exactly O, OU, CN, the issuer's and not the request's.
-          - "('subject=CN=probe.chg0047.' ~ openbao_tsv_zone ~ ',OU=' ~ (deevnet_substrate | capitalize) ~ ' Tenant Services,O=Deevnet') in text"
+          - "('subject=CN=probe.chg0047.' ~ deevnet_root_domain ~ ',OU=' ~ (deevnet_substrate | capitalize) ~ ' Tenant Services,O=Deevnet') in text"
           - "'Somebody Else' not in text"
           # 3.4: the names asked for beside the request, and none from it.
-          - "('DNS:probe.chg0047.' ~ openbao_tsv_zone) in text"
+          - "('DNS:probe.chg0047.' ~ deevnet_root_domain) in text"
           - "('DNS:www.chg0047.' ~ openbao_tsv_zone) in text"
           - "'grafana' not in text"
           - "'example.com' not in text"
@@ -158,8 +158,9 @@
         success_msg: "Issued as the standard says: {{ openbao_tsv_text.stdout_lines[0] }}, {{ days }} days."
 
     # A name the role admits and the API does not is not tested here: the role
-    # permits any name two or more labels below the site's zone, and the API
-    # narrows that to one label in the caller's own zone.
+    # permits any name two or more labels below the root, a site's own names
+    # among them, and the API's reserved tenant names narrow that to a
+    # tenant's (CHG-0054).
     - name: Ask for names it must refuse
       ansible.builtin.uri:
         url: "{{ openbao_tsv_sign }}"
@@ -170,14 +171,12 @@
         body: "{{ {'csr': lookup('file', openbao_tsv_dir.path ~ '/probe.csr'), 'format': 'pem'} | combine(item.ask) }}"
         status_code: [200, 400]
       loop:
-        - {why: a substrate service, ask: {common_name: "grafana.{{ openbao_tsv_zone }}"}}
-        - {why: the substrate's API, ask: {common_name: "api.{{ openbao_tsv_zone }}"}}
         - {why: the site's zone itself, ask: {common_name: "{{ openbao_tsv_zone }}"}}
-        - {why: a tenant's zone itself, ask: {common_name: "chg0047.{{ openbao_tsv_zone }}"}}
-        - {why: a wildcard, ask: {common_name: "*.chg0047.{{ openbao_tsv_zone }}"}}
-        - {why: another site's zone, ask: {common_name: "probe.chg0047.elsewhere.{{ deevnet_root_domain }}"}}
+        - {why: one label under the root, ask: {common_name: "chg0047.{{ deevnet_root_domain }}"}}
+        - {why: the root itself, ask: {common_name: "{{ deevnet_root_domain }}"}}
+        - {why: a wildcard, ask: {common_name: "*.chg0047.{{ deevnet_root_domain }}"}}
         - {why: a public name, ask: {common_name: "example.com"}}
-        - {why: a substrate name beside a good one, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", alt_names: "grafana.{{ openbao_tsv_zone }}"}}
+        - {why: a public name beside a good one, ask: {common_name: "probe.chg0047.{{ deevnet_root_domain }}", alt_names: "example.com"}}
         - {why: an address, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", ip_sans: "10.20.25.21"}}
         - {why: a URI, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", uri_sans: "urn:deevnet:mobile:tenant:eds:device:x"}}
         - {why: no name at all, ask: {}}

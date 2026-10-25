@@ -153,11 +153,14 @@ openbao_tenant_service_role: tenant-service
 # substrate's own are <name>.<this>.
 openbao_tenant_service_site_zone: "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
 openbao_tenant_service_role_body:
-  # Names at least two labels below the site's zone, and nothing else. A glob
-  # here matches across dots, so this admits a.b.<zone> and deeper and never
-  # <name>.<zone>: a tenant's name is always two labels down, a substrate
-  # name always one.
-  allowed_domains: ["*.*.{{ openbao_tenant_service_site_zone }}"]
+  # Names at least two labels below the root, and nothing else: a tenant's
+  # service is <label>.<tenant>.<root>, and <label>.<tenant>.<site>.<root> at
+  # each site (ADR-0040). A glob here matches across dots, so this admits
+  # a.b.<root> and deeper and never <name>.<root>. It no longer tells a
+  # tenant's name from a site's (grafana.home.deevnet.net is two labels down
+  # too): the Deevnet API's reserved tenant names do, alone until each tenant
+  # has a role of its own (CHG-0054, a follow-up).
+  allowed_domains: ["*.*.{{ deevnet_root_domain }}"]
   allow_glob_domains: true
   allow_bare_domains: false
   allow_subdomains: false

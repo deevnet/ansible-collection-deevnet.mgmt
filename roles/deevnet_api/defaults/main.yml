@@ -258,6 +258,9 @@ deevnet_api_openbao_approle: deevnet-api
 # A new secret ID is issued when the held one has fewer days left than this,
 # or none at all (openbao_api_secret_id_ttl in the openbao role).
 deevnet_api_secret_id_renew_days: 60
+# The sites a tenant's certificate may name beside its site-less names
+# (ADR-0040, CHG-0054): this one, and those its tenants go to.
+deevnet_api_certificate_sites: ["{{ deevnet_substrate }}"]
 
 # The Tenant Service CA's mount in OpenBao, which the API signs tenants' server
 # certificates through (ADR-0037, CHG-0047). On when the inventory holds that
