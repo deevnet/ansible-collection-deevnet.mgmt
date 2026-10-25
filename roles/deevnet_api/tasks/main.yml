@@ -109,15 +109,27 @@
 - name: Restart now if the certificate or the environment changed
   ansible.builtin.meta: flush_handlers
 
+# A sealed OpenBao is not waited out: the API is up and says so, and it will
+# refuse tenant work until OpenBao is opened for a work session (ADR-0042).
 - name: Wait for the API to report ready
   ansible.builtin.uri:
     url: "{{ deevnet_api_local_url }}/readyz"
     ca_path: "{{ (deevnet_api_tls_dir ~ '/' ~ site_root_ca_name) if deevnet_api_site | length > 0 else omit }}"
-    status_code: [200]
+    status_code: [200, 503]
   register: deevnet_api_ready
   retries: 15
   delay: 2
-  until: deevnet_api_ready.status is defined and deevnet_api_ready.status == 200
+  until: >-
+    deevnet_api_ready.status is defined and
+    (deevnet_api_ready.status == 200 or
+     (deevnet_api_ready.json | default({})).openbao | default('') in ['sealed', 'uninitialized'])
+
+- name: Stop if OpenBao is sealed
+  ansible.builtin.fail:
+    msg: >-
+      The API is deployed and running, but OpenBao is {{ deevnet_api_ready.json.openbao }}, so it
+      refuses tenant work. Unseal OpenBao and run this again to finish the deploy.
+  when: deevnet_api_ready.status != 200
 
 - name: Read the API's version
   ansible.builtin.uri:
