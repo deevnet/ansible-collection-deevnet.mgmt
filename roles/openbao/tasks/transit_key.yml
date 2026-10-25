@@ -1,0 +1,86 @@
+---
+# The Transit key that seals tenant secrets, imported from the vault
+# (ADR-0042 §4, CHG-0036). OpenBao never makes it: a key made inside cannot
+# leave, so a rebuild would lose every stored secret (INC-0003's lesson).
+#
+# Import is OpenBao's "bring your own key": the 32-byte key is wrapped on the
+# control node with an ephemeral AES key (KWP), which is itself wrapped with
+# OpenBao's wrapping key (RSA-OAEP, SHA-256). Neither key crosses in the clear.
+# OpenBao refuses to import onto an existing key, so a key already there is
+# checked to be an imported one and left alone.
+
+- name: Read the Transit key
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/transit/keys/{{ openbao_transit_key }}"
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    status_code: [200, 404]
+  register: openbao_tk
+
+- name: Check an existing Transit key is the imported one
+  ansible.builtin.assert:
+    that: openbao_tk.json.data.imported_key | default(false) | bool
+    fail_msg: >-
+      transit/keys/{{ openbao_transit_key }} exists but was made inside OpenBao, so it is not
+      the vault's key. Use another name for the imported key (openbao_transit_key).
+    quiet: true
+  when: openbao_tk.status == 200
+
+- name: Import it
+  when: openbao_tk.status == 404
+  block:
+    - name: Refuse without the key in the vault
+      ansible.builtin.assert:
+        that: openbao_transit_key_material | length > 0
+        fail_msg: >-
+          The vault has no Transit key (vault_openbao_transit_key). Make one with
+          playbooks/transit-key.yml, encrypt, commit and push, then run this again.
+        quiet: true
+
+    - name: Read OpenBao's wrapping key
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/transit/wrapping_key"
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+      register: openbao_tk_wrap
+
+    # In RAM on the control node, and gone when the task ends.
+    - name: Wrap the key for import
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          d=$(mktemp -d /dev/shm/deevnet-transit.XXXXXX); trap 'rm -rf "$d"' EXIT
+          umask 077
+          printf '%s' "$WRAPPING_KEY" > "$d/wrap.pem"
+          base64 -d > "$d/target" <<< "$TARGET"
+          [ "$(stat -c %s "$d/target")" = 32 ] || { echo "the vault's Transit key is not 32 bytes" >&2; exit 1; }
+          openssl rand 32 > "$d/eph"
+          openssl pkeyutl -encrypt -pubin -inkey "$d/wrap.pem" -in "$d/eph" -out "$d/eph.w" \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256
+          openssl enc -id-aes256-wrap-pad -K "$(od -An -tx1 -v "$d/eph" | tr -d ' \n')" -iv A65959A6 \
+            -in "$d/target" -out "$d/target.w"
+          cat "$d/eph.w" "$d/target.w" | base64 -w0
+        executable: /bin/bash
+      environment:
+        WRAPPING_KEY: "{{ openbao_tk_wrap.json.data.public_key }}"
+        TARGET: "{{ openbao_transit_key_material }}"
+      register: openbao_tk_wrapped
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      no_log: true
+
+    - name: Import the wrapped key
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/transit/keys/{{ openbao_transit_key }}/import"
+        method: POST
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_token }}"}
+        body_format: json
+        body:
+          ciphertext: "{{ openbao_tk_wrapped.stdout }}"
+          hash_function: SHA256
+          type: aes256-gcm96
+        status_code: [200, 204]
+      changed_when: true
+      no_log: true

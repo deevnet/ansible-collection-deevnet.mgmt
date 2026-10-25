@@ -2,10 +2,10 @@
 # OpenBao - the substrate's runtime secrets (ADR-0016), in the identity VM.
 #
 # What it holds now: the Deevnet API's backend credentials (KV), the key that
-# encrypts tenant secrets in the API's database (Transit), the site's internal
-# CA (PKI), and single-use enrollment tokens (response wrapping). ansible-vault
-# stays the root of trust for what OpenBao cannot hold about itself: the seal
-# key and the credential Ansible configures it with.
+# encrypts tenant secrets in the API's database (Transit), the tenant CAs
+# (PKI), and single-use enrollment tokens (response wrapping). ansible-vault
+# stays the root of trust: the seal key, the credential Ansible configures it
+# with, and every key OpenBao uses, which it imports (ADR-0042 §4).
 
 openbao_image_name: "quay.io/openbao/openbao"
 openbao_image_tag: "2.6.2"
@@ -73,7 +73,16 @@ openbao_build_kv_mount: image-factory
 # The hypervisors whose Proxmox API token is written to
 # image-factory/proxmox/<node>. Each needs proxmox_token_id/_secret.
 openbao_build_hypervisors: "{{ groups['hypervisors'] | default([]) }}"
-openbao_transit_key: tenant-secrets
+# The Transit key that seals tenant secrets in the API's database. Its
+# material is the vault's (vault_openbao_transit_key, made by
+# playbooks/transit-key.yml), imported on every build, so a rebuilt OpenBao
+# reads what the old one sealed (ADR-0042 §4, CHG-0036). The name is set in
+# the inventory, where the deevnet_api role reads it too.
+openbao_transit_key: tenant-secrets-v2
+openbao_transit_key_material: "{{ vault_openbao_transit_key | default('') }}"
+# The key being replaced, while the API reseals stored values: the API may
+# decrypt with it and nothing else. Empty once the reseal is done.
+openbao_transit_key_previous: ""
 # The site's Tenant Device CA (ADR-0031 §3). Its key is the vault's, made on
 # the control node (playbooks/tenant-cas.yml), and imported with the
 # certificate the ceremony signed (ADR-0042 §4). Its name carries no site: it
@@ -194,7 +203,8 @@ openbao_policies:
     path "{{ openbao_kv_mount }}/data/backends" { capabilities = ["read"] }
     path "transit/encrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
     path "transit/decrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
-    path "sys/wrapping/wrap" { capabilities = ["update"] }
+    {% if openbao_transit_key_previous | length > 0 %}path "transit/decrypt/{{ openbao_transit_key_previous }}" { capabilities = ["update"] }
+    {% endif %}path "sys/wrapping/wrap" { capabilities = ["update"] }
     path "{{ openbao_tenant_service_mount }}/sign/{{ openbao_tenant_service_role }}" { capabilities = ["update"] }
   # Ansible after bootstrap: configure mounts, auth, policies and roles, write
   # the API's backend credentials, run the issuing CAs. Not root: it cannot read
@@ -209,6 +219,7 @@ openbao_policies:
     path "{{ openbao_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
     path "{{ openbao_build_kv_mount }}/data/*" { capabilities = ["create", "read", "update"] }
     path "transit/keys/*" { capabilities = ["create", "read", "update"] }
+    path "transit/wrapping_key" { capabilities = ["read"] }
     path "{{ openbao_tenant_device_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
     path "{{ openbao_tenant_service_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
 

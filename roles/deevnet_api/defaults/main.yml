@@ -249,6 +249,11 @@ deevnet_api_openbao_ansible_role_id: "{{ vault_openbao_ansible_role_id | default
 deevnet_api_openbao_ansible_secret_id: "{{ vault_openbao_ansible_secret_id | default('') }}"
 deevnet_api_openbao_kv_mount: deevnet-api
 deevnet_api_openbao_kv_path: backends
+# The Transit key, and while stored values move to it the one it replaces
+# (CHG-0036). The same names the openbao role imports and grants; the
+# inventory sets both for both roles.
+deevnet_api_openbao_transit_key: "{{ openbao_transit_key | default('tenant-secrets-v2') }}"
+deevnet_api_openbao_transit_key_previous: "{{ openbao_transit_key_previous | default('') }}"
 deevnet_api_openbao_approle: deevnet-api
 
 # The Tenant Service CA's mount in OpenBao, which the API signs tenants' server
