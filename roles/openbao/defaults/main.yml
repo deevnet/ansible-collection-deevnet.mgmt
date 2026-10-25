@@ -17,6 +17,13 @@ openbao_config_dir: "{{ openbao_data_root }}/config"
 openbao_storage_dir: "{{ openbao_data_root }}/data"
 openbao_secrets_dir: "{{ openbao_data_root }}/secrets"
 openbao_tls_dir: "{{ openbao_data_root }}/tls"
+# The file audit device (CHG-0036): every request, with secrets HMAC'd, on the
+# identity VM's disk. OpenBao refuses requests it cannot audit, so the file is
+# rotated and the role stops when the disk under it runs short.
+openbao_logs_dir: "{{ openbao_data_root }}/logs"
+openbao_audit_rotate_size: 50M
+openbao_audit_rotate_keep: 10
+openbao_audit_min_free_mb: 1024
 
 # The image runs as `openbao` (uid 100, gid 1000). Its entrypoint would chown
 # its volumes, which fails unless it runs as root; the directories are owned to

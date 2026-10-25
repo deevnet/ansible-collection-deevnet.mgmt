@@ -42,6 +42,7 @@
     - "{{ openbao_config_dir }}"
     - "{{ openbao_storage_dir }}"
     - "{{ openbao_secrets_dir }}"
+    - "{{ openbao_logs_dir }}"
   # The tls directory is site_cert's (tasks/tls.yml): root-owned, its key
   # readable by the openbao user only. Setting it here too flipped its owner
   # on every run.
@@ -58,6 +59,44 @@
   diff: false
   become: true
   notify: restart openbao
+
+# OpenBao refuses every request once it cannot write its audit log, so a full
+# disk would stop it: stop here first, while there is still room to act.
+- name: Check the disk under the audit log
+  ansible.builtin.command:
+    argv: [df, --output=avail, -BM, "{{ openbao_data_root }}"]
+  register: openbao_logs_df
+  changed_when: false
+  become: true
+
+- name: Stop if the audit log's disk is short
+  ansible.builtin.assert:
+    that: (openbao_logs_df.stdout_lines[-1] | regex_replace('[^0-9]', '') | int) >= openbao_audit_min_free_mb
+    fail_msg: >-
+      {{ openbao_data_root }} has {{ openbao_logs_df.stdout_lines[-1] | trim }} free, under
+      {{ openbao_audit_min_free_mb }}M. OpenBao refuses requests it cannot audit: free space
+      (old rotations in {{ openbao_logs_dir }}) before going on.
+    quiet: true
+
+- name: Rotate the audit log
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/openbao-audit
+    content: |
+      # {{ ansible_managed | default('Ansible managed') }}
+      # OpenBao's audit log (CHG-0036). HUP makes OpenBao reopen the file.
+      {{ openbao_logs_dir }}/audit.log {
+          size {{ openbao_audit_rotate_size }}
+          rotate {{ openbao_audit_rotate_keep }}
+          compress
+          delaycompress
+          missingok
+          notifempty
+          postrotate
+              /usr/bin/podman kill --signal HUP {{ openbao_container_name }} >/dev/null 2>&1 || true
+          endscript
+      }
+    mode: "0644"
+  become: true
 
 - name: Issue the listener certificate
   ansible.builtin.import_tasks: tls.yml
@@ -87,6 +126,7 @@
       - "{{ openbao_storage_dir }}:/openbao/file:Z"
       - "{{ openbao_secrets_dir }}:/openbao/secrets:Z"
       - "{{ openbao_tls_dir }}:/openbao/tls:Z"
+      - "{{ openbao_logs_dir }}:/openbao/logs:Z"
     # The entrypoint's chown needs root, which the image does not run as; the
     # directories are owned to match instead.
     podman_service_create_args: ["--entrypoint", "bao"]

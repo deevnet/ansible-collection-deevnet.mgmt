@@ -22,5 +22,16 @@ seal "static" {
   current_key    = "file:///openbao/secrets/seal.key"
 }
 
+# Every request, with secrets HMAC'd (CHG-0036). Declared here: OpenBao 2.6
+# refuses to enable an audit device through its API. It refuses requests it
+# cannot audit, so the role rotates the file and checks the disk under it.
+audit "file" "file" {
+  description = "Every request, secrets HMAC'd (CHG-0036)"
+  options {
+    file_path = "/openbao/logs/audit.log"
+    mode      = "0600"
+  }
+}
+
 api_addr     = "{{ openbao_api_url }}"
 cluster_addr = "https://{{ openbao_address }}:{{ openbao_cluster_port }}"
