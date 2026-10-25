@@ -74,9 +74,10 @@ openbao_build_kv_mount: image-factory
 # image-factory/proxmox/<node>. Each needs proxmox_token_id/_secret.
 openbao_build_hypervisors: "{{ groups['hypervisors'] | default([]) }}"
 openbao_transit_key: tenant-secrets
-# The site's Tenant Device CA (ADR-0031 §3): an issuing CA whose key is
-# generated inside OpenBao and never leaves. Only its request goes to the
-# Issuing CA ceremony; the signed certificate comes back through the inventory.
+# The site's Tenant Device CA (ADR-0031 §3). Its key is the vault's, made on
+# the control node (playbooks/tenant-cas.yml), and imported with the
+# certificate the ceremony signed (ADR-0042 §4). Its name carries no site: it
+# serves tenants at every site (ADR-0039 §2).
 # It issues tenant devices' client certificates only (CHG-0034). No substrate
 # certificate comes from OpenBao, from this CA or the next.
 openbao_tenant_device_mount: pki-tenant-device
@@ -84,22 +85,22 @@ openbao_tenant_device_mount: pki-tenant-device
 openbao_tenant_device_mount_ttl: 87600h
 openbao_tenant_device_organization: Deevnet
 openbao_tenant_device_ou: "{{ deevnet_substrate | capitalize }} Site"
-openbao_tenant_device_common_name: "Deevnet {{ deevnet_substrate | capitalize }} Tenant Device CA"
+openbao_tenant_device_common_name: Deevnet Tenant Device CA
+openbao_tenant_device_key: "{{ vault_tenant_device_ca_key | default('') }}"
 # From the ceremony, in the inventory beside the Site CA.
-openbao_tenant_device_csr_local: "{{ site_ca_file | dirname }}/deevnet-{{ deevnet_substrate }}-tenant-device-ca.csr"
 openbao_tenant_device_cert_local: "{{ site_tenant_device_ca_file | default(site_ca_file | dirname ~ '/deevnet-' ~ deevnet_substrate ~ '-tenant-device-ca.pem') }}"
 openbao_site_ca_local: "{{ site_ca_file }}"
 openbao_root_ca_local: "{{ site_root_ca_file }}"
-# The site's Tenant Service CA (ADR-0037): a second issuing CA whose key is
-# generated inside OpenBao, on a mount of its own. It issues server
+# The site's Tenant Service CA (ADR-0037): a second issuing CA, its key the
+# vault's like the Tenant Device CA's, on a mount of its own. It issues server
 # certificates for names in a tenant's own zone, through the Deevnet API. It
 # shares nothing with the Tenant Device CA: not a mount, a key or a role.
 openbao_tenant_service_mount: pki-tenant-service
 openbao_tenant_service_mount_ttl: 87600h
 openbao_tenant_service_organization: Deevnet
 openbao_tenant_service_ou: "{{ deevnet_substrate | capitalize }} Site"
-openbao_tenant_service_common_name: "Deevnet {{ deevnet_substrate | capitalize }} Tenant Service CA"
-openbao_tenant_service_csr_local: "{{ site_ca_file | dirname }}/deevnet-{{ deevnet_substrate }}-tenant-service-ca.csr"
+openbao_tenant_service_common_name: Deevnet Tenant Service CA
+openbao_tenant_service_key: "{{ vault_tenant_service_ca_key | default('') }}"
 openbao_tenant_service_cert_local: "{{ site_tenant_service_ca_file | default(site_ca_file | dirname ~ '/deevnet-' ~ deevnet_substrate ~ '-tenant-service-ca.pem') }}"
 
 # The issuing CAs OpenBao holds, each run through tasks/issuing_ca.yml. `slug`
@@ -113,9 +114,9 @@ openbao_issuing_cas:
     organization: "{{ openbao_tenant_device_organization }}"
     ou: "{{ openbao_tenant_device_ou }}"
     common_name: "{{ openbao_tenant_device_common_name }}"
-    csr_local: "{{ openbao_tenant_device_csr_local }}"
+    key: "{{ openbao_tenant_device_key }}"
+    key_var: vault_tenant_device_ca_key
     cert_local: "{{ openbao_tenant_device_cert_local }}"
-    rotate: "{{ openbao_tenant_device_rotate | default(false) }}"
   - name: Tenant Service CA
     slug: tenant-service
     mount: "{{ openbao_tenant_service_mount }}"
@@ -123,9 +124,9 @@ openbao_issuing_cas:
     organization: "{{ openbao_tenant_service_organization }}"
     ou: "{{ openbao_tenant_service_ou }}"
     common_name: "{{ openbao_tenant_service_common_name }}"
-    csr_local: "{{ openbao_tenant_service_csr_local }}"
+    key: "{{ openbao_tenant_service_key }}"
+    key_var: vault_tenant_service_ca_key
     cert_local: "{{ openbao_tenant_service_cert_local }}"
-    rotate: "{{ openbao_tenant_service_rotate | default(false) }}"
 
 # The one role the Tenant Service CA signs through (ADR-0037 §3-§4,
 # Certificates standard §2-§4). The Deevnet API may sign on it and may not

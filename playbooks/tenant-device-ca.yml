@@ -3,11 +3,12 @@
 #
 #   ansible-playbook playbooks/tenant-device-ca.yml
 #
-# First run: OpenBao makes the CA's key and request; the request is written to
-# pki/<site>/deevnet-<site>-tenant-device-ca.csr for the Issuing CA ceremony.
-# After `deevnet-pki-transfer.sh accept` puts the signed certificate beside it,
-# run again: it is installed with the Site CA and made the default issuer.
-# Any later run checks it is the inventory's certificate and changes nothing.
+# It imports the CA from the vault (ADR-0042 §4, CHG-0036): the key in
+# vault_tenant_device_ca_key, made by playbooks/tenant-cas.yml, and the
+# certificate the Issuing CA ceremony signed,
+# pki/<site>/deevnet-<site>-tenant-device-ca.pem, with the Site CA. It checks the two are a pair first, then makes the imported issuer the
+# default. A run that finds the mount already serving that certificate
+# changes nothing.
 #
 # playbooks/openbao.yml runs the same steps as part of the whole role.
 - name: The Tenant Device CA

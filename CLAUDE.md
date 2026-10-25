@@ -57,7 +57,7 @@ Roles map to ADRs in `deevnet-docs`: `site_cert` (ADR-0031, ADR-0030 §5-§8), `
   key `vault_site_substrate_ca_key`), never by OpenBao: OpenBao's own listener included, so a
   substrate rebuilt from nothing has no cycle. Trust is the Deevnet Root CA from the inventory
   (`site_root_ca_file`, `pki/deevnet-root-ca.pem`). A cert is reissued when it stops chaining
-  to that root, or lacks a name it is asked for (CHG-0045), not when the CA file differs. OpenBao holds two issuing CAs, each on its own mount and neither for the substrate: the Tenant Device CA (ADR-0031 §3) and the Tenant Service CA (ADR-0037), which signs server certificates for names in a tenant's own zone through one role the Deevnet API may use and may not change. Both run through `roles/openbao/tasks/issuing_ca.yml`.
+  to that root, or lacks a name it is asked for (CHG-0045), not when the CA file differs. OpenBao holds two issuing CAs, each on its own mount and neither for the substrate: the Tenant Device CA (ADR-0031 §3) and the Tenant Service CA (ADR-0037), which signs server certificates for names in a tenant's own zone through one role the Deevnet API may use and may not change. Both keys are the vault's (`vault_tenant_device_ca_key`, `vault_tenant_service_ca_key`, made by `playbooks/tenant-cas.yml`), imported with the ceremony's certificate through `roles/openbao/tasks/issuing_ca.yml` (ADR-0042 §4); OpenBao never makes a CA key of its own.
 - **The Root CA's and Site CA's keys are never here, in any form** (Certificates standard 5.1).
   Issuing CAs are signed offline; `scripts/pki/` moves their requests and certificates.
 - **The Deevnet API holds only its AppRole.** Its backend credentials are written

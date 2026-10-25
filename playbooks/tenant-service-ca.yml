@@ -4,11 +4,12 @@
 #
 #   ansible-playbook playbooks/tenant-service-ca.yml
 #
-# First run: OpenBao makes the CA's key and request; the request is written to
-# pki/<site>/deevnet-<site>-tenant-service-ca.csr for the Issuing CA ceremony
-# (--ca tenant-service). After `deevnet-pki-transfer.sh accept` puts the signed
-# certificate beside it, run again: it is installed with the Site CA and made
-# the default issuer. Any later run changes nothing.
+# It imports the CA from the vault (ADR-0042 §4, CHG-0036): the key in
+# vault_tenant_service_ca_key, made by playbooks/tenant-cas.yml, and the
+# certificate the Issuing CA ceremony signed,
+# pki/<site>/deevnet-<site>-tenant-service-ca.pem, with the Site CA. It checks the two are a pair first, then makes the imported issuer the
+# default. A run that finds the mount already serving that certificate
+# changes nothing.
 #
 # Every run also writes the one role the CA signs through, which a mount with
 # no CA yet cannot use.
