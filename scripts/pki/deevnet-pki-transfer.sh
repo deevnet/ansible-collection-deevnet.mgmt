@@ -38,11 +38,13 @@ $hits"
 }
 
 title() { echo "${1^}"; }                       # mobile -> Mobile
+# The tenant CAs serve tenants at every site, so their names carry none
+# (ADR-0039 §2); the Mobile Site CA signs them, which OU and --site still say.
 ca_cn() {                                       # site, ca -> expected CN
   case "$2" in
     substrate)     echo "Deevnet $(title "$1") Substrate CA" ;;
-    tenant-device) echo "Deevnet $(title "$1") Tenant Device CA" ;;
-    tenant-service) echo "Deevnet $(title "$1") Tenant Service CA" ;;
+    tenant-device) echo "Deevnet Tenant Device CA" ;;
+    tenant-service) echo "Deevnet Tenant Service CA" ;;
     *) die "--ca must be substrate, tenant-device or tenant-service" ;;
   esac
 }

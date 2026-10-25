@@ -1,0 +1,130 @@
+# The tenant CAs' keys and signing requests, made outside OpenBao (ADR-0042 §4,
+# CHG-0036). Run once, on the control node, with the inventory's vaults
+# DECRYPTED:
+#
+#   cd ../ansible-inventory-deevnet && make unvault
+#   ansible-playbook playbooks/tenant-cas.yml
+#   cd ../ansible-inventory-deevnet && make vault && git add -A && git commit && git push
+#
+# The Tenant Service CA's and Tenant Device CA's first keys were generated
+# inside OpenBao and cannot leave it, so a rebuilt OpenBao would lose them.
+# These replace them: generated here, appended to the site vault, and imported
+# into OpenBao by the openbao role. Only the requests leave, to
+# pki/<site>/rekey/, signed by the Mobile Site CA in the Issuing CA ceremony
+# (Root of Trust runbook) with --ca tenant-service and --ca tenant-device. The
+# certificates in pki/<site>/ are the current ones, and stay until the role
+# imports the new pair. The keys exist nowhere else: encrypt, commit and PUSH
+# before the ceremony.
+#
+# The CAs' names carry no site: they serve tenants at every site (ADR-0039 §2).
+#
+# It refuses to run if the vault already holds either key, so it cannot replace
+# one by accident.
+- name: Generate the tenant CAs' keys and requests
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_host: 127.0.0.1
+    site: "{{ deevnet_substrate | default('mobile') }}"
+    site_title: "{{ site | capitalize }}"
+    site_inventory: "{{ ansible_inventory_sources[0] }}"
+    pki_dir: "{{ site_inventory }}/../pki/{{ site }}/rekey"
+    vault_file: "{{ site_inventory }}/group_vars/all/vault.yml"
+    tenant_cas:
+      - slug: tenant-service
+        var: vault_tenant_service_ca_key
+        cn: Deevnet Tenant Service CA
+      - slug: tenant-device
+        var: vault_tenant_device_ca_key
+        cn: Deevnet Tenant Device CA
+  tasks:
+    - name: Read the site vault
+      ansible.builtin.slurp:
+        src: "{{ vault_file }}"
+      register: site_vault
+      no_log: true
+
+    - name: Refuse unless the vault is decrypted and holds neither key
+      ansible.builtin.assert:
+        that:
+          - not (site_vault.content | b64decode).startswith('$ANSIBLE_VAULT')
+          - "'vault_tenant_service_ca_key' not in (site_vault.content | b64decode)"
+          - "'vault_tenant_device_ca_key' not in (site_vault.content | b64decode)"
+        fail_msg: >-
+          Either {{ vault_file }} is encrypted (run make unvault), or the site already has a
+          tenant CA key (vault_tenant_service_ca_key, vault_tenant_device_ca_key). This play
+          never replaces one.
+        quiet: true
+
+    # RSA 3072 (standard §4), as the Substrate CA's. Unencrypted inside the
+    # ansible-vault, which is its encryption: the role imports it unattended.
+    - name: Generate the keys
+      community.crypto.openssl_privatekey_pipe:
+        type: RSA
+        size: 3072
+      loop: "{{ tenant_cas }}"
+      loop_control:
+        label: "{{ item.cn }}"
+      register: tenant_ca_keys
+      no_log: true
+
+    # Subject only. The extensions - CA:TRUE, pathlen:0, five years - come from
+    # the ceremony's profile, never from the request (standard 4.6).
+    - name: Make the requests
+      community.crypto.openssl_csr_pipe:
+        privatekey_content: "{{ item.privatekey }}"
+        subject_ordered:
+          - O: Deevnet
+          - OU: "{{ site_title }} Site"
+          - CN: "{{ item.item.cn }}"
+        use_common_name_for_san: false
+      loop: "{{ tenant_ca_keys.results }}"
+      loop_control:
+        label: "{{ item.item.cn }}"
+      register: tenant_ca_csrs
+      no_log: true
+
+    - name: Write the keys to the site vault
+      ansible.builtin.blockinfile:
+        path: "{{ vault_file }}"
+        marker: "# {mark} ADR-0042 tenant CA keys"
+        block: |
+          {% for k in tenant_ca_keys.results %}
+          {{ k.item.var }}: |
+            {{ k.privatekey | trim | indent(2) }}
+          {% endfor %}
+      no_log: true
+
+    - name: Make the request directory
+      ansible.builtin.file:
+        path: "{{ pki_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write the requests
+      ansible.builtin.copy:
+        dest: "{{ pki_dir }}/deevnet-{{ site }}-{{ item.item.item.slug }}-ca.csr"
+        content: "{{ item.csr }}"
+        mode: "0644"
+      loop: "{{ tenant_ca_csrs.results }}"
+      loop_control:
+        label: "{{ item.item.item.cn }}"
+
+    - name: Show the requests
+      ansible.builtin.shell:
+        cmd: >-
+          for f in {{ pki_dir }}/*.csr; do echo "$f";
+          openssl req -in "$f" -noout -verify -subject -nameopt RFC2253 2>&1;
+          echo "public key sha256 $(openssl req -in "$f" -noout -pubkey | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)";
+          done
+      register: tenant_ca_csr_show
+      changed_when: false
+
+    - name: Encrypt, commit and push now
+      ansible.builtin.debug:
+        msg:
+          - "{{ tenant_ca_csr_show.stdout_lines }}"
+          - "The keys are in {{ vault_file }} IN PLAINTEXT and nowhere else."
+          - "cd {{ site_inventory }}/.. && make vault && git add -A && git commit && git push"
+          - "Then: Root of Trust > Issuing CA, once with --ca tenant-service and once with --ca tenant-device"
