@@ -220,6 +220,7 @@
       OPENBAO_KV_MOUNT: "{{ deevnet_api_openbao_kv_mount }}"
       OPENBAO_KV_PATH: "{{ deevnet_api_openbao_kv_path }}"
       OPENBAO_TRANSIT_KEY: "{{ deevnet_api_openbao_transit_key }}"
+      DEEVNET_CERTIFICATE_SITES: "{{ deevnet_api_certificate_sites | join(',') }}"
       DEEVNET_API_TLS_CERT: /etc/deevnet-api/tls/api.pem
       DEEVNET_API_TLS_KEY: /etc/deevnet-api/tls/api-key.pem
       # The appliances (ADR-0030 §8, CHG-0032). Go reads SSL_CERT_FILE as its
