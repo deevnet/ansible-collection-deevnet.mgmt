@@ -123,14 +123,8 @@
   when: (item ~ '/') in openbao_mounts.json
   changed_when: true
 
-- name: Create the Transit key for tenant secrets
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/transit/keys/{{ openbao_transit_key }}"
-    method: POST
-    ca_path: "{{ openbao_tls_ca }}"
-    headers: {X-Vault-Token: "{{ openbao_token }}"}
-    status_code: [200, 204]
-  changed_when: false
+- name: Import the Transit key for tenant secrets from the vault
+  ansible.builtin.include_tasks: transit_key.yml
 
 - name: Write AppRoles
   ansible.builtin.uri:

@@ -1,0 +1,59 @@
+# The Transit key that seals tenant secrets in the API's database, made
+# outside OpenBao (ADR-0042 §4, CHG-0036). Run once, on the control node, with
+# the inventory's vaults DECRYPTED:
+#
+#   cd ../ansible-inventory-deevnet && make unvault
+#   ansible-playbook playbooks/transit-key.yml
+#   cd ../ansible-inventory-deevnet && make vault && git add -A && git commit && git push
+#
+# 32 random bytes, base64, appended to the openbao group's vault as
+# vault_openbao_transit_key. The openbao role imports it under
+# openbao_transit_key. The key exists nowhere else: encrypt, commit and PUSH
+# before the role imports it, or a lost OpenBao loses every stored secret.
+#
+# It refuses to run if the vault already holds one.
+- name: Generate the Transit key
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_host: 127.0.0.1
+    site_inventory: "{{ ansible_inventory_sources[0] }}"
+    vault_file: "{{ site_inventory }}/group_vars/openbao/vault.yml"
+  tasks:
+    - name: Read the openbao vault
+      ansible.builtin.slurp:
+        src: "{{ vault_file }}"
+      register: openbao_vault
+      no_log: true
+
+    - name: Refuse unless the vault is decrypted and holds no Transit key
+      ansible.builtin.assert:
+        that:
+          - not (openbao_vault.content | b64decode).startswith('$ANSIBLE_VAULT')
+          - "'vault_openbao_transit_key' not in (openbao_vault.content | b64decode)"
+        fail_msg: >-
+          Either {{ vault_file }} is encrypted (run make unvault), or it already has a Transit
+          key (vault_openbao_transit_key). This play never replaces one.
+        quiet: true
+
+    - name: Generate the key
+      ansible.builtin.command:
+        argv: [openssl, rand, -base64, "32"]
+      register: transit_key
+      changed_when: false
+      no_log: true
+
+    - name: Write it to the openbao vault
+      ansible.builtin.blockinfile:
+        path: "{{ vault_file }}"
+        marker: "# {mark} ADR-0042 Transit key"
+        block: |
+          vault_openbao_transit_key: "{{ transit_key.stdout | trim }}"
+      no_log: true
+
+    - name: Encrypt, commit and push now
+      ansible.builtin.debug:
+        msg:
+          - "The key is in {{ vault_file }} IN PLAINTEXT and nowhere else."
+          - "cd {{ site_inventory }}/.. && make vault && git add -A && git commit && git push"
