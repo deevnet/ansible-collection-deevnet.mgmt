@@ -7,17 +7,8 @@
 # use"), so mounts are listed first.
 
 - name: Log in as Ansible
-  ansible.builtin.uri:
-    url: "{{ openbao_local_url }}/v1/auth/approle/login"
-    method: POST
-    ca_path: "{{ openbao_tls_ca }}"
-    body_format: json
-    body:
-      role_id: "{{ openbao_ansible_role_id }}"
-      secret_id: "{{ openbao_ansible_secret_id }}"
-  register: openbao_login
+  ansible.builtin.include_tasks: ansible_login.yml
   when: openbao_bootstrap_token is not defined
-  no_log: true
 
 - name: Use a token for this run
   ansible.builtin.set_fact:
@@ -187,7 +178,8 @@
         msg: >-
           OpenBao is initialised. {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json
           holds the recovery key and Ansible's AppRole: move them into the vault
-          (vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id) and delete the file.
+          (vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id), make vault, commit and
+          push, then delete the file. The next run stops until the vault's AppRole logs in.
 
 - name: Write the build-time secrets
   ansible.builtin.import_tasks: build_secrets.yml
