@@ -208,7 +208,6 @@
       OPENBAO_KV_MOUNT: "{{ deevnet_api_openbao_kv_mount }}"
       OPENBAO_KV_PATH: "{{ deevnet_api_openbao_kv_path }}"
       OPENBAO_TRANSIT_KEY: "{{ deevnet_api_openbao_transit_key }}"
-      OPENBAO_TRANSIT_KEY_PREVIOUS: "{{ deevnet_api_openbao_transit_key_previous }}"
       DEEVNET_API_TLS_CERT: /etc/deevnet-api/tls/api.pem
       DEEVNET_API_TLS_KEY: /etc/deevnet-api/tls/api-key.pem
       # The appliances (ADR-0030 §8, CHG-0032). Go reads SSL_CERT_FILE as its
@@ -231,6 +230,14 @@
       {{ deevnet_api_tenant_env | combine({'DEEVNET_AGENT_TOKEN': deevnet_api_agent_token}) }}
   when: deevnet_api_agent_token | length > 0
   no_log: true
+
+# Only while stored values move to a new Transit key (CHG-0036). Empty is the
+# usual state, and every other value here must be set.
+- name: Name the Transit key being replaced
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({'OPENBAO_TRANSIT_KEY_PREVIOUS': deevnet_api_openbao_transit_key_previous}) }}
+  when: deevnet_api_openbao_transit_key_previous | length > 0
 
 - name: Add the wireless controller when this site issues Wi-Fi keys
   # Added separately, and only when set, for the same reason as the agent token
