@@ -7,7 +7,7 @@
 # It issues one certificate, for a name under a tenant that does not exist,
 # from a request that asks for a substrate name, a public name, an address, a
 # CA and client authentication, and checks that none of those is in it. Then
-# it asks for eleven names the role must refuse. The key is deleted at the end.
+# it asks for nine names the role must refuse. The key is deleted at the end.
 - name: Verify the Tenant Service CA's signing role
   hosts: openbao
   gather_facts: false
