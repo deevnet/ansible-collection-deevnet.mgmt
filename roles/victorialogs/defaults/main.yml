@@ -133,7 +133,9 @@ victorialogs_writer_timeout: 10
 # Staged by the API repo's `make stage-log-writer`, and pushed from the control
 # node like the images.
 victorialogs_writer_binary_store: /srv/deevnet-http/binaries/deevnet-log-user
-victorialogs_writer_binary: deevnet-log-user-latest
+# Pinned to the file -latest pointed at when pinned; staging a new one does not
+# change what is deployed until this does.
+victorialogs_writer_binary: deevnet-log-user-v0.6.0
 
 # The API's public key, and the address it may use it from. Empty means the
 # capability does not exist: nothing can ask this host to write a user.

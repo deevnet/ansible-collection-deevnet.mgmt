@@ -180,7 +180,9 @@ vernemq_writer_password_file: /etc/deevnet/broker-account.pgpass
 # node like every other artifact. Pushed, not pulled: IoT Backend has no route
 # to the artifact server.
 vernemq_writer_binary_store: /srv/deevnet-http/binaries/deevnet-broker-account
-vernemq_writer_binary: deevnet-broker-account-latest
+# Pinned to the file -latest pointed at when pinned; staging a new one does not
+# change what is deployed until this does.
+vernemq_writer_binary: deevnet-broker-account-v0.5.1
 
 # Bounds, in seconds. A tenant's terraform apply is holding the other end of
 # this, so nothing may hang: the first bounds the whole invocation, the second
