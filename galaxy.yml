@@ -20,4 +20,7 @@ dependencies:
   ansible.posix: ">=1.5.0"
   # proxmox_kvm / proxmox_vm_info, used by the proxmox_vm role to clone
   # management-plane VMs from Packer-built templates.
-  community.general: ">=8.0.0"
+  # Below 11, which moved the proxmox modules to community.proxmox.
+  community.general: ">=8.0.0,<11.0.0"
+  # openssl_privatekey_pipe / openssl_csr_pipe, in the CA playbooks.
+  community.crypto: ">=2.0.0"

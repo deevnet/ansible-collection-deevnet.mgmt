@@ -1,0 +1,35 @@
+# Checks on every pull request: every playbook parses, with this
+# collection's declared dependencies and nothing else. No inventory, no
+# vault and no hosts are reached.
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    env:
+      ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/.ansible/collections
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The Builder's ansible-core.
+      - run: pip install "ansible-core~=2.18.0"
+      - run: ansible-galaxy collection install -r collections/requirements.yml -p .ansible/collections
+      # The sibling collections this one's playbooks use, from their main.
+      - run: |
+          for c in builder net; do
+            ansible-galaxy collection install -p .ansible/collections \
+              "git+https://github.com/deevnet/ansible-collection-deevnet.$c.git,main"
+          done
+      - run: make install-dev
+      - run: make check
