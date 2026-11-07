@@ -71,3 +71,38 @@
       {%- endif -%}
       {%- endfor -%}
       {{ differs | join(', ') }}
+
+# A CEL role (CHG-0059) is a program. OpenBao compiles it when it is written,
+# so a program that does not compile fails here, and it is read back whole.
+- name: Write the PKI CEL roles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/cel/roles/{{ item.name }}"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: {cel_program: "{{ item.program }}"}
+    status_code: [200, 204]
+  loop: "{{ openbao_pki_cel_roles }}"
+  loop_control:
+    label: "{{ item.mount }}/cel/roles/{{ item.name }}"
+  changed_when: false
+
+- name: Read the CEL roles back
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/cel/roles/{{ item.name }}"
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+  loop: "{{ openbao_pki_cel_roles }}"
+  loop_control:
+    label: "{{ item.mount }}/cel/roles/{{ item.name }}"
+  register: openbao_pki_cel_roles_read
+
+- name: Check each CEL role holds the program written
+  ansible.builtin.assert:
+    that: item.json.data.cel_program == item.item.program
+    fail_msg: "{{ item.item.mount }}/cel/roles/{{ item.item.name }} does not hold the program written."
+    quiet: true
+  loop: "{{ openbao_pki_cel_roles_read.results }}"
+  loop_control:
+    label: "{{ item.item.mount }}/cel/roles/{{ item.item.name }}"

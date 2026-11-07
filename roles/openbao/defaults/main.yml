@@ -193,6 +193,89 @@ openbao_tenant_service_role_body:
   generate_lease: false
   require_cn: true
 
+# The Tenant Service CA's CEL role (CHG-0059, ADR-0040 §3), the one the API
+# signs through once OPENBAO_TENANT_SERVICE_CEL is on. A CEL role is a program,
+# not a list of permissions: the certificate is the template it returns, and
+# it refuses a request by returning a string. So it says everything the
+# classic role above says, and what that role cannot: a tenant label that is
+# reserved, and a request that names two tenants.
+#
+# What it does not see is the issuer, so unlike the classic role it does not
+# stop a leaf at the CA's own expiry. A leaf lasts a year and the Tenant
+# Service CA until 2031; the CA is renewed long before that matters.
+#
+# The sites a certificate may name beside its site-less names, the same list
+# the API is given (deevnet_api_certificate_sites).
+openbao_tenant_service_sites: "{{ site_tenant_certificate_sites | default([deevnet_substrate]) }}"
+# Labels no tenant may take: the Deevnet API's reservedNames
+# (internal/tenant/site.go), copied so that the secret store refuses them on
+# its own. A label added there is added here.
+openbao_tenant_reserved_labels: [home, mobile, mgmt, dvnt, dvntm, device, mqtt, artifacts]
+# <service>.<tenant>.[<site>.]<root>: a service label as the API allows it
+# (1-20 of a-z, 0-9 and dashes, starting with a letter, not ending with a
+# dash), a tenant name (1-8 of a-z and 0-9, starting with a letter), and one of
+# the sites or none. Backslashes are doubled for the CEL string literal.
+openbao_tenant_service_name_regex: >-
+  ^[a-z]([a-z0-9-]{0,18}[a-z0-9])?\\.[a-z][a-z0-9]{0,7}\\.(({{ openbao_tenant_service_sites | join('|') }})\\.)?{{ deevnet_root_domain | replace('.', '\\.') }}$
+openbao_tenant_service_cel_program:
+  variables:
+    # The API sends the first name as common_name and the rest as alt_names.
+    - name: names
+      expression: >-
+        [string(request.common_name)] + (has(request.alt_names) && string(request.alt_names) != ''
+        ? string(request.alt_names).split(',').map(n, n.trim()) : [])
+    - name: tenant
+      expression: "names[0].split('.')[1]"
+    - name: shaped
+      expression: "names.all(n, n.matches('{{ openbao_tenant_service_name_regex }}'))"
+    - name: one_tenant
+      expression: "names.all(n, n.split('.')[1] == tenant)"
+    - name: reserved
+      expression: "tenant in {{ openbao_tenant_reserved_labels | to_json }}"
+    # device.<tenant>.<root> holds the tenant's device names (ADR-0039 §4).
+    - name: device_label
+      expression: "names.exists(n, n.split('.')[0] == 'device')"
+    - name: unique
+      expression: "names.all(n, names.filter(m, m == n).size() == 1)"
+    # Sizes and curves are the API's to check; Ed25519 and the rest are refused.
+    - name: key_ok
+      expression: "use_csr && parsed_csr.PublicKeyAlgorithm in ['RSA', 'ECDSA']"
+    # The classic role's certificate: names from the request and nothing from
+    # the CSR but its key, a year, server use only. KeyUsage is copied into
+    # Go's bitmask as a number, so 5 is digital signature (1) and key
+    # encipherment (4), whatever the enum's names say (OpenBao 2.6.2).
+    - name: cert
+      expression: >-
+        CertTemplate{
+        Subject: PKIX.Name{CommonName: names[0], Organization: ['Deevnet'],
+        OrganizationUnit: ['{{ deevnet_substrate | capitalize }} Tenant Services']},
+        NotBefore: now - duration('30s'),
+        NotAfter: now + duration('8760h'),
+        KeyUsage: 5,
+        ExtKeyUsage: [ExtKeyUsage.ExtKeyUsageServerAuth],
+        BasicConstraintsValid: true,
+        IsCA: false,
+        DNSNames: names}
+  expression: >-
+    !shaped ? 'every name must be <service>.<tenant>.[<site>.]{{ deevnet_root_domain }}, the sites being {{ openbao_tenant_service_sites | join(', ') }}' :
+    !one_tenant ? 'a certificate names one tenant' :
+    reserved ? 'the tenant label is reserved' :
+    device_label ? 'device is the label of the tenant devices' :
+    !unique ? 'a name is given twice' :
+    !key_ok ? 'the key must be RSA or ECDSA' :
+    ValidationOutput{template: cert}
+
+# CEL roles, written to their mounts and read back whole.
+openbao_pki_cel_roles_all:
+  - mount: "{{ openbao_tenant_service_mount }}"
+    name: "{{ openbao_tenant_service_role }}"
+    program: "{{ openbao_tenant_service_cel_program }}"
+openbao_pki_cel_roles: "{{ openbao_pki_cel_roles_all }}"
+
+# The paths on its mount the API may sign through. Both while CHG-0059 moves
+# it to the CEL role; sign goes, with the classic role, once that is proven.
+openbao_tenant_service_api_sign_paths: [sign, cel/sign]
+
 # PKI signing roles, written to their mounts. POST is idempotent.
 openbao_pki_roles_all:
   - mount: "{{ openbao_tenant_service_mount }}"
@@ -207,15 +290,16 @@ openbao_retired_mounts: []
 openbao_policies:
   # The Deevnet API: read its backend credentials, use its Transit key, wrap
   # and unwrap enrollment records, and have the Tenant Service CA sign through
-  # its one role (ADR-0037). It cannot read that CA's key, change the role or
-  # use another. Its own certificate is the Substrate CA's, laid down by Ansible.
+  # its role (ADR-0037), classic or CEL (CHG-0059). It cannot read that CA's
+  # key, change the role or use another. Its own certificate is the Substrate CA's, laid down by Ansible.
   deevnet-api: |
     path "{{ openbao_kv_mount }}/data/backends" { capabilities = ["read"] }
     path "transit/encrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
     path "transit/decrypt/{{ openbao_transit_key }}" { capabilities = ["update"] }
     {% if openbao_transit_key_previous | length > 0 %}path "transit/decrypt/{{ openbao_transit_key_previous }}" { capabilities = ["update"] }
     {% endif %}path "sys/wrapping/wrap" { capabilities = ["update"] }
-    path "{{ openbao_tenant_service_mount }}/sign/{{ openbao_tenant_service_role }}" { capabilities = ["update"] }
+    {% for p in openbao_tenant_service_api_sign_paths %}path "{{ openbao_tenant_service_mount }}/{{ p }}/{{ openbao_tenant_service_role }}" { capabilities = ["update"] }
+    {% endfor %}
   # Ansible after bootstrap: configure mounts, auth, policies and roles, write
   # the API's backend credentials, run the issuing CAs. Not root: it cannot read
   # other tokens, generate a root, or change the seal.
