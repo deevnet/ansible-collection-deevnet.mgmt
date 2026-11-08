@@ -24,6 +24,22 @@
       {{ deevnet_api_backends | dict2items | selectattr('value', 'equalto', '') | map(attribute='key') | join(', ') }}
   no_log: true
 
+# The sealed stop (ADR-0042 §3, CHG-0053): before anything is written.
+- name: Read OpenBao's seal status
+  ansible.builtin.uri:
+    url: "{{ deevnet_api_openbao_addr }}/v1/sys/seal-status"
+    ca_path: "{{ deevnet_api_openbao_ca_local }}"
+  register: deevnet_api_bao_seal
+  delegate_to: localhost
+  become: false
+
+- name: Stop if OpenBao is sealed
+  ansible.builtin.fail:
+    msg: >-
+      OpenBao is sealed, so the API's credentials cannot be written. Nothing was changed. Open a
+      work session first (make bao-open in deevnet.mgmt), run this again, then make bao-close.
+  when: deevnet_api_bao_seal.json.sealed
+
 - name: Log in to OpenBao as Ansible
   ansible.builtin.uri:
     url: "{{ deevnet_api_openbao_addr }}/v1/auth/approle/login"

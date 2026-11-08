@@ -5,7 +5,14 @@
 # two issuing CAs it holds: the Tenant Device CA (ADR-0031 §3) and the Tenant
 # Service CA (ADR-0037).
 
+- name: Fail on a seal type this role does not know
+  ansible.builtin.assert:
+    that: openbao_seal_type in ['static', 'shamir']
+    fail_msg: "openbao_seal_type is {{ openbao_seal_type }}; it is static or shamir (migrate is the migration playbook's)."
+    quiet: true
+
 - name: Fail early without a seal key
+  when: openbao_seal_type == 'static'
   ansible.builtin.assert:
     that:
       - openbao_seal_key | length > 0
@@ -49,6 +56,7 @@
   become: true
 
 - name: Write the seal key
+  when: openbao_seal_type == 'static'
   ansible.builtin.copy:
     dest: "{{ openbao_secrets_dir }}/seal.key"
     content: "{{ openbao_seal_key }}"
@@ -59,6 +67,14 @@
   diff: false
   become: true
   notify: restart openbao
+
+# Under Shamir no unseal material is on the kit (ADR-0042 §1).
+- name: Remove the static seal key
+  when: openbao_seal_type == 'shamir'
+  ansible.builtin.file:
+    path: "{{ openbao_secrets_dir }}/seal.key"
+    state: absent
+  become: true
 
 # OpenBao refuses every request once it cannot write its audit log, so a full
 # disk would stop it: stop here first, while there is still room to act.
@@ -164,6 +180,7 @@
   when: not openbao_seal_status.json.initialized
 
 - name: Confirm OpenBao unsealed itself
+  when: openbao_seal_type == 'static'
   ansible.builtin.uri:
     url: "{{ openbao_local_url }}/v1/sys/seal-status"
     ca_path: "{{ openbao_tls_ca }}"
@@ -171,6 +188,12 @@
   retries: 15
   delay: 2
   until: openbao_unsealed.json is defined and not openbao_unsealed.json.sealed
+
+# A sealed store stops the run before it changes anything (ADR-0042 §3).
+# A restart, by a changed configuration or a new image, also seals it.
+- name: Stop if OpenBao is sealed
+  ansible.builtin.include_tasks: require_unsealed.yml
+  when: openbao_seal_type == 'shamir'
 
 - name: Configure engines, policies and AppRoles
   ansible.builtin.import_tasks: configure.yml

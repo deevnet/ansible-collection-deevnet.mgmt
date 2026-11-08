@@ -159,7 +159,9 @@
           {{ openbao_init.json | combine({
                'vault_openbao_ansible_role_id': openbao_ansible_role.json.data.role_id,
                'vault_openbao_ansible_secret_id': openbao_ansible_secret.json.data.secret_id,
-               'note': 'Move vault_openbao_ansible_* and recovery_keys_b64 into the vault, then delete this file. The root token below is already revoked.'
+               'note': ('Move vault_openbao_ansible_* and keys_base64[0] (as vault_openbao_unseal_share) into the vault; give keys_base64[1] and [2] to the operator, apart from each other and off the kit. Then delete this file. The root token below is already revoked.'
+                        if openbao_seal_type == 'shamir' else
+                        'Move vault_openbao_ansible_* and recovery_keys_b64 into the vault, then delete this file. The root token below is already revoked.')
              }) | to_nice_json }}
         mode: "0600"
       no_log: true
@@ -177,9 +179,11 @@
       ansible.builtin.debug:
         msg: >-
           OpenBao is initialised. {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json
-          holds the recovery key and Ansible's AppRole: move them into the vault
-          (vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id), make vault, commit and
-          push, then delete the file. The next run stops until the vault's AppRole logs in.
+          holds {{ 'the three unseal shares' if openbao_seal_type == 'shamir' else 'the recovery key' }}
+          and Ansible's AppRole: move them into the vault (vault_openbao_ansible_role_id,
+          vault_openbao_ansible_secret_id{{ ', and share 1 as vault_openbao_unseal_share; shares 2 and 3 to the operator, apart and off the kit' if openbao_seal_type == 'shamir' else '' }}),
+          make vault, commit and push, then delete the file. The next run stops until the vault's
+          AppRole logs in.
 
 - name: Write the build-time secrets
   ansible.builtin.import_tasks: build_secrets.yml

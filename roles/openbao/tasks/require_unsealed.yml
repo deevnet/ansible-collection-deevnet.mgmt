@@ -1,0 +1,21 @@
+---
+# The sealed stop (ADR-0042 §3, CHG-0053). Every play that configures OpenBao
+# runs this first: on a sealed store it stops with a plain error and changes
+# nothing. Opening the store is the operator's, for a work session.
+
+- name: Read OpenBao's seal status
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_ca }}"
+  register: openbao_seal_check
+  retries: 15
+  delay: 2
+  until: openbao_seal_check.status is defined and openbao_seal_check.status == 200
+
+- name: Stop if OpenBao is sealed
+  ansible.builtin.fail:
+    msg: >-
+      OpenBao on {{ inventory_hostname }} is sealed. Nothing was changed. Open a work session
+      first: make bao-open (the vault's share and one more), then run this again, and
+      make bao-close when the session's work is done.
+  when: openbao_seal_check.json.sealed

@@ -16,11 +16,23 @@ listener "tcp" {
   tls_key_file  = "/openbao/tls/listener-key.pem"
 }
 
+{% if openbao_seal_type in ['static', 'migrate'] %}
 # ADR-0016 §2: unsealed on every start by a key delivered from ansible-vault.
+{% if openbao_seal_type == 'migrate' %}
+# Disabled: the seal is being migrated to Shamir (CHG-0053). OpenBao reads the
+# old key once, to migrate, and starts sealed.
+{% endif %}
 seal "static" {
+{% if openbao_seal_type == 'migrate' %}
+  disabled       = "true"
+{% endif %}
   current_key_id = "{{ openbao_seal_key_id }}"
   current_key    = "file:///openbao/secrets/seal.key"
 }
+{% else %}
+# ADR-0042 §1: sealed by Shamir shares, no seal block. It starts sealed and is
+# opened for a work session.
+{% endif %}
 
 # Every request, with secrets HMAC'd (CHG-0036). Declared here: OpenBao 2.6
 # refuses to enable an audit device through its API. It refuses requests it

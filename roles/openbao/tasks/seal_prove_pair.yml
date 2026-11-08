@@ -1,0 +1,45 @@
+---
+# One pair of shares (CHG-0053 step 2, V14): restart, sealed; unseal with the
+# pair; open. Included by seal_migrate.yml with openbao_pair.
+
+- name: Restart OpenBao
+  ansible.builtin.service:
+    name: "{{ openbao_container_name }}"
+    state: restarted
+  become: true
+
+- name: Wait for it
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_ca }}"
+  register: openbao_pair_before
+  retries: 30
+  delay: 2
+  until: openbao_pair_before.status is defined and openbao_pair_before.status == 200
+
+- name: Confirm it started sealed
+  ansible.builtin.assert:
+    that: openbao_pair_before.json.sealed and openbao_pair_before.json.type == 'shamir'
+    fail_msg: OpenBao started unsealed, or not on Shamir. Its configuration still has a seal block.
+    quiet: true
+
+- name: Unseal with the pair
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/unseal"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    body_format: json
+    body: { key: "{{ openbao_new_shares[item] }}" }
+  loop: "{{ openbao_pair }}"
+  loop_control:
+    label: "share {{ item + 1 }}"
+  register: openbao_pair_unseal
+  no_log: true
+
+- name: Confirm the pair opened it
+  ansible.builtin.assert:
+    that: not openbao_pair_unseal.results[-1].json.sealed
+    fail_msg: >-
+      Shares {{ openbao_pair[0] + 1 }} and {{ openbao_pair[1] + 1 }} did not unseal it. The shares
+      file is on the control node; stop and check before locking any of them in.
+    quiet: true

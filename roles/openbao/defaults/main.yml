@@ -43,9 +43,23 @@ openbao_api_url: "https://{{ openbao_address }}:{{ openbao_port }}"
 # 127.0.0.1, so it is verified against the certificate rather than skipped.
 openbao_local_url: "https://127.0.0.1:{{ openbao_port }}"
 
-# ADR-0016 §2: a 32-byte key, base64, from the vault. OpenBao unseals itself
-# with it on every start. Generate with: head -c 32 /dev/urandom | base64
-# Rotating it: add the old one as openbao_seal_previous_key with its id.
+# How OpenBao is sealed (ADR-0042 §1, CHG-0053).
+#   shamir   three unseal shares, any two of which unseal it. It starts sealed
+#            and is opened for a work session (make bao-open), closed by a
+#            restart (make bao-close). One share is in the vault; the other two
+#            are held apart by the operator, never on the kit.
+#   static   ADR-0016 §2, before CHG-0053: a 32-byte key from the vault unseals
+#            it on every start. Set in the inventory until the seal is migrated
+#            (playbooks/openbao-seal-migrate.yml).
+openbao_seal_type: shamir
+openbao_shamir_shares: 3
+openbao_shamir_threshold: 2
+# The vault's share, which `make bao-open` uses with one more typed in.
+openbao_unseal_share: "{{ vault_openbao_unseal_share | default('') }}"
+# The static seal's recovery key: what the migration unseals with, once.
+openbao_recovery_key: "{{ vault_openbao_recovery_key | default('') }}"
+
+# The static seal's key (openbao_seal_type: static only). Base64 of 32 bytes.
 openbao_seal_key: "{{ vault_openbao_seal_key | default('') }}"
 openbao_seal_key_id: "{{ vault_openbao_seal_key_id | default('seal-1') }}"
 
@@ -270,8 +284,12 @@ openbao_policies:
     {% endfor %}
   # Ansible after bootstrap: configure mounts, auth, policies and roles, write
   # the API's backend credentials, run the issuing CAs. Not root: it cannot read
-  # other tokens, generate a root, or change the seal.
+  # other tokens, generate a root, or seal the store. It may start a rotation
+  # of the unseal shares (CHG-0053), which completes only with a quorum of the
+  # current shares, so the grant alone opens nothing.
   ansible: |
+    path "sys/rotate/root/init" { capabilities = ["create", "read", "update", "delete", "sudo"] }
+    path "sys/rotate/root/update" { capabilities = ["create", "update", "sudo"] }
     path "sys/mounts" { capabilities = ["read"] }
     path "sys/mounts/*" { capabilities = ["create", "read", "update", "delete"] }
     path "sys/auth" { capabilities = ["read"] }
