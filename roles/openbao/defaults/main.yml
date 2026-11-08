@@ -145,60 +145,21 @@ openbao_issuing_cas:
     cert_local: "{{ openbao_tenant_service_cert_local }}"
 
 # The one role the Tenant Service CA signs through (ADR-0037 §3-§4,
-# Certificates standard §2-§4). The Deevnet API may sign on it and may not
-# change it. Every rule here is one the API also applies; this is the second
-# line, held by the secret store.
+# Certificates standard §2-§4), a CEL role since CHG-0059. The Deevnet API may
+# sign on it and may not change it. Every rule in it is one the API also
+# applies; this is the second line, held by the secret store.
 openbao_tenant_service_role: tenant-service
-# The site's zone. A tenant's names are <label>.<tenant>.<this>; the
+# The site's zone. A tenant's names here are <label>.<tenant>.<this>; the
 # substrate's own are <name>.<this>.
 openbao_tenant_service_site_zone: "{{ deevnet_substrate }}.{{ deevnet_root_domain }}"
-openbao_tenant_service_role_body:
-  # Names at least two labels below the root, and nothing else: a tenant's
-  # service is <label>.<tenant>.<root>, and <label>.<tenant>.<site>.<root> at
-  # each site (ADR-0040). A glob here matches across dots, so this admits
-  # a.b.<root> and deeper and never <name>.<root>. It no longer tells a
-  # tenant's name from a site's (grafana.home.deevnet.net is two labels down
-  # too): the Deevnet API's reserved tenant names do, alone until each tenant
-  # has a role of its own (CHG-0054, a follow-up).
-  allowed_domains: ["*.*.{{ deevnet_root_domain }}"]
-  allow_glob_domains: true
-  allow_bare_domains: false
-  allow_subdomains: false
-  allow_wildcard_certificates: false
-  allow_localhost: false
-  allow_any_name: false
-  allow_ip_sans: false
-  allowed_uri_sans: []
-  allowed_other_sans: []
-  enforce_hostnames: true
-  # The request is read for its key. Its subject and names are not used
-  # (Certificates standard 4.6); the API names the certificate.
-  use_csr_common_name: false
-  use_csr_sans: false
-  organization: ["Deevnet"]
-  ou: ["{{ deevnet_substrate | capitalize }} Tenant Services"]
-  server_flag: true
-  client_flag: false
-  code_signing_flag: false
-  email_protection_flag: false
-  key_usage: ["DigitalSignature", "KeyEncipherment"]
-  ext_key_usage: []
-  basic_constraints_valid_for_non_ca: true
-  # The tenant makes the key. RSA 2048 or larger, or P-256, is checked by the
-  # API, which is the only caller; the role takes either type.
-  key_type: any
-  ttl: 8760h
-  max_ttl: 8760h
-  no_store: false
-  generate_lease: false
-  require_cn: true
 
 # The Tenant Service CA's CEL role (CHG-0059, ADR-0040 §3), the one the API
 # signs through once OPENBAO_TENANT_SERVICE_CEL is on. A CEL role is a program,
 # not a list of permissions: the certificate is the template it returns, and
 # it refuses a request by returning a string. So it says everything the
-# classic role above says, and what that role cannot: a tenant label that is
-# reserved, and a request that names two tenants.
+# classic role it replaced said (allowed_domains "*.*.<root>", server use, no
+# IP or other names, a year), and what that role could not: a tenant label
+# that is reserved, and a request that names two tenants.
 #
 # What it does not see is the issuer, so unlike the classic role it does not
 # stop a leaf at the CA's own expiry. A leaf lasts a year and the Tenant
@@ -237,10 +198,14 @@ openbao_tenant_service_cel_program:
       expression: "names.exists(n, n.split('.')[0] == 'device')"
     - name: unique
       expression: "names.all(n, names.filter(m, m == n).size() == 1)"
+    # An address, a URI or another kind of name is refused, not dropped, as
+    # the classic role refused it. The API never asks for one.
+    - name: extras
+      expression: "['ip_sans', 'uri_sans', 'other_sans'].exists(k, k in request && string(request[k]) != '')"
     # Sizes and curves are the API's to check; Ed25519 and the rest are refused.
     - name: key_ok
       expression: "use_csr && parsed_csr.PublicKeyAlgorithm in ['RSA', 'ECDSA']"
-    # The classic role's certificate: names from the request and nothing from
+    # The certificate the classic role gave: names from the request and nothing from
     # the CSR but its key, a year, server use only. KeyUsage is copied into
     # Go's bitmask as a number, so 5 is digital signature (1) and key
     # encipherment (4), whatever the enum's names say (OpenBao 2.6.2).
@@ -262,6 +227,7 @@ openbao_tenant_service_cel_program:
     reserved ? 'the tenant label is reserved' :
     device_label ? 'device is the label of the tenant devices' :
     !unique ? 'a name is given twice' :
+    extras ? 'a certificate holds DNS names only' :
     !key_ok ? 'the key must be RSA or ECDSA' :
     ValidationOutput{template: cert}
 
@@ -272,16 +238,18 @@ openbao_pki_cel_roles_all:
     program: "{{ openbao_tenant_service_cel_program }}"
 openbao_pki_cel_roles: "{{ openbao_pki_cel_roles_all }}"
 
-# The paths on its mount the API may sign through. Both while CHG-0059 moves
-# it to the CEL role; sign goes, with the classic role, once that is proven.
-openbao_tenant_service_api_sign_paths: [sign, cel/sign]
+# The paths on its mount the API may sign through: the CEL role's alone. The
+# classic role's (sign) was granted beside it while CHG-0059 moved the API.
+openbao_tenant_service_api_sign_paths: [cel/sign]
 
 # PKI signing roles, written to their mounts. POST is idempotent.
-openbao_pki_roles_all:
-  - mount: "{{ openbao_tenant_service_mount }}"
-    name: "{{ openbao_tenant_service_role }}"
-    body: "{{ openbao_tenant_service_role_body }}"
+# None since CHG-0059: the Tenant Service CA signs through its CEL role.
+openbao_pki_roles_all: []
 openbao_pki_roles: "{{ openbao_pki_roles_all }}"
+# Classic roles to delete, as mount/name. The Tenant Service CA's, which
+# admitted any name two labels below the root (CHG-0059).
+openbao_retired_pki_roles:
+  - {mount: "{{ openbao_tenant_service_mount }}", name: tenant-service}
 # Mounts to remove: the pre-ADR-0031 `pki` mount, once nothing serves a
 # certificate it issued (CHG-0033).
 openbao_retired_mounts: []
@@ -316,6 +284,9 @@ openbao_policies:
     path "transit/wrapping_key" { capabilities = ["read"] }
     path "{{ openbao_tenant_device_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
     path "{{ openbao_tenant_service_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
+    # Its roles may also be deleted (openbao_retired_pki_roles). The more
+    # specific path wins, so it repeats what the line above gives.
+    path "{{ openbao_tenant_service_mount }}/roles/*" { capabilities = ["create", "read", "update", "delete", "sudo"] }
 
   # The image factory and the tenant fabric at build time (CHG-0026): read the
   # Proxmox tokens, and nothing else - not the API's backends, not a mount,

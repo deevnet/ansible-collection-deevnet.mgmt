@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.15.0"
+deevnet_api_version: "v0.17.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -273,9 +273,10 @@ deevnet_api_certificate_sites: "{{ site_tenant_certificate_sites | default([deev
 deevnet_api_tenant_service_ca_local: "{{ site_tenant_service_ca_file | default(site_ca_file | dirname ~ '/deevnet-' ~ deevnet_substrate ~ '-tenant-service-ca.pem') }}"
 deevnet_api_tenant_service_mount: "{{ 'pki-tenant-service' if deevnet_api_tenant_service_ca_local is file else '' }}"
 deevnet_api_tenant_service_role: tenant-service
-# Sign through the CEL role of that name (CHG-0059). The openbao role writes it
-# and grants the path; turn this on after that has run.
-deevnet_api_tenant_service_cel: false
+# Sign through the CEL role of that name (CHG-0059), which the openbao role
+# writes and grants the path to. false falls back to the classic role, while
+# the policy still grants it.
+deevnet_api_tenant_service_cel: true
 
 # The KV secret's fields, as the API reads them. Set in inventory from the vault;
 # every value must be non-empty. token_hmac_key is base64 of at least 32 bytes.

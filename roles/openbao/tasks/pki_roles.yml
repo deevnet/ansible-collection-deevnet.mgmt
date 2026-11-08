@@ -106,3 +106,17 @@
   loop: "{{ openbao_pki_cel_roles_read.results }}"
   loop_control:
     label: "{{ item.item.mount }}/cel/roles/{{ item.item.name }}"
+
+# A role that is gone signs nothing, so the API's policy is not all that keeps
+# it from signing there. Deleting a role that does not exist answers 204.
+- name: Delete retired PKI roles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/{{ item.mount }}/roles/{{ item.name }}"
+    method: DELETE
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    status_code: [200, 204]
+  loop: "{{ openbao_retired_pki_roles | default([]) }}"
+  loop_control:
+    label: "{{ item.mount }}/roles/{{ item.name }}"
+  changed_when: false
