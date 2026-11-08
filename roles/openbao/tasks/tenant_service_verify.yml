@@ -12,6 +12,10 @@
 # Each run issues one real certificate, for a name under a tenant that does
 # not exist, whose key is made here and deleted at the end.
 
+- name: Stop if OpenBao is sealed
+  ansible.builtin.include_tasks: require_unsealed.yml
+  when: openbao_seal_type == 'shamir'
+
 - name: Look for the Deevnet Root CA beside the listener
   ansible.builtin.stat:
     path: "{{ openbao_tls_dir }}/{{ site_root_ca_name }}"

@@ -1,0 +1,143 @@
+---
+# A work session (ADR-0042 §2, CHG-0053): OpenBao opened at the start of a
+# visit's work and sealed at its end. playbooks/openbao-session.yml, through
+# make bao-open, bao-close and bao-status.
+#
+#   open    the vault's share, and one more typed in; or, with
+#           openbao_session_without_vault, two typed in (the vault unavailable)
+#   close   restart OpenBao, which starts sealed. Ansible's AppRole cannot seal
+#           the store, and needs no grant to: a restart is the seal.
+#   status  sealed or open, and the seal type
+#
+# Shares are read from the terminal without echo and sent straight to
+# OpenBao; none is logged or written anywhere.
+
+- name: Fail on an action this play does not know
+  ansible.builtin.assert:
+    that: openbao_session_action in ['open', 'close', 'status']
+    fail_msg: "openbao_session_action is open, close or status."
+    quiet: true
+
+- name: Read OpenBao's seal status
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_ca }}"
+  register: openbao_session_before
+
+- name: Say where it stands
+  when: openbao_session_action == 'status'
+  ansible.builtin.debug:
+    msg: >-
+      OpenBao on {{ inventory_hostname }} is {{ 'SEALED' if openbao_session_before.json.sealed else 'OPEN' }}
+      ({{ openbao_session_before.json.type }} seal{% if openbao_session_before.json.type == 'shamir' %},
+      {{ openbao_session_before.json.t }} of {{ openbao_session_before.json.n }} shares{% endif %}).
+
+- name: Refuse a session on a seal that has none
+  when: openbao_session_action in ['open', 'close']
+  ansible.builtin.assert:
+    that: openbao_session_before.json.type == 'shamir'
+    fail_msg: >-
+      OpenBao's seal is {{ openbao_session_before.json.type }}, which unseals itself; there is no
+      work session to open or close until the seal is migrated (CHG-0053).
+    quiet: true
+
+- name: Open a work session
+  when: openbao_session_action == 'open'
+  block:
+    - name: Say it is already open
+      when: not openbao_session_before.json.sealed
+      ansible.builtin.debug:
+        msg: OpenBao is already open. Nothing to do.
+
+    - name: Fail without the vault's share
+      when:
+        - openbao_session_before.json.sealed
+        - not (openbao_session_without_vault | default(false) | bool)
+      ansible.builtin.assert:
+        that: openbao_unseal_share | length > 0
+        fail_msg: >-
+          vault_openbao_unseal_share is not in the inventory, or the vault is locked. Decrypt it, or
+          open with two of your own shares: make bao-open WITHOUT_VAULT=1.
+        quiet: true
+      no_log: true
+
+    - name: Ask for a share
+      when: openbao_session_before.json.sealed
+      ansible.builtin.pause:
+        prompt: "Unseal share {{ item }} (not echoed)"
+        echo: false
+      loop: "{{ range(1, 3 if (openbao_session_without_vault | default(false) | bool) else 2) | list }}"
+      register: openbao_session_typed
+      no_log: true
+
+    - name: Unseal
+      when: openbao_session_before.json.sealed
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/unseal"
+        method: PUT
+        ca_path: "{{ openbao_tls_ca }}"
+        body_format: json
+        body: { key: "{{ item }}" }
+        status_code: [200, 400]
+      loop: >-
+        {{ ([] if (openbao_session_without_vault | default(false) | bool) else [openbao_unseal_share])
+           + (openbao_session_typed.results | map(attribute='user_input') | map('trim') | list) }}
+      loop_control:
+        label: share
+      register: openbao_session_unseal
+      no_log: true
+
+    - name: Forget a part-entered unseal if it did not open
+      when:
+        - openbao_session_before.json.sealed
+        - openbao_session_unseal.results[-1].status != 200 or openbao_session_unseal.results[-1].json.sealed
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/unseal"
+        method: PUT
+        ca_path: "{{ openbao_tls_ca }}"
+        body_format: json
+        body: { reset: true }
+
+    - name: Fail if it is still sealed
+      when: openbao_session_before.json.sealed
+      ansible.builtin.assert:
+        that:
+          - openbao_session_unseal.results | map(attribute='status') | reject('equalto', 200) | list | length == 0
+          - not openbao_session_unseal.results[-1].json.sealed
+        fail_msg: >-
+          OpenBao is still sealed: a share was refused or does not belong to this store. The
+          attempt was reset; nothing else changed.
+        quiet: true
+
+    - name: Say the session is open
+      when: openbao_session_before.json.sealed
+      ansible.builtin.debug:
+        msg: OpenBao is open. Close the session with make bao-close when the work is done.
+
+- name: Close the work session
+  when: openbao_session_action == 'close'
+  block:
+    - name: Restart OpenBao, which starts sealed
+      ansible.builtin.service:
+        name: "{{ openbao_container_name }}"
+        state: restarted
+      become: true
+
+    - name: Wait for it to answer
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/seal-status"
+        ca_path: "{{ openbao_tls_ca }}"
+      register: openbao_session_after
+      retries: 30
+      delay: 2
+      until: openbao_session_after.status is defined and openbao_session_after.status == 200
+
+    - name: Fail if it came back open
+      ansible.builtin.assert:
+        that: openbao_session_after.json.sealed
+        fail_msg: OpenBao came back unsealed after a restart. Its seal is not Shamir; stop and check.
+        quiet: true
+
+    - name: Say the session is closed
+      ansible.builtin.debug:
+        msg: OpenBao is sealed. Deployed tenants keep running; tenant work waits for the next session.

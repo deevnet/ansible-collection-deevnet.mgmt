@@ -1,0 +1,16 @@
+---
+# Open or close a work session on OpenBao (ADR-0042 §2, CHG-0053):
+#
+#   make bao-status
+#   make bao-open                 # the vault's share, and one of yours
+#   make bao-open WITHOUT_VAULT=1 # two of yours, when the vault is unavailable
+#   make bao-close                # a restart: it starts sealed
+- name: OpenBao work session
+  hosts: openbao
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run it
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: session.yml

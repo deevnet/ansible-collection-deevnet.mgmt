@@ -1,0 +1,263 @@
+---
+# Migrate the static seal to Shamir, keeping every secret (CHG-0053 step 1-3).
+# playbooks/openbao-seal-migrate.yml; run once, by the operator, in the window.
+# OpenBao's seal documentation: disable the old seal block, then unseal with
+# -migrate and the recovery keys, which become the unseal keys.
+#
+#   1. Ansible's policy is written, so it may rotate the shares.
+#   2. The static block is disabled and OpenBao restarted: it starts sealed.
+#   3. Unsealed with the recovery key and migrate: the seal is now Shamir, one
+#      share. If this fails, the static configuration is put back.
+#   4. The one share is rotated into three, any two of which unseal it, and
+#      the three are written to the control node at once (root-only file).
+#   5. The seal block and the static key are removed and OpenBao restarted.
+#   6. Every pair of shares is proven: unseal with it, restart, sealed again.
+#   7. Left open with the first pair, for the rest of the session.
+#
+# Then the operator: share 1 into the vault as vault_openbao_unseal_share,
+# shares 2 and 3 apart and off the kit, openbao_seal_type: shamir in the
+# inventory, vault_openbao_seal_key and _id removed; make vault, commit, push,
+# and only then delete the file.
+
+- name: Read OpenBao's seal status
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_ca }}"
+  register: openbao_mig_before
+
+- name: Refuse unless the seal is static, unsealed, and the keys are here
+  ansible.builtin.assert:
+    that:
+      - openbao_mig_before.json.initialized
+      - openbao_mig_before.json.type == 'static'
+      - not openbao_mig_before.json.sealed
+      - openbao_seal_key | length > 0
+      - openbao_recovery_key | length > 0
+    fail_msg: >-
+      The migration starts from an initialised, unsealed store on the static seal, with the seal key
+      and the recovery key decrypted from the vault. Found: initialised
+      {{ openbao_mig_before.json.initialized }}, seal {{ openbao_mig_before.json.type }}, sealed
+      {{ openbao_mig_before.json.sealed }}.
+    quiet: true
+  no_log: true
+
+- name: Refuse while a share file from an earlier run is on the control node
+  ansible.builtin.stat:
+    path: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json"
+  register: openbao_mig_left
+  delegate_to: localhost
+  become: false
+
+- name: Stop on a share file left behind
+  ansible.builtin.assert:
+    that: not openbao_mig_left.stat.exists
+    fail_msg: >-
+      {{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json is from an earlier run. Lock
+      its shares in (share 1 to the vault, 2 and 3 to the operator) and delete it before running this.
+    quiet: true
+
+# 1. Ansible's policy, so its token may rotate the shares in step 4.
+- name: Log in as Ansible
+  ansible.builtin.include_tasks: ansible_login.yml
+
+- name: Write Ansible's policy
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/ansible"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    body_format: json
+    body: { policy: "{{ openbao_policies.ansible }}" }
+    status_code: [200, 204]
+  no_log: true
+
+# 2-3. Migrate, or put the static seal back.
+- name: Migrate the seal
+  block:
+    - name: Disable the static seal block
+      ansible.builtin.template:
+        src: openbao.hcl.j2
+        dest: "{{ openbao_config_dir }}/openbao.hcl"
+        owner: "{{ openbao_uid }}"
+        group: "{{ openbao_gid }}"
+        mode: "0400"
+      vars:
+        openbao_seal_type: migrate
+      become: true
+
+    - name: Restart OpenBao to read it
+      ansible.builtin.service:
+        name: "{{ openbao_container_name }}"
+        state: restarted
+      become: true
+
+    - name: Wait for it, sealed and asking to migrate
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/seal-status"
+        ca_path: "{{ openbao_tls_ca }}"
+      register: openbao_mig_wait
+      retries: 30
+      delay: 2
+      until: openbao_mig_wait.status is defined and openbao_mig_wait.status == 200
+
+    - name: Unseal with the recovery key, migrating
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/unseal"
+        method: PUT
+        ca_path: "{{ openbao_tls_ca }}"
+        body_format: json
+        body: { key: "{{ openbao_recovery_key }}", migrate: true }
+      register: openbao_mig_unseal
+      no_log: true
+
+    - name: Read the seal after migrating
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/seal-status"
+        ca_path: "{{ openbao_tls_ca }}"
+      register: openbao_mig_after
+
+    - name: Confirm the seal is Shamir and open
+      ansible.builtin.assert:
+        that:
+          - openbao_mig_after.json.type == 'shamir'
+          - not openbao_mig_after.json.sealed
+        fail_msg: >-
+          After migrating, the seal is {{ openbao_mig_after.json.type }} and sealed
+          {{ openbao_mig_after.json.sealed }}.
+        quiet: true
+
+  rescue:
+    - name: Read the seal after the failure
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/seal-status"
+        ca_path: "{{ openbao_tls_ca }}"
+      register: openbao_mig_failed
+      retries: 15
+      delay: 2
+      until: openbao_mig_failed.status is defined and openbao_mig_failed.status == 200
+
+    - name: Stop if the seal already migrated
+      when: openbao_mig_failed.json.type == 'shamir'
+      ansible.builtin.fail:
+        msg: >-
+          The seal migrated to Shamir with one share, the recovery key, which unseals it; the
+          static seal cannot be put back now. Read the error above, then run this again from
+          step 4 by hand, or rotate the shares with the recovery key.
+
+    - name: Put the static seal back
+      ansible.builtin.template:
+        src: openbao.hcl.j2
+        dest: "{{ openbao_config_dir }}/openbao.hcl"
+        owner: "{{ openbao_uid }}"
+        group: "{{ openbao_gid }}"
+        mode: "0400"
+      vars:
+        openbao_seal_type: static
+      become: true
+
+    - name: Restart OpenBao on the static seal
+      ansible.builtin.service:
+        name: "{{ openbao_container_name }}"
+        state: restarted
+      become: true
+
+    - name: Stop
+      ansible.builtin.fail:
+        msg: >-
+          The migration did not complete, and the static seal is back: OpenBao unseals itself as
+          before. Read the error above. The fallback is a fresh initialisation from the vault
+          (CHG-0053 step 1).
+
+# 4. One share into three. The rotation needs a token; the login above is still valid.
+- name: Start the rotation to three shares
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/rotate/root/init"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    body_format: json
+    body:
+      secret_shares: "{{ openbao_shamir_shares | int }}"
+      secret_threshold: "{{ openbao_shamir_threshold | int }}"
+  register: openbao_rot_init
+  no_log: true
+
+- name: Finish it with the one share
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/rotate/root/update"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    body_format: json
+    body:
+      key: "{{ openbao_recovery_key }}"
+      nonce: "{{ (openbao_rot_init.json.data | default(openbao_rot_init.json)).nonce }}"
+  register: openbao_rot_done
+  no_log: true
+
+- name: Hold the new shares
+  ansible.builtin.set_fact:
+    openbao_new_shares: "{{ (openbao_rot_done.json.data | default(openbao_rot_done.json)).keys_base64 }}"
+  no_log: true
+
+- name: Confirm three shares came back
+  ansible.builtin.assert:
+    that:
+      - (openbao_rot_done.json.data | default(openbao_rot_done.json)).complete
+      - openbao_new_shares | length == openbao_shamir_shares | int
+    fail_msg: >-
+      The rotation did not complete with {{ openbao_shamir_shares }} shares. The store is on Shamir
+      with its one share, the recovery key; nothing is lost.
+    quiet: true
+  no_log: true
+
+- name: Write the shares to the control node at once
+  ansible.builtin.copy:
+    dest: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json"
+    content: >-
+      {{ {'shares_base64': openbao_new_shares,
+          'threshold': openbao_shamir_threshold,
+          'note': 'Share 1 into the vault as vault_openbao_unseal_share; shares 2 and 3 to the operator, apart from each other and off the kit. Then make vault, commit and push, and only then delete this file.'}
+         | to_nice_json }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# 5. No seal block, no static key.
+- name: Write the Shamir configuration
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_config_dir }}/openbao.hcl"
+    owner: "{{ openbao_uid }}"
+    group: "{{ openbao_gid }}"
+    mode: "0400"
+  vars:
+    openbao_seal_type: shamir
+  become: true
+
+- name: Remove the static seal key from the VM
+  ansible.builtin.file:
+    path: "{{ openbao_secrets_dir }}/seal.key"
+    state: absent
+  become: true
+
+# 6. Every pair: restart (sealed), unseal with the pair, confirm open.
+- name: Prove each pair of shares
+  ansible.builtin.include_tasks: seal_prove_pair.yml
+  loop: [[0, 1], [0, 2], [1, 2]]
+  loop_control:
+    loop_var: openbao_pair
+    label: "shares {{ openbao_pair[0] + 1 }} and {{ openbao_pair[1] + 1 }}"
+
+# 7. The last pair left it open.
+- name: Say what is left to the operator
+  ansible.builtin.debug:
+    msg: >-
+      OpenBao is on a Shamir seal, {{ openbao_shamir_threshold }} of {{ openbao_shamir_shares }}
+      shares, every pair proven, and open. The shares are in
+      {{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json. Now: share 1 into the
+      vault as vault_openbao_unseal_share; shares 2 and 3 to their places, apart and off the kit;
+      openbao_seal_type: shamir in the inventory, and vault_openbao_seal_key and
+      vault_openbao_seal_key_id removed. make vault, commit and push, then delete the file.
+      make bao-close ends the session.

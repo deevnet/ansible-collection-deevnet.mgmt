@@ -1,9 +1,13 @@
 ---
-# First initialisation (ADR-0016 §2). With the static seal, init returns
-# recovery keys, not unseal keys, and a root token. The root token is used for
+# First initialisation (ADR-0016 §2, ADR-0042 §1). The root token is used for
 # this run only: it creates Ansible's AppRole, and is revoked at the end of
 # configure.yml. What the operator must keep goes to a root-only file on the
-# control node, to be moved into the vault.
+# control node, to be moved into the vault and to the operator's custody.
+#
+#   shamir  init returns the unseal shares, any two of which unseal it. The run
+#           unseals with two of them to carry on; share 1 goes into the vault,
+#           shares 2 and 3 to the operator, never onto the kit.
+#   static  init returns recovery keys, not unseal keys: the seal key unseals it.
 
 - name: Initialise OpenBao
   ansible.builtin.uri:
@@ -11,9 +15,10 @@
     method: POST
     ca_path: "{{ openbao_tls_ca }}"
     body_format: json
-    body:
-      recovery_shares: 1
-      recovery_threshold: 1
+    body: >-
+      {{ {'secret_shares': openbao_shamir_shares, 'secret_threshold': openbao_shamir_threshold}
+         if openbao_seal_type == 'shamir'
+         else {'recovery_shares': 1, 'recovery_threshold': 1} }}
   register: openbao_init
   no_log: true
 
@@ -22,7 +27,7 @@
     openbao_bootstrap_token: "{{ openbao_init.json.root_token }}"
   no_log: true
 
-- name: Keep the recovery key and root token for the operator
+- name: Keep the shares or recovery key, and the root token, for the operator
   delegate_to: localhost
   become: false
   block:
@@ -32,9 +37,30 @@
         state: directory
         mode: "0700"
 
-    - name: Write the recovery key and root token
+    - name: Write the init output
       ansible.builtin.copy:
         dest: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json"
         content: "{{ openbao_init.json | to_nice_json }}"
         mode: "0600"
       no_log: true
+
+- name: Unseal with two of the new shares, to carry on
+  when: openbao_seal_type == 'shamir'
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/unseal"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    body_format: json
+    body: { key: "{{ item }}" }
+  loop: "{{ openbao_init.json.keys_base64[:openbao_shamir_threshold] }}"
+  loop_control:
+    label: share
+  register: openbao_init_unseal
+  no_log: true
+
+- name: Confirm the new shares unsealed it
+  when: openbao_seal_type == 'shamir'
+  ansible.builtin.assert:
+    that: not openbao_init_unseal.results[-1].json.sealed
+    fail_msg: "OpenBao is still sealed after two of its new shares. The shares are in the init output."
+    quiet: true

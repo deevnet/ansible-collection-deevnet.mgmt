@@ -31,8 +31,9 @@
     msg: >-
       {% if openbao_init_left.stat.exists %}OpenBao was initialised and Ansible's new AppRole is in
       {{ openbao_init_output_dir }}/{{ inventory_hostname }}-init.json, not in the vault. Move
-      vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id and the recovery key into the
-      openbao vault, then make vault, commit and push, and only then delete the file. Run this
+      vault_openbao_ansible_role_id, vault_openbao_ansible_secret_id and
+      {{ 'share 1 (vault_openbao_unseal_share), with shares 2 and 3 to the operator,' if openbao_seal_type == 'shamir' else 'the recovery key' }}
+      into the openbao vault, then make vault, commit and push, and only then delete the file. Run this
       again after.{% else %}The vault's AppRole for Ansible (vault_openbao_ansible_role_id,
       vault_openbao_ansible_secret_id) does not log in to OpenBao (HTTP {{ openbao_login.status }}),
       and there is no init output to take a new one from. Do not reinitialise: check the vault is

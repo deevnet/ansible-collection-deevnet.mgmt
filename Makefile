@@ -1,6 +1,7 @@
 .PHONY: help default deps deps-force build check install-dev install-user rebuild apply list \
         vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reconcile \
         backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive \
+        bao-status bao-open bao-close bao-seal-migrate \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -59,6 +60,12 @@ help:
 "" \
 "  reconcile NAME=<name>|--all" \
 "      Re-ensure tenants through the API (repairs what it owns, Grafana data sources included)" \
+"" \
+"  bao-status | bao-open [WITHOUT_VAULT=1] | bao-close" \
+"      OpenBao sealed or open | open a work session: the vault's share and one of yours (two without the vault) | seal it (a restart)" \
+"" \
+"  bao-seal-migrate" \
+"      Once (CHG-0053): the static seal to three Shamir shares, every pair proven; writes .openbao/<host>-shares.json" \
 "" \
 "  backup-status | backup-now | backup-dry-run" \
 "      The last good backup (fails when one is overdue) | back up now, whatever the interval | build an archive with no drive" \
@@ -171,6 +178,24 @@ unadmit:
 # the CA its Grafana data sources carry has changed (CHG-0031).
 reconcile:
 	@./scripts/tenant-reconcile.sh $(NAME)
+
+# OpenBao work sessions (ADR-0042 §2, CHG-0053). It is sealed outside them.
+BAO_PLAY = ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook
+
+bao-status: install-dev
+	@$(BAO_PLAY) playbooks/openbao-session.yml -e openbao_session_action=status
+
+bao-open: install-dev
+	@$(BAO_PLAY) playbooks/openbao-session.yml -e openbao_session_action=open \
+	  $(if $(WITHOUT_VAULT),-e openbao_session_without_vault=true)
+
+bao-close: install-dev
+	@$(BAO_PLAY) playbooks/openbao-session.yml -e openbao_session_action=close
+
+# Once: the static seal to Shamir, keeping every secret (CHG-0053).
+bao-seal-migrate: install-dev
+	@$(BAO_PLAY) playbooks/openbao-seal-migrate.yml
 
 # Backup to the attached drive (CHG-0039). The role installs the job and the timer that runs it when one is due
 # (site.yml --tags backup); these run it, check it and read an archive back.

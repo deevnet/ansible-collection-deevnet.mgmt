@@ -5,6 +5,10 @@
 # and its signed certificate installed, without running the whole role
 # (CHG-0033, CHG-0047).
 
+- name: Stop if OpenBao is sealed
+  ansible.builtin.include_tasks: require_unsealed.yml
+  when: openbao_seal_type == 'shamir'
+
 - name: Find the issuing CA asked for
   ansible.builtin.set_fact:
     openbao_ca: "{{ openbao_issuing_cas | selectattr('slug', 'equalto', openbao_ca_only) | list | first | default(None) }}"

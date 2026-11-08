@@ -1,0 +1,19 @@
+---
+# Migrate OpenBao's static seal to Shamir shares (ADR-0042 §1, CHG-0053), once:
+#
+#   make bao-seal-migrate
+#
+# With the inventory decrypted (the seal key, the recovery key and Ansible's
+# AppRole are in the vault), and a dump of the identity VM taken first. It
+# keeps every secret, proves every pair of the new shares, and leaves OpenBao
+# open. What it writes is .openbao/<host>-shares.json: lock it in as the
+# play's last message says before deleting it.
+- name: Migrate OpenBao's seal to Shamir
+  hosts: openbao
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run it
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: seal_migrate.yml
