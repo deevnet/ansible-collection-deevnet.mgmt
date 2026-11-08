@@ -284,6 +284,9 @@ openbao_policies:
     path "transit/wrapping_key" { capabilities = ["read"] }
     path "{{ openbao_tenant_device_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
     path "{{ openbao_tenant_service_mount }}/*" { capabilities = ["create", "read", "update", "sudo"] }
+    # Its roles may also be deleted (openbao_retired_pki_roles). The more
+    # specific path wins, so it repeats what the line above gives.
+    path "{{ openbao_tenant_service_mount }}/roles/*" { capabilities = ["create", "read", "update", "delete", "sudo"] }
 
   # The image factory and the tenant fabric at build time (CHG-0026): read the
   # Proxmox tokens, and nothing else - not the API's backends, not a mount,
