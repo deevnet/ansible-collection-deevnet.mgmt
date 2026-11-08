@@ -1,5 +1,5 @@
 ---
-# Asks the Tenant Service CA's signing role for certificates it must issue and
+# Asks the Tenant Service CA's CEL role (CHG-0059) for certificates it must issue and
 # certificates it must refuse (ADR-0037 §3-§4), and reads what it issues
 # against the Certificates standard. playbooks/tenant-service-ca-verify.yml.
 #
@@ -24,7 +24,7 @@
       {{ (openbao_tls_dir ~ '/' ~ site_root_ca_name) if openbao_tsv_root_on_host.stat.exists
          else (openbao_tls_dir ~ '/listener.pem') }}
     openbao_tsv_zone: "{{ openbao_tenant_service_site_zone }}"
-    openbao_tsv_sign: "{{ openbao_local_url }}/v1/{{ openbao_tenant_service_mount }}/sign/{{ openbao_tenant_service_role }}"
+    openbao_tsv_sign: "{{ openbao_local_url }}/v1/{{ openbao_tenant_service_mount }}/cel/sign/{{ openbao_tenant_service_role }}"
 
 - name: Log in as Ansible
   ansible.builtin.uri:
@@ -157,10 +157,11 @@
         fail_msg: "The role issued a certificate the standard does not allow:\n{{ openbao_tsv_text.stdout }}"
         success_msg: "Issued as the standard says: {{ openbao_tsv_text.stdout_lines[0] }}, {{ days }} days."
 
-    # A name the role admits and the API does not is not tested here: the role
-    # permits any name two or more labels below the root, a site's own names
-    # among them, and the API's reserved tenant names narrow that to a
-    # tenant's (CHG-0054).
+    # The CEL role refuses with an error, which OpenBao answers 500 for (and
+    # 400 for a request it cannot read at all). What matters is that no
+    # certificate comes back. Since CHG-0059 the role refuses a site's and the
+    # substrate's names too, which the classic role could not tell from a
+    # tenant's.
     - name: Ask for names it must refuse
       ansible.builtin.uri:
         url: "{{ openbao_tsv_sign }}"
@@ -169,7 +170,7 @@
         headers: {X-Vault-Token: "{{ openbao_tsv_login.json.auth.client_token }}"}
         body_format: json
         body: "{{ {'csr': lookup('file', openbao_tsv_dir.path ~ '/probe.csr'), 'format': 'pem'} | combine(item.ask) }}"
-        status_code: [200, 400]
+        status_code: [200, 400, 500]
       loop:
         - {why: the site's zone itself, ask: {common_name: "{{ openbao_tsv_zone }}"}}
         - {why: one label under the root, ask: {common_name: "chg0047.{{ deevnet_root_domain }}"}}
@@ -180,6 +181,13 @@
         - {why: an address, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", ip_sans: "10.20.25.21"}}
         - {why: a URI, ask: {common_name: "probe.chg0047.{{ openbao_tsv_zone }}", uri_sans: "urn:deevnet:mobile:tenant:eds:device:x"}}
         - {why: no name at all, ask: {}}
+        - {why: "a site's own name", ask: {common_name: "grafana.{{ openbao_tsv_zone }}"}}
+        - {why: a substrate host, ask: {common_name: "prv.{{ openbao_tsv_zone }}"}}
+        - {why: a tenant named for a site, ask: {common_name: "probe.home.{{ deevnet_root_domain }}"}}
+        - {why: a tenant named for the broker, ask: {common_name: "probe.mqtt.{{ deevnet_root_domain }}"}}
+        - {why: two tenants, ask: {common_name: "probe.chg0047.{{ deevnet_root_domain }}", alt_names: "probe.eds.{{ deevnet_root_domain }}"}}
+        - {why: the device label, ask: {common_name: "device.chg0047.{{ deevnet_root_domain }}"}}
+        - {why: a site no certificate names, ask: {common_name: "probe.chg0047.elsewhere.{{ deevnet_root_domain }}"}}
       loop_control:
         label: "{{ item.why }}"
       register: openbao_tsv_refused
@@ -187,7 +195,7 @@
 
     - name: Check every one was refused
       ansible.builtin.assert:
-        that: item.status == 400
+        that: item.status in [400, 500] and not (item.json.data.certificate | default(''))
         fail_msg: "The role SIGNED {{ item.item.why }}: {{ item.item.ask }}"
         quiet: true
       loop: "{{ openbao_tsv_refused.results }}"
