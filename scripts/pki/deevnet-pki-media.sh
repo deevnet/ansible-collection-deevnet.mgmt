@@ -6,6 +6,7 @@
 #   deevnet-pki-media.sh list                         USB drives, and what each holds
 #   deevnet-pki-media.sh keys init DEVICE primary|backup
 #                                                  ERASE: LUKS2 + ext4, label deevnet-keys-<copy>
+#                                                  (DEEVNET_PKI_KEYS_PREFIX sets another prefix)
 #   deevnet-pki-media.sh keys open [primary|backup]   unlock, mount at /mnt/keys
 #   deevnet-pki-media.sh keys close                   unmount, lock
 #   deevnet-pki-media.sh transfer init DEVICE         ERASE: FAT32, label TRANSFER
@@ -30,6 +31,11 @@ say() { echo "  $*"; }
 KEYS_MNT="${DEEVNET_PKI_KEYS_MNT:-/mnt/keys}"
 TRANSFER_MNT="${DEEVNET_PKI_TRANSFER_MNT:-/mnt/transfer}"
 KEYS_MAPPER=deevnet-keys
+# The label every key media gets, <prefix>-primary or -backup. A starter kit's
+# owner (deevnet-pki-owner.sh) sets owner-keys, so their stick is never taken
+# for Deevnet's key media, nor Deevnet's for theirs.
+KEYS_PREFIX="${DEEVNET_PKI_KEYS_PREFIX:-deevnet-keys}"
+[[ "$KEYS_PREFIX" =~ ^[a-z][a-z0-9-]{0,20}$ ]] || die "DEEVNET_PKI_KEYS_PREFIX '$KEYS_PREFIX' is not a label"
 TRANSFER_LABEL=TRANSFER
 # Tests point this at loop devices; on the ceremony image it is always usb.
 ALLOW_TRAN="${DEEVNET_PKI_MEDIA_TRAN:-usb}"
@@ -64,7 +70,7 @@ confirm_erase() {
   [[ "$answer" == "$(basename "$dev")" ]] || die "not confirmed - nothing was changed"
 }
 
-keys_label() { echo "deevnet-keys-$1"; }
+keys_label() { echo "$KEYS_PREFIX-$1"; }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -110,7 +116,7 @@ case "$cmd" in
             [[ "$(blkid -s TYPE -o value "$d")" == crypto_LUKS ]] && echo "$d"; done | head -1)"
         else
           mapfile -t found < <(blkid -t TYPE=crypto_LUKS -o device | while read -r d; do
-            [[ "$(blkid -s LABEL -o value "$d")" == deevnet-keys-* ]] && echo "$d"; done)
+            [[ "$(blkid -s LABEL -o value "$d")" == "$KEYS_PREFIX"-* ]] && echo "$d"; done)
           [[ ${#found[@]} -le 1 ]] || die "more than one key media is plugged in - say which: keys open primary|backup"
           dev="${found[0]:-}"
         fi
@@ -165,5 +171,5 @@ case "$cmd" in
     esac
     ;;
 
-  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -1,0 +1,49 @@
+# A starter PKI of an owner's own (ADR-0041 §3) - the certificate profiles
+# deevnet-pki-owner.sh signs with. Two tiers: the owner's root, kept on an
+# encrypted USB stick, and one issuing CA on the Pi, which signs the Pi's server
+# certificate and its devices'.
+#
+# Deevnet's own profiles are deevnet-pki.cnf, and nothing here changes them.
+# This file is separate because the owner's names come in as environment
+# variables, and OpenSSL refuses a whole file whose variable is unset:
+# deevnet-pki-owner.sh sets every one of them on every call.
+[ req ]
+prompt             = no
+distinguished_name = dn_owner
+string_mask        = utf8only
+
+[ dn_owner ]
+O  = $ENV::PKI_OWNER_ORG
+CN = $ENV::PKI_OWNER_CN
+
+[ v3_owner_root ]
+basicConstraints       = critical, CA:TRUE, pathlen:1
+keyUsage               = critical, keyCertSign, cRLSign
+subjectKeyIdentifier   = hash
+
+# The owner's names and private and loopback addresses only, as Deevnet's Site
+# CA: a stolen card's issuing key cannot vouch for a public site. Not critical,
+# for the reason deevnet-pki.cnf gives: mbedTLS would refuse the certificate.
+[ v3_owner_issuing ]
+basicConstraints       = critical, CA:TRUE, pathlen:0
+keyUsage               = critical, keyCertSign, cRLSign
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always
+nameConstraints        = $ENV::PKI_OWNER_PERMITTED
+
+[ v3_owner_server ]
+basicConstraints       = critical, CA:FALSE
+keyUsage               = critical, digitalSignature
+extendedKeyUsage       = serverAuth
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid
+subjectAltName         = $ENV::PKI_OWNER_SAN
+
+# A device is known by its name in the subject, which a broker can take as the
+# device's login; it serves nothing, so it names no host.
+[ v3_owner_device ]
+basicConstraints       = critical, CA:FALSE
+keyUsage               = critical, digitalSignature
+extendedKeyUsage       = clientAuth
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid
