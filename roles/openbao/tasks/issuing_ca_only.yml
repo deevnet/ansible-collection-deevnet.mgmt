@@ -83,3 +83,4 @@
   ansible.builtin.import_tasks: pki_roles.yml
   vars:
     openbao_pki_roles: "{{ openbao_pki_roles_all | selectattr('mount', 'equalto', openbao_ca.mount) | list }}"
+    openbao_pki_cel_roles: "{{ openbao_pki_cel_roles_all | selectattr('mount', 'equalto', openbao_ca.mount) | list }}"

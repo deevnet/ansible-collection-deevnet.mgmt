@@ -422,7 +422,8 @@
     deevnet_api_tenant_env: >-
       {{ deevnet_api_tenant_env | combine({
            'OPENBAO_TENANT_SERVICE_MOUNT': deevnet_api_tenant_service_mount,
-           'OPENBAO_TENANT_SERVICE_ROLE': deevnet_api_tenant_service_role}) }}
+           'OPENBAO_TENANT_SERVICE_ROLE': deevnet_api_tenant_service_role,
+           'OPENBAO_TENANT_SERVICE_CEL': deevnet_api_tenant_service_cel | string | lower}) }}
   when: deevnet_api_tenant_service_mount | length > 0
 
 - name: Add the dashboard server when this site has one
