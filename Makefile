@@ -1,7 +1,7 @@
 .PHONY: help default deps deps-force build check install-dev install-user rebuild apply list \
         vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reconcile \
         backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive \
-        bao-status bao-open bao-close bao-seal-migrate \
+        bao-status bao-open bao-close bao-seal-migrate bao-rotate-shares \
         publish clean-deps clean-project deep-clean all
 
 # ---------- Config ----------
@@ -63,6 +63,9 @@ help:
 "" \
 "  bao-status | bao-open [WITHOUT_VAULT=1] | bao-close" \
 "      OpenBao sealed or open | open a work session: the vault's share and one of yours (two without the vault) | seal it (a restart)" \
+"" \
+"  bao-rotate-shares [WITHOUT_VAULT=1]" \
+"      In a work session: three new unseal shares, the old ones void, every pair proven; writes .openbao/<host>-shares.json" \
 "" \
 "  bao-seal-migrate" \
 "      Once (CHG-0053): the static seal to three Shamir shares, every pair proven; writes .openbao/<host>-shares.json" \
@@ -196,6 +199,11 @@ bao-close: install-dev
 # Once: the static seal to Shamir, keeping every secret (CHG-0053).
 bao-seal-migrate: install-dev
 	@$(BAO_PLAY) playbooks/openbao-seal-migrate.yml
+
+# In a work session: three new shares, the old ones void, every pair proven.
+bao-rotate-shares: install-dev
+	@$(BAO_PLAY) playbooks/openbao-rotate-shares.yml \
+	  $(if $(WITHOUT_VAULT),-e openbao_session_without_vault=true)
 
 # Backup to the attached drive (CHG-0039). The role installs the job and the timer that runs it when one is due
 # (site.yml --tags backup); these run it, check it and read an archive back.
