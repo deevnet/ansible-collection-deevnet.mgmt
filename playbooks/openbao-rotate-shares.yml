@@ -1,0 +1,13 @@
+---
+# Rotate OpenBao's unseal shares (ADR-0042 §1): make bao-rotate-shares, in a
+# work session, by the operator in their own terminal. Writes the new shares to
+# .openbao/<host>-shares.json; lock them in as its last message says.
+- name: Rotate OpenBao's unseal shares
+  hosts: openbao
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run it
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: rotate_shares.yml

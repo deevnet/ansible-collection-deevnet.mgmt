@@ -1,0 +1,174 @@
+---
+# Rotate the unseal shares (ADR-0042 §1): three new shares, any two of which
+# unseal OpenBao, and the old ones open nothing. For a share that may have
+# been exposed, or a change of custody. playbooks/openbao-rotate-shares.yml,
+# through make bao-rotate-shares, run by the operator in a work session.
+#
+# Two current shares are needed: the vault's and one typed in, or two typed
+# in (openbao_session_without_vault). The new shares go to the control node at
+# once, in a root-only file, and every pair is proven by restart and unseal.
+# The operator then puts share 1 into the vault, takes shares 2 and 3, and
+# deletes the file. Read the file only in the operator's own terminal.
+
+- name: Read OpenBao's seal status
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/seal-status"
+    ca_path: "{{ openbao_tls_ca }}"
+  register: openbao_rot_status
+
+- name: Refuse unless the seal is Shamir and a work session is open
+  ansible.builtin.assert:
+    that:
+      - openbao_rot_status.json.type == 'shamir'
+      - not openbao_rot_status.json.sealed
+    fail_msg: >-
+      The rotation needs a Shamir seal and an open work session (make bao-open). Found: seal
+      {{ openbao_rot_status.json.type }}, sealed {{ openbao_rot_status.json.sealed }}.
+    quiet: true
+
+- name: Look for a share file left behind
+  ansible.builtin.stat:
+    path: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json"
+  register: openbao_rot_left
+  delegate_to: localhost
+  become: false
+
+- name: Stop on a share file left behind
+  ansible.builtin.assert:
+    that: not openbao_rot_left.stat.exists
+    fail_msg: >-
+      {{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json is from an earlier run. Lock
+      its shares in and delete it first.
+    quiet: true
+
+- name: Fail without the vault's share
+  when: not (openbao_session_without_vault | default(false) | bool)
+  ansible.builtin.assert:
+    that: openbao_unseal_share | length > 0
+    fail_msg: >-
+      vault_openbao_unseal_share is not in the inventory, or the vault is locked. Decrypt it, or use
+      two of your own shares: make bao-rotate-shares WITHOUT_VAULT=1.
+    quiet: true
+  no_log: true
+
+- name: Ask for a current share
+  ansible.builtin.pause:
+    prompt: "Current unseal share {{ item }} (not echoed)"
+    echo: false
+  loop: "{{ range(1, 3 if (openbao_session_without_vault | default(false) | bool) else 2) | list }}"
+  register: openbao_rot_typed
+  no_log: true
+
+- name: Hold the current shares
+  ansible.builtin.set_fact:
+    openbao_rot_current: >-
+      {{ ([] if (openbao_session_without_vault | default(false) | bool) else [openbao_unseal_share])
+         + (openbao_rot_typed.results | map(attribute='user_input') | map('trim') | list) }}
+  no_log: true
+
+- name: Log in as Ansible
+  ansible.builtin.include_tasks: ansible_login.yml
+
+- name: Write Ansible's policy, so it may rotate
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/ansible"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    body_format: json
+    body: { policy: "{{ openbao_policies.ansible }}" }
+    status_code: [200, 204]
+  no_log: true
+
+- name: Cancel a rotation left in progress
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/rotate/root/init"
+    method: DELETE
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    status_code: [200, 204, 400]
+  no_log: true
+
+- name: Start the rotation
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/rotate/root/init"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    body_format: json
+    body:
+      secret_shares: "{{ openbao_shamir_shares | int }}"
+      secret_threshold: "{{ openbao_shamir_threshold | int }}"
+  register: openbao_rot_init
+  no_log: true
+
+- name: Give it the current shares
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/rotate/root/update"
+    method: PUT
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+    body_format: json
+    body:
+      key: "{{ item }}"
+      nonce: "{{ (openbao_rot_init.json.data | default(openbao_rot_init.json)).nonce }}"
+    status_code: [200, 400]
+  loop: "{{ openbao_rot_current }}"
+  loop_control:
+    label: share
+  register: openbao_rot_update
+  no_log: true
+
+- name: Cancel and stop if a share was refused
+  when: >-
+    openbao_rot_update.results | map(attribute='status') | reject('equalto', 200) | list | length > 0
+    or not (openbao_rot_update.results[-1].json.data | default(openbao_rot_update.results[-1].json)).complete
+  block:
+    - name: Cancel the rotation
+      ansible.builtin.uri:
+        url: "{{ openbao_local_url }}/v1/sys/rotate/root/init"
+        method: DELETE
+        ca_path: "{{ openbao_tls_ca }}"
+        headers: {X-Vault-Token: "{{ openbao_login.json.auth.client_token }}"}
+        status_code: [200, 204]
+      no_log: true
+
+    - name: Stop
+      ansible.builtin.fail:
+        msg: >-
+          A share was refused or the rotation did not complete. It was cancelled: the current shares
+          still unseal OpenBao, and nothing else changed.
+
+- name: Hold the new shares
+  ansible.builtin.set_fact:
+    openbao_new_shares: "{{ (openbao_rot_update.results[-1].json.data | default(openbao_rot_update.results[-1].json)).keys_base64 }}"
+  no_log: true
+
+- name: Write the new shares to the control node at once
+  ansible.builtin.copy:
+    dest: "{{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json"
+    content: >-
+      {{ {'shares_base64': openbao_new_shares,
+          'threshold': openbao_shamir_threshold,
+          'note': 'NEW shares; the old ones no longer unseal. Share 1 into the vault as vault_openbao_unseal_share; shares 2 and 3 to the operator, apart and off the kit. Then make vault, commit and push, and only then delete this file.'}
+         | to_nice_json }}
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Prove each pair of new shares
+  ansible.builtin.include_tasks: seal_prove_pair.yml
+  loop: [[0, 1], [0, 2], [1, 2]]
+  loop_control:
+    loop_var: openbao_pair
+    label: "shares {{ openbao_pair[0] + 1 }} and {{ openbao_pair[1] + 1 }}"
+
+- name: Say what is left to the operator
+  ansible.builtin.debug:
+    msg: >-
+      The shares are rotated, every pair of the new ones proven, and OpenBao is open. The old
+      shares no longer unseal it. The new ones are in
+      {{ openbao_init_output_dir }}/{{ inventory_hostname }}-shares.json: share 1 into the vault
+      as vault_openbao_unseal_share (ansible-vault edit), shares 2 and 3 to their places, replacing
+      the old ones; make vault, commit and push; then delete the file. make bao-close ends the session.
