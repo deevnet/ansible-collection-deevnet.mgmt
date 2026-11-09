@@ -61,8 +61,14 @@ help:
 "  reconcile NAME=<name>|--all" \
 "      Re-ensure tenants through the API (repairs what it owns, Grafana data sources included)" \
 "" \
-"  bao-status | bao-open [WITHOUT_VAULT=1] | bao-close" \
-"      OpenBao sealed or open | open a work session: the vault's share and one of yours (two without the vault) | seal it (a restart)" \
+"  bao-status" \
+"      Whether OpenBao is sealed or open" \
+"" \
+"  bao-open [WITHOUT_VAULT=1]" \
+"      Open a work session: the vault's share and one of yours (two without the vault)" \
+"" \
+"  bao-close" \
+"      Seal OpenBao (a restart), ending the work session" \
 "" \
 "  bao-rotate-shares [WITHOUT_VAULT=1]" \
 "      In a work session: three new unseal shares, the old ones void, every pair proven; writes .openbao/<host>-shares.json" \
@@ -70,8 +76,14 @@ help:
 "  bao-seal-migrate" \
 "      Once (CHG-0053): the static seal to three Shamir shares, every pair proven; writes .openbao/<host>-shares.json" \
 "" \
-"  backup-status | backup-now | backup-dry-run" \
-"      The last good backup (fails when one is overdue) | back up now, whatever the interval | build an archive with no drive" \
+"  backup-status" \
+"      The last good backup (fails when one is overdue)" \
+"" \
+"  backup-now" \
+"      Back up now, whatever the interval" \
+"" \
+"  backup-dry-run" \
+"      Build an archive with no drive" \
 "" \
 "  backup-verify [SOURCE=drive|dry-run]" \
 "      Decrypt the newest archive with the key from the vault and check it against its manifest" \
