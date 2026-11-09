@@ -1,5 +1,5 @@
 .PHONY: help default deps deps-force build check install-dev install-user rebuild apply list \
-        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reconcile \
+        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reissue-state-secret reconcile \
         backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive \
         bao-status bao-open bao-close bao-seal-migrate bao-rotate-shares \
         publish clean-deps clean-project deep-clean all
@@ -87,6 +87,9 @@ help:
 "" \
 "  rotate-wifi-key NAME=<name> [KEY=admission]" \
 "      Rotate a tenant's Wi-Fi key (new password, same key): writes ~/<name>-wifi-<key>.txt (0600)" \
+"" \
+"  reissue-state-secret NAME=<name>" \
+"      A new state-store secret for a tenant (the old one stops working): writes ~/<name>-state-secret.txt (0600)" \
 "" \
 "  remove-tenant NAME=<name>" \
 "      Take a tenant out of service: its workloads, the tenant, then its Terraform state" \
@@ -239,6 +242,12 @@ backup-drive: install-dev
 # the tenant was admitted with (runbook: Tenant Admission).
 rotate-wifi-key:
 	@./scripts/tenant-wifi-key.sh rotate "$(NAME)" "$(or $(KEY),admission)"
+
+# A new state-store secret for a tenant that has lost the keys to its own state
+# (CHG-0060). The old one stops working; the tenant must not restore from its
+# old state afterwards (runbook: Lost State or Credentials).
+reissue-state-secret:
+	@./scripts/tenant-state-secret.sh reissue "$(NAME)"
 
 # Tenant removal (runbook: Tenant Removal). Both ask for the name to be typed back.
 remove-tenant:
