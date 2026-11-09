@@ -25,3 +25,14 @@ dependencies:
   community.general: ">=8.0.0,<11.0.0"
   # openssl_privatekey_pipe / openssl_csr_pipe, in the CA playbooks.
   community.crypto: ">=2.0.0"
+
+# Never packed into the built collection. .openbao/ holds what the control node
+# keeps of OpenBao: listener pins, and on a first initialisation or a seal
+# migration the init output or the unseal shares, until they are locked in
+# (CHG-0053). .ansible/ is the local install tree; packing it nested a copy of
+# the collection, and those files, inside itself on every build.
+build_ignore:
+  - .openbao
+  - .ansible
+  - "*.tar.gz"
+  - .deps.stamp
