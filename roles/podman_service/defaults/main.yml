@@ -60,6 +60,17 @@ podman_service_command: []
 # Other units this one starts after, e.g. ["deevnet-api-db.service"].
 podman_service_after: []
 
+# Mount points this unit needs (RequiresMountsFor=): the unit does not start
+# unless they are mounted, and stops if they go away. Defaults to the host's
+# data disk, when it has one. That disk is mounted `nofail` so the host still
+# boots without it; without this, every service would start on an empty /srv
+# on the OS disk, look like it had lost its data, and write new data to the
+# wrong disk. Down and visible beats up and wrong.
+podman_service_requires_mounts: >-
+  {{ [mgmt_vm.data_disk.mount | default('/srv')]
+     if (mgmt_vm | default({})).data_disk | default({}) | length > 0
+     else [] }}
+
 podman_service_start_timeout: 120
 podman_service_stop_timeout: 30
 podman_service_enabled: true

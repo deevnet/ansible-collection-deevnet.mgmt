@@ -1,6 +1,9 @@
 # {{ ansible_managed }}
 [Unit]
 Description={{ podman_service_description }}
+{% if podman_service_requires_mounts | length > 0 %}
+RequiresMountsFor={{ podman_service_requires_mounts | join(' ') }}
+{% endif %}
 After=network-online.target{% for unit in podman_service_after %} {{ unit }}{% endfor %}
 
 Wants=network-online.target{% for unit in podman_service_after %} {{ unit }}{% endfor %}
