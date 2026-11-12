@@ -107,7 +107,7 @@ help:
 "      Take a tenant out of service: its workloads, the tenant, then its Terraform state" \
 "" \
 "  purge-tenant-state NAME=<name>" \
-"      Remove a deleted tenant's leftover Terraform state, every version" \
+"      Remove Terraform state an API older than v0.20.0 left behind, every version" \
 "" \
 "  list" \
 "      Show installed collections in project and user paths" \

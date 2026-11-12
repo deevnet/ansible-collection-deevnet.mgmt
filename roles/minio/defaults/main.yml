@@ -43,9 +43,11 @@ minio_root_password: "{{ vault_minio_root_password | default('') }}"
 
 # ADR-0015 §6: the Deevnet API creates tenants' state users and policies itself,
 # with its own admin user rather than root. Created only when its secret is in
-# the vault. The policy grants user and policy administration and nothing else;
-# that is still enough to grant any user anything, so this is a separate,
-# rotatable credential, not a confinement.
+# the vault. The policy grants user and policy administration, and (CHG-0065)
+# listing and deleting every object version under the tenants' prefix, so a
+# tenant's delete takes its state with it. That is still enough to grant any
+# user anything, so this is a separate, rotatable credential, not a
+# confinement; but it cannot itself read any state, or delete the fabric's.
 # Generate with: openssl rand -hex 20
 minio_api_admin_user: deevnet-api
 minio_api_admin_secret: "{{ vault_minio_deevnet_api_secret | default('') }}"
@@ -60,6 +62,8 @@ minio_api_admin_actions:
   - admin:GetPolicy
   - admin:AttachUserOrGroupPolicy
   - admin:ListUserPolicies
+# The prefix every tenant's state sits under; the API's purge is held to it.
+minio_api_tenant_state_prefix: "tenants/"
 
 # --- TLS (CHG-0030) ------------------------------------------------------------
 # Off by default so the role stays usable where there is no site PKI. On, the
