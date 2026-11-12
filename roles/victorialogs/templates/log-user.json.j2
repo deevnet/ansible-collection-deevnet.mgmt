@@ -4,5 +4,7 @@
   "users_dir": "{{ victorialogs_users_dir }}",
   "auth_file": "{{ victorialogs_auth_dir }}/auth.yml",
   "reload_url": "http://{{ victorialogs_vmauth_internal_listen }}/-/reload",
-  "timeout_seconds": {{ victorialogs_writer_timeout }}
+  "timeout_seconds": {{ victorialogs_writer_timeout }},
+  "store_url": "http://{{ victorialogs_http_listen }}",
+  "purge_timeout_seconds": {{ victorialogs_writer_purge_timeout }}
 }
