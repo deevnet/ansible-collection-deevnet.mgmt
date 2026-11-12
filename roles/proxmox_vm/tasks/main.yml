@@ -110,7 +110,6 @@
     onboot: "{{ proxmox_vm_onboot | bool }}"
     # Omitted entirely when undeclared, so an unordered host renders exactly the
     # config it always did.
-    startup: "{{ proxmox_vm_startup | default(omit, true) }}"
     # Likewise: only a host that declares it overrides Proxmox's default.
     ciupgrade: "{{ omit if proxmox_vm_ciupgrade is none else (proxmox_vm_ciupgrade | bool) }}"
     # The declared MAC is the whole point: the Kea reservation and the A record
@@ -141,6 +140,28 @@
     state: present
   delegate_to: localhost
   become: false
+
+# The boot order is set on the hypervisor as root, not through the API token.
+# Proxmox checks Sys.Modify on / for `startup`, because it orders the host's
+# own boot, and the token does not hold that (CHG-0037). Only when it differs.
+- name: Read {{ proxmox_vm_name }}'s boot order on {{ proxmox_vm_node }}
+  ansible.builtin.command:
+    argv: [qm, config, "{{ proxmox_vm_id }}"]
+  delegate_to: "{{ proxmox_vm_hypervisor }}"
+  become: true
+  register: proxmox_vm_qm_config
+  changed_when: false
+  check_mode: false
+  when: proxmox_vm_startup | length > 0
+
+- name: Set {{ proxmox_vm_name }}'s boot order
+  ansible.builtin.command:
+    argv: [qm, set, "{{ proxmox_vm_id }}", --startup, "{{ proxmox_vm_startup }}"]
+  delegate_to: "{{ proxmox_vm_hypervisor }}"
+  become: true
+  when:
+    - proxmox_vm_startup | length > 0
+    - "('startup: ' ~ proxmox_vm_startup) not in proxmox_vm_qm_config.stdout_lines"
 
 # Attached before the first boot, so the guest sees the disk on the same boot that
 # the data_disk role partitions and mounts it on.
