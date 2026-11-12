@@ -52,7 +52,6 @@
     status_code: [200, 204]
   loop:
     - { path: "{{ openbao_kv_mount }}", body: { type: kv, options: { version: "2" } } }
-    - { path: "{{ openbao_build_kv_mount }}", body: { type: kv, options: { version: "2" } } }
     - { path: transit, body: { type: transit } }
   when: (item.path ~ '/') not in openbao_mounts.json
   loop_control:
@@ -113,6 +112,28 @@
   loop: "{{ openbao_retired_mounts }}"
   when: (item ~ '/') in openbao_mounts.json
   changed_when: true
+
+# The AppRole before its policy. Deleting either when it does not exist
+# answers 204, as with retired PKI roles.
+- name: Remove retired AppRoles
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/auth/approle/role/{{ item }}"
+    method: DELETE
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    status_code: [200, 204]
+  loop: "{{ openbao_retired_approles | default([]) }}"
+  changed_when: false
+
+- name: Remove retired policies
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/policies/acl/{{ item }}"
+    method: DELETE
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    status_code: [200, 204]
+  loop: "{{ openbao_retired_policies | default([]) }}"
+  changed_when: false
 
 - name: Import the Transit key for tenant secrets from the vault
   ansible.builtin.include_tasks: transit_key.yml
@@ -184,7 +205,3 @@
           vault_openbao_ansible_secret_id{{ ', and share 1 as vault_openbao_unseal_share; shares 2 and 3 to the operator, apart and off the kit' if openbao_seal_type == 'shamir' else '' }}),
           make vault, commit and push, then delete the file. The next run stops until the vault's
           AppRole logs in.
-
-- name: Write the build-time secrets
-  ansible.builtin.import_tasks: build_secrets.yml
-  when: openbao_bootstrap_token is not defined
