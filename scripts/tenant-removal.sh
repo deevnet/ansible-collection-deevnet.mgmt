@@ -6,10 +6,10 @@
 #
 # Both ask for the name to be typed back; CONFIRM=NAME answers in advance.
 #
-# The API's delete leaves the tenant's Terraform state behind, and the state
-# bucket keeps every version of it, so the purge removes the versions too
-# (runbook: Tenant Removal). It runs `mc` inside the MinIO container, whose
-# root credentials never leave it.
+# The API's delete purges the tenant's Terraform state, every version, since
+# v0.20.0 (CHG-0065); `remove` checks that it did. `purge-state` is for state an
+# older API left behind (runbook: Tenant Removal). Both run `mc` inside the
+# MinIO container, whose root credentials never leave it.
 set -euo pipefail
 
 . "$(dirname "$0")/lib/deevnet-api.sh"
@@ -78,7 +78,7 @@ workloads=$(python3 -c "import json,sys; print(' '.join(w['name'] for w in json.
 
 echo "Removing tenant $name (index $index):"
 echo "  workloads:  ${workloads:-none}"
-echo "  then its network, DNS zones, broker accounts, Wi-Fi keys, log tokens and Grafana login,"
+echo "  then its network, DNS zones, broker accounts, Wi-Fi keys, log tokens, Grafana login and dashboards,"
 echo "  and its Terraform state in $STATE_BUCKET/tenants/$name/, every version."
 confirm
 
@@ -97,6 +97,12 @@ case "$code" in
   *)   die "HTTP $code deleting tenant $name: $(cat "$body")" ;;
 esac
 
-purge_state
+left="$(state_versions)"
+if [[ "$left" == 0 ]]; then
+  echo "state purged: $STATE_BUCKET/tenants/$name/ is empty"
+else
+  # An API older than v0.20.0 leaves it.
+  purge_state
+fi
 echo "Still there, by design or for now (runbook: Tenant Removal): log lines until retention,"
-echo "the renamed Grafana organization, and audit entries."
+echo "the emptied Grafana organization under its retired name, and audit entries."

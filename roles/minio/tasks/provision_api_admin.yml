@@ -4,13 +4,34 @@
 # and delete users and canned policies, and attach a policy to a user.
 #
 # MinIO rejects a Resource on admin actions ("invalid resource
-# 'arn:minio:admin:::*'"), so the statement carries none.
+# 'arn:minio:admin:::*'"), so that statement carries none.
+#
+# The two S3 statements are the purge of a deleted tenant's state (CHG-0065):
+# list every version under the tenants' prefix and delete them. No read and no
+# write: the API never needs a tenant's state, only to remove it. The API's
+# integration test runs its purge as a user holding exactly this policy
+# (internal/backend/minio, apiAdminPolicy); change both together.
 
 - name: Write the Deevnet API admin policy
   ansible.builtin.copy:
     dest: "{{ minio_policy_dir }}/policy-{{ minio_api_admin_policy }}.json"
     mode: '0600'
-    content: "{{ {'Version': '2012-10-17', 'Statement': [{'Effect': 'Allow', 'Action': minio_api_admin_actions}]} | to_nice_json }}"
+    content: "{{ minio_api_policy | to_nice_json }}"
+  vars:
+    minio_api_policy:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Action: "{{ minio_api_admin_actions }}"
+        - Effect: Allow
+          Action: [s3:ListBucket, s3:ListBucketVersions]
+          Resource: ["arn:aws:s3:::{{ minio_state_bucket }}"]
+          Condition:
+            StringLike:
+              s3:prefix: ["{{ minio_api_tenant_state_prefix }}*"]
+        - Effect: Allow
+          Action: [s3:DeleteObject, s3:DeleteObjectVersion]
+          Resource: ["arn:aws:s3:::{{ minio_state_bucket }}/{{ minio_api_tenant_state_prefix }}*"]
   become: true
 
 - name: Copy the Deevnet API admin policy into the container
