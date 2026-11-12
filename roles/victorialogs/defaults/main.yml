@@ -129,13 +129,17 @@ victorialogs_writer_home: /var/lib/deevnet-logwriter
 victorialogs_writer_path: /usr/local/bin/deevnet-log-user
 victorialogs_writer_config: /etc/deevnet/log-user.json
 victorialogs_writer_timeout: 10
+# A purge of a deleted tenant's partitions (CHG-0065) waits for the store to
+# finish rewriting its data. Keep the API's DEEVNET_LOG_PURGE_TIMEOUT (150s)
+# longer than this, so the writer's answer ends a slow purge.
+victorialogs_writer_purge_timeout: 120
 
 # Staged by the API repo's `make stage-log-writer`, and pushed from the control
 # node like the images.
 victorialogs_writer_binary_store: /srv/deevnet-http/binaries/deevnet-log-user
 # Pinned to the file -latest pointed at when pinned; staging a new one does not
 # change what is deployed until this does.
-victorialogs_writer_binary: deevnet-log-user-v0.6.0
+victorialogs_writer_binary: deevnet-log-user-v0.21.0
 
 # The API's public key, and the address it may use it from. Empty means the
 # capability does not exist: nothing can ask this host to write a user.

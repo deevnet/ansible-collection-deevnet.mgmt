@@ -85,8 +85,13 @@
       - "-retentionPeriod={{ victorialogs_retention_period }}"
       - "-retention.maxDiskUsagePercent={{ victorialogs_max_disk_usage_percent }}"
       # No -syslog.* flags: ADR-0027 removed the unauthenticated ingest path.
-      # Deletion stays off (the default), which VictoriaLogs' own docs call
-      # "good from security PoV - an attacker cannot remove the existing logs".
+      # The delete API is on (CHG-0065): deevnet-log-user purges a deleted
+      # tenant's partitions through it. VictoriaLogs' docs call deletion off
+      # "good from security PoV - an attacker cannot remove the existing
+      # logs"; here /delete/* is on this loopback listener only, and vmauth,
+      # the one thing tenants and the operator reach, routes nothing but
+      # /select and /insert (the API repo tests that it never does).
+      - "-delete.enable"
     podman_service_stop_timeout: 60
     # No podman_service_firewall_ports: VictoriaLogs listens on loopback only,
     # and nothing else on this host is opened to the zone.
