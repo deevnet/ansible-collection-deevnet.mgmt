@@ -6,6 +6,25 @@
 # Everything below is normally supplied by the host's `mgmt_vm` block in
 # host_vars; these are the fallbacks.
 
+# Where the OS comes from.
+#
+#   clone (the default): a full clone of the newest Packer-built template,
+#     configured by cloud-init.
+#   pxe: an empty VM that installs itself over the network from the Builder's
+#     kickstart (Build a Management-Hypervisor VM, Approach B). UEFI with Secure
+#     Boot off, a VirtIO RNG (a UEFI guest cannot PXE boot without one), a blank
+#     OS disk of os_disk_size GiB, and no cloud-init drive: anaconda owns the
+#     install, and the kickstart's %post puts the automation key in place.
+#
+#   mgmt_vm:
+#     source: pxe
+#     os_disk_size: 100           # required for pxe; the builder-node kickstart needs ~88
+#
+# The boot order is disk first, then the network. A blank disk does not boot, so
+# the firmware falls through to PXE and installs; once installed, the disk boots
+# and the VM does not reinstall itself on every reboot.
+proxmox_vm_source: "{{ mgmt_vm.source | default('clone') }}"
+
 # Which hypervisor, and which PVE node on it.
 proxmox_vm_hypervisor: "{{ mgmt_vm.hypervisor }}"
 proxmox_vm_node: "{{ mgmt_vm.node }}"
@@ -207,5 +226,11 @@ proxmox_vm_api_validate_certs: "{{ site_verify_proxmox | default(false) }}"
 proxmox_vm_api_url: "https://{{ proxmox_vm_api_host }}:8006/api2/json"
 proxmox_vm_api_auth: "PVEAPIToken={{ proxmox_vm_api_token_id }}={{ proxmox_vm_api_token_secret }}"
 
-# Seconds to wait for the guest to come up on SSH after first boot.
-proxmox_vm_boot_timeout: 300
+# Seconds to wait for the guest to come up on SSH after first boot. A network
+# install takes 20 to 40 minutes, so pxe waits an hour.
+proxmox_vm_boot_timeout: "{{ mgmt_vm.boot_timeout | default(3600 if proxmox_vm_source == 'pxe' else 300) }}"
+
+# The pxe VM's firmware disk and machine type. pre-enrolled-keys=0 is Secure Boot
+# off: the Builder's grubx64.efi is built by grub2-mkimage and is not signed.
+proxmox_vm_pxe_efidisk: "{{ proxmox_vm_storage }}:1,efitype=4m,pre-enrolled-keys=0"
+proxmox_vm_pxe_machine: q35
