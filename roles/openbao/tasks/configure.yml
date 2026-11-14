@@ -92,6 +92,29 @@
   when: "'approle/' not in openbao_auths.json"
   changed_when: true
 
+# The parent of the tenants' namespaces (ADR-0021 §1, CHG-0067). A read
+# answers 404 when it is missing; creating it twice is not an error, but
+# reading first keeps the run quiet.
+- name: Read the tenants' parent namespace
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/namespaces/{{ openbao_tenants_namespace }}"
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    status_code: [200, 404]
+  register: openbao_tenants_ns
+
+- name: Make the tenants' parent namespace
+  ansible.builtin.uri:
+    url: "{{ openbao_local_url }}/v1/sys/namespaces/{{ openbao_tenants_namespace }}"
+    method: POST
+    ca_path: "{{ openbao_tls_ca }}"
+    headers: {X-Vault-Token: "{{ openbao_token }}"}
+    body_format: json
+    body: {}
+    status_code: [200, 204]
+  when: openbao_tenants_ns.status == 404
+  changed_when: true
+
 - name: Run the issuing CAs
   ansible.builtin.include_tasks: issuing_ca.yml
   loop: "{{ openbao_issuing_cas }}"
