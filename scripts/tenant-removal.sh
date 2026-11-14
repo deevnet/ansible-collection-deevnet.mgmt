@@ -9,7 +9,7 @@
 # The API's delete purges the tenant's Terraform state, every version, since
 # v0.20.0 (CHG-0065); `remove` checks that it did. `purge-state` is for state an
 # older API left behind (runbook: Tenant Removal). Both run `mc` inside the
-# MinIO container, whose root credentials never leave it.
+# state store's container, whose root credentials never leave it.
 set -euo pipefail
 
 . "$(dirname "$0")/lib/deevnet-api.sh"
@@ -26,11 +26,12 @@ confirm() {
   [[ "$answer" == "$name" ]] || die "not confirmed; nothing was changed"
 }
 
-# Runs inside the MinIO container on the provisioning VM. Plain HTTP on the
-# container's own loopback where the service proxy holds the certificate
-# (ADR-0036), HTTPS where MinIO still serves TLS itself.
+# Runs inside the state store's container, `minio` (silo since CHG-0068), on the
+# object storage VM. Plain HTTP on the container's own loopback where the
+# service proxy holds the certificate (ADR-0036), HTTPS where the store still
+# serves TLS itself.
 minio() {
-  ssh -o BatchMode=yes "$API_HOST" "sudo podman exec minio sh -c '
+  ssh -o BatchMode=yes "$STATE_HOST" "sudo podman exec minio sh -c '
     export MC_CONFIG_DIR=/tmp/mc-tenant-removal
     { mc alias set local http://127.0.0.1:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null 2>&1 ||
       mc alias set local https://127.0.0.1:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" --insecure >/dev/null; } &&
