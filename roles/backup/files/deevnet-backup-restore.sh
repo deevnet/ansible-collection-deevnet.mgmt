@@ -104,8 +104,8 @@ done
 HAVE=$(db psql -U "$BACKUP_DB_USER" -d "$BACKUP_DB_NAME" -Atc "select count(*) from tenants" 2>/dev/null || echo 0)
 [ "$HAVE" = 0 ] || die "the registry already holds $HAVE tenants; a restore fills an empty host and will not overwrite this one"
 
-S3_IMAGE=$(podman container inspect "$BACKUP_S3_CONTAINER" --format '{{.ImageName}}') \
-  || die "the state store container $BACKUP_S3_CONTAINER does not exist"
+S3_IMAGE="$BACKUP_S3_IMAGE"
+podman image exists "$S3_IMAGE" || die "the state store client image $S3_IMAGE is not loaded"
 export BACKUP_S3_URL BACKUP_S3_BUCKET
 PRESENT=$(s3 'mc ls --recursive dst/"$BACKUP_S3_BUCKET" | wc -l' | tr -d '[:space:]') \
   || die "the state store does not answer, or has no bucket $BACKUP_S3_BUCKET"
