@@ -113,6 +113,14 @@
   delay: 3
   until: minio_health.status is defined and minio_health.status == 200
 
+- name: Set up the MinIO client
+  ansible.builtin.include_tasks:
+    file: mc_alias.yml
+    apply:
+      tags: [tenant-state]
+  when: (minio_state_bucket_enabled | bool) or (minio_api_admin_secret | length > 0)
+  tags: [tenant-state]
+
 - name: Provision the state bucket and per-tenant credentials
   ansible.builtin.include_tasks:
     file: provision_buckets.yml

@@ -67,6 +67,23 @@ minio_api_admin_actions:
   - admin:ListUserPolicies
 # The prefix every tenant's state sits under; the API's purge is held to it.
 minio_api_tenant_state_prefix: "tenants/"
+# The API admin policy's S3 statements, after its admin actions. On the state
+# store: the purge of a deleted tenant's state (CHG-0065), listing every version
+# under the tenants' prefix and deleting them. No read and no write: the API
+# never needs a tenant's state, only to remove it. The API's integration test
+# runs its purge as a user holding exactly this policy
+# (internal/backend/minio, apiAdminPolicy); change both together. The tenant
+# bucket store replaces these (site.yml).
+minio_api_admin_s3_statements:
+  - Effect: Allow
+    Action: [s3:ListBucket, s3:ListBucketVersions]
+    Resource: ["arn:aws:s3:::{{ minio_state_bucket }}"]
+    Condition:
+      StringLike:
+        s3:prefix: ["{{ minio_api_tenant_state_prefix }}*"]
+  - Effect: Allow
+    Action: [s3:DeleteObject, s3:DeleteObjectVersion]
+    Resource: ["arn:aws:s3:::{{ minio_state_bucket }}/{{ minio_api_tenant_state_prefix }}*"]
 
 # --- TLS (CHG-0030) ------------------------------------------------------------
 # Off by default so the role stays usable where there is no site PKI. On, the

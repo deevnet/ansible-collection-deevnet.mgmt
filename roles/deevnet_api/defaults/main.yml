@@ -66,6 +66,13 @@ deevnet_api_workload_resolver: ""
 deevnet_api_powerdns_url: ""
 deevnet_api_opnsense_url: ""
 deevnet_api_minio_endpoint: ""
+# Tenant buckets (ADR-0026 §3, CHG-0069): the bucket store the admin client
+# dials (host[:port], over TLS with the same CA as the state store), the
+# endpoint tenants are told, and the capacity quotas are admitted against.
+# Empty endpoint: the bucket routes answer 503 with a reason.
+deevnet_api_bucket_store_endpoint: ""
+deevnet_api_bucket_store_public_endpoint: ""
+deevnet_api_bucket_store_capacity_gb: 0
 deevnet_api_proxmox_url: ""
 deevnet_api_enrollment_ttl: 72h
 

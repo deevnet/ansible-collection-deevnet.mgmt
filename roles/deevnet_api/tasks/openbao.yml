@@ -228,6 +228,9 @@
       POWERDNS_API_URL: "{{ deevnet_api_powerdns_url }}"
       OPNSENSE_API_URL: "{{ deevnet_api_opnsense_url }}"
       MINIO_ADMIN_ENDPOINT: "{{ deevnet_api_minio_endpoint }}"
+      BUCKET_STORE_ENDPOINT: "{{ deevnet_api_bucket_store_endpoint }}"
+      BUCKET_STORE_PUBLIC_ENDPOINT: "{{ deevnet_api_bucket_store_public_endpoint }}"
+      BUCKET_STORE_CAPACITY_GB: "{{ deevnet_api_bucket_store_capacity_gb | string }}"
       PROXMOX_API_URL: "{{ deevnet_api_proxmox_url }}"
       OPENBAO_ADDR: "{{ deevnet_api_openbao_addr }}"
       OPENBAO_CACERT: /etc/deevnet-api/tls/openbao-ca.pem
