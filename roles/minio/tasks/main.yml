@@ -114,7 +114,11 @@
   until: minio_health.status is defined and minio_health.status == 200
 
 - name: Provision the state bucket and per-tenant credentials
-  ansible.builtin.import_tasks: provision_buckets.yml
+  ansible.builtin.include_tasks:
+    file: provision_buckets.yml
+    apply:
+      tags: [tenant-state]
+  when: minio_state_bucket_enabled | bool
   tags: [tenant-state]
 
 - name: Provision the Deevnet API's admin user

@@ -202,6 +202,28 @@
   become: false
   when: proxmox_vm_data_disk | length > 0
 
+- name: Attach the extra disks to {{ proxmox_vm_name }}
+  community.general.proxmox_disk:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    vmid: "{{ proxmox_vm_id }}"
+    disk: "{{ item.device }}"
+    storage: "{{ item.storage }}"
+    size: "{{ item.size }}"
+    serial: "{{ item.serial }}"
+    # create-if-absent, as for the data disk above. Never `forced`.
+    create: regular
+    backup: false
+    state: present
+  loop: "{{ proxmox_vm_extra_disks }}"
+  loop_control:
+    label: "{{ item.device }} ({{ item.serial }})"
+  delegate_to: localhost
+  become: false
+
 # The configure task reports `changed` from the API call, not from the guest's
 # resulting config. If net0 silently kept the MAC the clone inherited from the
 # template, the Kea reservation would point at an address nothing asks for, and
@@ -308,6 +330,31 @@
       {{ proxmox_vm_data_disk.device }} is attached with serial
       {{ proxmox_vm_data_disk_serial }}.
   when: proxmox_vm_data_disk | length > 0
+
+- name: Assert each extra disk is attached with its serial
+  vars:
+    proxmox_vm_extra_dev: >-
+      {{
+        proxmox_vm_readback.proxmox_vms
+        | default([])
+        | selectattr('config', 'defined')
+        | map(attribute='config')
+        | map(attribute=item.device, default='')
+        | first
+        | default('')
+      }}
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_extra_dev | length > 0
+      - item.storage in proxmox_vm_extra_dev
+      - "'serial=' ~ item.serial in proxmox_vm_extra_dev"
+    fail_msg: >-
+      {{ proxmox_vm_name }} has no usable disk at {{ item.device }} with serial
+      {{ item.serial }} (got '{{ proxmox_vm_extra_dev | default('<absent>') }}').
+    success_msg: "{{ item.device }} is attached with serial {{ item.serial }}."
+  loop: "{{ proxmox_vm_extra_disks }}"
+  loop_control:
+    label: "{{ item.device }} ({{ item.serial }})"
 
 # Placed here on purpose, in both directions. It is AFTER the readback, so the
 # guard below gets the current size out of a config we already fetched - no extra
