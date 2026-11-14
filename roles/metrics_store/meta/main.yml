@@ -1,0 +1,5 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: metrics_store
+  description: Tenants' metrics store, a VictoriaMetrics cluster behind the log store's vmauth (ADR-0023)

@@ -1,0 +1,109 @@
+---
+# Tenants' metrics store (ADR-0023, CHG-0070). Run after the log store role:
+# vmselect takes the delete key that role generates for the writer, and vmauth,
+# which is that role's, is what tenants reach.
+
+- name: Refuse to put the store on the OS disk
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.mounts | selectattr('mount', 'equalto', '/srv') | list | length == 1
+    fail_msg: >-
+      /srv is not a mountpoint on {{ inventory_hostname }}. The metrics store's
+      data belongs on the data disk (ADR-0023 §1).
+    quiet: true
+
+- name: Read the delete key's file
+  ansible.builtin.stat:
+    path: "{{ metrics_store_delete_key_file }}"
+  register: metrics_store_delete_key
+  become: true
+
+- name: Refuse to start vmselect without its delete key
+  ansible.builtin.assert:
+    that: metrics_store_delete_key.stat.exists
+    fail_msg: >-
+      {{ metrics_store_delete_key_file }} does not exist. The log store role
+      generates it when victorialogs_metrics_delete_url is set; run
+      site.yml --tags log-store first. Without it vmselect's delete API would
+      have no key at all.
+    quiet: true
+
+- name: Create the store's directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ metrics_store_data_root }}"
+    - "{{ metrics_store_storage_dir }}"
+    - "{{ metrics_store_cache_dir }}"
+  become: true
+
+- name: Run vmstorage
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: vmstorage
+    podman_service_description: "vmstorage, tenants' metrics store (ADR-0023)"
+    podman_service_image: "{{ metrics_store_vmstorage_image }}"
+    podman_service_tarball: "{{ metrics_store_vmstorage_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ metrics_store_storage_dir }}:/storage:Z"
+    podman_service_command:
+      - "-storageDataPath=/storage"
+      - "-retentionPeriod={{ metrics_store_retention_period }}"
+      - "-storage.maxHourlySeries={{ metrics_store_max_hourly_series }}"
+      - "-storage.maxDailySeries={{ metrics_store_max_daily_series }}"
+      - "-memory.allowedBytes={{ metrics_store_vmstorage_memory }}"
+      - "-httpListenAddr={{ metrics_store_vmstorage_http }}"
+      - "-vminsertAddr={{ metrics_store_vmstorage_insert }}"
+      - "-vmselectAddr={{ metrics_store_vmstorage_select }}"
+    podman_service_stop_timeout: 60
+    # No podman_service_firewall_ports: loopback only.
+
+- name: Run vminsert
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: vminsert
+    podman_service_description: "vminsert, writes into tenants' metrics store (ADR-0023)"
+    podman_service_image: "{{ metrics_store_vminsert_image }}"
+    podman_service_tarball: "{{ metrics_store_vminsert_tarball }}"
+    podman_service_network: host
+    podman_service_command:
+      - "-storageNode={{ metrics_store_vmstorage_insert }}"
+      - "-httpListenAddr={{ metrics_store_vminsert_http }}"
+      # The tenant is in the path vmauth builds; no second way to name one
+      # (CHG-0070, Step 1, finding 2).
+      - "-enableMultitenancyViaHeaders=false"
+      - "-memory.allowedBytes={{ metrics_store_vminsert_memory }}"
+    podman_service_after:
+      - vmstorage.service
+
+- name: Run vmselect
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: vmselect
+    podman_service_description: "vmselect, answers queries on tenants' metrics store (ADR-0023)"
+    podman_service_image: "{{ metrics_store_vmselect_image }}"
+    podman_service_tarball: "{{ metrics_store_vmselect_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ metrics_store_cache_dir }}:/cache:Z"
+      # Shared label (:z), read-only: the writer on the host reads the same
+      # file.
+      - "{{ metrics_store_delete_key_file }}:/etc/vmselect/delete.key:ro,z"
+    podman_service_command:
+      - "-storageNode={{ metrics_store_vmstorage_select }}"
+      - "-httpListenAddr={{ metrics_store_vmselect_http }}"
+      - "-cacheDataPath=/cache"
+      - "-enableMultitenancyViaHeaders=false"
+      # Read from the file, so the key is not on the command line.
+      - "-deleteAuthKey=file:///etc/vmselect/delete.key"
+      - "-memory.allowedBytes={{ metrics_store_vmselect_memory }}"
+    podman_service_after:
+      - vmstorage.service

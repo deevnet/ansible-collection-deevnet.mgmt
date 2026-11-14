@@ -92,6 +92,34 @@
     mode: "0700"
   become: true
 
+# The metrics store's delete key (CHG-0070). Generated here, once, and never
+# rewritten: vmselect reads it at start, and changing it under a running
+# vmselect would leave the writer unable to purge until a restart. Readable by
+# root (vmselect's container) and the writer's group, and nothing else.
+- name: Generate the metrics store's delete key
+  ansible.builtin.shell:
+    cmd: umask 077 && openssl rand -hex 32 > {{ victorialogs_metrics_delete_key_file | quote }}
+    creates: "{{ victorialogs_metrics_delete_key_file }}"
+  when: victorialogs_metrics_delete_url | length > 0
+  no_log: true
+  become: true
+
+- name: Restrict the metrics store's delete key to the writer
+  ansible.builtin.file:
+    path: "{{ victorialogs_metrics_delete_key_file }}"
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    mode: "0640"
+  when: victorialogs_metrics_delete_url | length > 0
+  become: true
+
+- name: Remove the delete key when the site has no metrics store
+  ansible.builtin.file:
+    path: "{{ victorialogs_metrics_delete_key_file }}"
+    state: absent
+  when: victorialogs_metrics_delete_url | length == 0
+  become: true
+
 - name: Write the writer's configuration
   ansible.builtin.template:
     src: log-user.json.j2

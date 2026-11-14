@@ -1,0 +1,60 @@
+---
+# metrics_store - tenants' Prometheus-compatible metrics store, on the
+# observability store VM beside the logs (ADR-0023 §1, CHG-0070).
+#
+# A VictoriaMetrics cluster, one of each component, because tenancy exists
+# only in the cluster version: vmstorage stores, vminsert takes writes, and
+# vmselect answers queries. All three listen on LOOPBACK ONLY, with host
+# networking like the log store's containers. Nothing reaches them except the
+# log store's vmauth, which maps each tenant's token to its own partition
+# (deevnet-log-user renders those routes), and the user writer, which purges a
+# removed tenant's series.
+#
+# THE STORE'S CROSS-TENANT ENDPOINTS ARE ALWAYS ON. /insert/multitenant/ takes
+# each sample's tenant from a label and /select/multitenant/ reads every
+# tenant; no flag turns them off (CHG-0070, Step 1). Loopback plus vmauth's
+# fixed routes are what keep tenants from them. Never publish a port here.
+
+metrics_store_version: "v1.156.0"
+metrics_store_vmstorage_image: "docker.io/victoriametrics/vmstorage:{{ metrics_store_version }}-cluster"
+metrics_store_vmstorage_tarball: "vmstorage/vmstorage-{{ metrics_store_version }}-cluster.tar"
+metrics_store_vminsert_image: "docker.io/victoriametrics/vminsert:{{ metrics_store_version }}-cluster"
+metrics_store_vminsert_tarball: "vminsert/vminsert-{{ metrics_store_version }}-cluster.tar"
+metrics_store_vmselect_image: "docker.io/victoriametrics/vmselect:{{ metrics_store_version }}-cluster"
+metrics_store_vmselect_tarball: "vmselect/vmselect-{{ metrics_store_version }}-cluster.tar"
+
+# On the data disk, beside the logs, never the OS disk (ADR-0023 §1).
+metrics_store_data_root: /srv/victoriametrics
+metrics_store_storage_dir: "{{ metrics_store_data_root }}/storage"
+metrics_store_cache_dir: "{{ metrics_store_data_root }}/vmselect-cache"
+
+# --- Listeners, all loopback -----------------------------------------------------
+metrics_store_vmstorage_http: "127.0.0.1:8482"
+metrics_store_vmstorage_insert: "127.0.0.1:8400"
+metrics_store_vmstorage_select: "127.0.0.1:8401"
+metrics_store_vminsert_http: "127.0.0.1:8480"
+metrics_store_vmselect_http: "127.0.0.1:8481"
+
+# --- Retention and limits (ADR-0023 §1, §6) ----------------------------------------
+# One period for every tenant; per-tenant retention is Enterprise. A value with
+# no suffix is MONTHS, so the suffix is not optional.
+metrics_store_retention_period: 90d
+
+# Store-wide series caps, across all tenants (the open-source cluster has no
+# per-tenant cap). Excess series are dropped and logged. Set well above what
+# the site's tenants write, so they stop a runaway rather than shape normal
+# use; a noisy tenant can still crowd the others, the risk ADR-0023 §6 accepts.
+metrics_store_max_hourly_series: 200000
+metrics_store_max_daily_series: 500000
+
+# Each component sizes its caches from the whole VM's memory unless told, 60%
+# each by default, which three components and the log store would overcommit.
+# The VM keeps its 4 GB (CHG-0070, Step 2: about 120 MB for 20,000 series).
+metrics_store_vmstorage_memory: 512MiB
+metrics_store_vminsert_memory: 128MiB
+metrics_store_vmselect_memory: 256MiB
+
+# The key that lets the user writer delete a removed tenant's series through
+# vmselect. Generated on this host by the log store role, which owns the
+# writer, and read by nothing else (see victorialogs_metrics_delete_key_file).
+metrics_store_delete_key_file: "{{ victorialogs_metrics_delete_key_file }}"

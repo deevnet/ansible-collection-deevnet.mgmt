@@ -197,6 +197,16 @@
   roles:
     - victorialogs
 
+# Tenants' metrics store (ADR-0023, CHG-0070): a VictoriaMetrics cluster behind
+# the log store's vmauth. After the log store, whose role generates the delete
+# key vmselect takes.
+- name: Configure the metrics store
+  hosts: observability_store
+  become: true
+  tags: [metrics-store]
+  roles:
+    - metrics_store
+
 # Tenant dashboards (ADR-0024, CHG-0024): Grafana beside the log store. The
 # server only; each tenant's organisation is the Deevnet API's to create.
 - name: Configure the dashboard server

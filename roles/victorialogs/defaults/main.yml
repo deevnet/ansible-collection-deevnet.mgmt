@@ -139,7 +139,7 @@ victorialogs_writer_purge_timeout: 120
 victorialogs_writer_binary_store: /srv/deevnet-http/binaries/deevnet-log-user
 # Pinned to the file -latest pointed at when pinned; staging a new one does not
 # change what is deployed until this does.
-victorialogs_writer_binary: deevnet-log-user-v0.21.0
+victorialogs_writer_binary: deevnet-log-user-v0.24.0
 
 # The API's public key, and the address it may use it from. Empty means the
 # capability does not exist: nothing can ask this host to write a user.
@@ -151,3 +151,23 @@ victorialogs_writer_from: ""
 # url_map entries are what confine it, one per tenant, selected by the tenant
 # header it sets per message.
 victorialogs_bridge_token: "{{ vault_victorialogs_bridge_token | default('') }}"
+
+# --- The metrics store behind the same vmauth (ADR-0023, CHG-0070) --------------
+# Where the metrics store's vminsert and vmselect listen (the metrics_store
+# role, on this host). Both empty means no metrics store: the writer renders no
+# metrics routes and purges no metrics, which is every site before CHG-0070.
+# Set both, or neither; the writer refuses half.
+#
+# The writer must be v0.24.0 or later before these are set: an older one
+# refuses fields it does not know, in both of its files.
+victorialogs_metrics_insert: ""
+victorialogs_metrics_select: ""
+
+# vmselect's delete API, which the writer uses to delete a removed tenant's
+# series (CHG-0065, CHG-0070), and the key it needs. The key is GENERATED ON
+# THIS HOST, once, by this role (writer.yml), because only two things here use
+# it - vmselect and the writer - and nothing else needs to know it. It is
+# never in the inventory and never leaves the host; a rebuilt VM gets a new
+# one. vmauth routes no tenant to /delete/.
+victorialogs_metrics_delete_url: "{{ victorialogs_metrics_select }}"
+victorialogs_metrics_delete_key_file: "{{ victorialogs_etc_dir }}/metrics-delete.key"
