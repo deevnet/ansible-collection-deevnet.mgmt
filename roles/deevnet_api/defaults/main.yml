@@ -249,6 +249,11 @@ deevnet_api_grafana_url: >-
 # role first, which makes the parent namespace and the API's grants under it,
 # or every tenant's secrets step fails until it has.
 deevnet_api_tenant_secrets_namespace: ""
+# What every reader's credential is bound to, in place of its workload's own
+# address. Where the tenant fabric source-NATs traffic leaving it, OpenBao sees
+# the exit node's address for every workload, so set this to that address as a
+# /32 (CHG-0067). Empty binds each reader to its workload's address.
+deevnet_api_tenant_secrets_source_cidrs: []
 deevnet_api_tenant_secrets_addr: >-
   {{ ('https://bao.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':8200')
      if deevnet_api_tenant_secrets_namespace | length > 0 else '' }}
