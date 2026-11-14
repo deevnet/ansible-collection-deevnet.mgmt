@@ -9,9 +9,9 @@
 # secret is never handed out. The new one goes to ~/TENANT-state-secret.txt
 # (mode 0600), to hand over.
 #
-# The tenant's Terraform state still holds the old secret afterwards, and a
-# restore sends back what state holds, so a tenant given a new secret must not
-# restore from its old state. CHG-0040 moves the secret out of state.
+# The tenant's Terraform state still holds the old secret afterwards. A
+# restore over the registry keeps the reissued one and hands it back, so state
+# takes it up (API v0.22.5, provider v0.10.2; ADR-0015 §5).
 set -euo pipefail
 
 . "$(dirname "$0")/lib/deevnet-api.sh"
