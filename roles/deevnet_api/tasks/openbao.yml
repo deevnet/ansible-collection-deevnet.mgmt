@@ -442,6 +442,17 @@
            'OPENBAO_TENANT_SERVICE_CEL': deevnet_api_tenant_service_cel | string | lower}) }}
   when: deevnet_api_tenant_service_mount | length > 0
 
+- name: Add tenant secrets when this site offers them
+  # No credential of its own: the API administers each tenant's namespace
+  # with the AppRole it already holds, under the grants the openbao role gives
+  # it below the parent namespace (CHG-0067).
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({
+           'DEEVNET_TENANT_SECRETS_NAMESPACE': deevnet_api_tenant_secrets_namespace,
+           'DEEVNET_TENANT_SECRETS_ADDR': deevnet_api_tenant_secrets_addr}) }}
+  when: deevnet_api_tenant_secrets_namespace | length > 0
+
 - name: Add the dashboard server when this site has one
   # Verified with the site CA the container already mounts: Grafana's
   # certificate comes from the same CA as the API's own.

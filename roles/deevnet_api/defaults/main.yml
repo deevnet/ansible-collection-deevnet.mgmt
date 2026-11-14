@@ -240,6 +240,19 @@ deevnet_api_grafana_url: >-
   {{ ('https://grafana.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
      if (groups['observability_store'] | default([])) | length > 0 else '' }}
 
+# Tenant secrets (ADR-0021, CHG-0067): the parent of each tenant's OpenBao
+# namespace, and the address the API tells tenants' workloads to read from.
+# By name, which the listener's certificate carries (openbao_alias_fqdn), and
+# which the inventory gives the OpenBao host as a DNS alias.
+#
+# Optional: empty means the site offers no tenant secrets. Apply the openbao
+# role first, which makes the parent namespace and the API's grants under it,
+# or every tenant's secrets step fails until it has.
+deevnet_api_tenant_secrets_namespace: ""
+deevnet_api_tenant_secrets_addr: >-
+  {{ ('https://bao.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':8200')
+     if deevnet_api_tenant_secrets_namespace | length > 0 else '' }}
+
 # OpenBao (ADR-0016). The address the API and this role use, and the pin the
 # openbao role put on the control node (the Deevnet Root CA).
 deevnet_api_openbao_addr: ""
