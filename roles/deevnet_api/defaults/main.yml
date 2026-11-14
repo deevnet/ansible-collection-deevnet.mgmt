@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.23.0"
+deevnet_api_version: "v0.24.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -217,6 +217,16 @@ deevnet_api_log_writer_user: deevnet-logwriter
 deevnet_api_log_endpoint: >-
   {{ ('https://logs.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
      if (groups['observability_store'] | default([])) | length > 0 else '' }}
+
+# The metrics store behind the same proxy (ADR-0023, CHG-0070): what a tenant
+# is told to push metrics to, and what its Grafana metrics data source reads.
+# Same tokens as the logs. Empty unless the store host runs a metrics store,
+# which is when its log store role names vmselect.
+deevnet_api_metrics_endpoint: >-
+  {{ ('https://metrics.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
+     if ((groups['observability_store'] | default([])) | length > 0
+         and (hostvars[groups['observability_store'] | first].victorialogs_metrics_select | default('')) | length > 0)
+     else '' }}
 
 # Pinned at deploy time from the store itself, for the same reasons as the
 # broker's: a rebuilt VM gets a new key, and a stale pin would leave the API
