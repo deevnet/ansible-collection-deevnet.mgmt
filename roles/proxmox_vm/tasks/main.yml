@@ -36,6 +36,7 @@
 # moment a build number reaches double digits. The same trap applies to the
 # release: 9 sorts above 10.
 - name: Select the newest template matching {{ proxmox_vm_template_prefix }}
+  when: proxmox_vm_source == 'clone'
   ansible.builtin.set_fact:
     proxmox_vm_template: >-
       {{
@@ -51,6 +52,7 @@
       }}
 
 - name: Fail clearly when no template matches
+  when: proxmox_vm_source == 'clone'
   ansible.builtin.assert:
     that:
       - proxmox_vm_template | length > 0
@@ -72,7 +74,7 @@
 
 # Guarded rather than relying on the module's own clone idempotency: a clone is
 # a create-once operation and a second one would collide on vmid.
-- name: Clone {{ proxmox_vm_template }} into {{ proxmox_vm_name }}
+- name: Clone {{ proxmox_vm_template | default("the template") }} into {{ proxmox_vm_name }}
   community.general.proxmox_kvm:
     api_host: "{{ proxmox_vm_api_host }}"
     api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
@@ -89,9 +91,19 @@
     state: present
   delegate_to: localhost
   become: false
-  when: not proxmox_vm_exists
+  when:
+    - proxmox_vm_source == 'clone'
+    - not proxmox_vm_exists
 
+- name: Create {{ proxmox_vm_name }} empty, for a network install
+  ansible.builtin.include_tasks: pxe.yml
+  when:
+    - proxmox_vm_source == 'pxe'
+    - not proxmox_vm_exists
+
+# Clone only: a pxe VM is created with its hardware and has no cloud-init.
 - name: Configure {{ proxmox_vm_name }} hardware, MAC and cloud-init
+  when: proxmox_vm_source == 'clone'
   community.general.proxmox_kvm:
     api_host: "{{ proxmox_vm_api_host }}"
     api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"

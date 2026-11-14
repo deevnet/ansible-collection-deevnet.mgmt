@@ -1,0 +1,83 @@
+---
+# Create the empty VM a network install needs (proxmox_vm_source: pxe). Through
+# the API with ansible.builtin.uri, not proxmox_kvm, which cannot set rng0.
+# Every setting here is one the automation token may make: rng0 from
+# /dev/urandom is VM.Config.HWType; only /dev/hwrng would need a mapping.
+#
+# Create-once, as the clone is. A re-run changes nothing here; the readback
+# asserts in main.yml check what the VM boots with.
+
+- name: Check the pxe VM's declaration
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_os_disk_size | int > 0
+      - proxmox_vm_static_ip | length == 0
+    fail_msg: >-
+      A pxe VM needs mgmt_vm.os_disk_size (GiB; the builder-node kickstart needs
+      about 88), and installs on its DHCP reservation, so it takes no static_ip.
+
+# no_log on the calls because they carry the token; what Proxmox answered is
+# asserted after each, so a refusal says why.
+- name: Create {{ proxmox_vm_name }} as an empty VM to install over the network
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/nodes/{{ proxmox_vm_node }}/qemu"
+    method: POST
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    body_format: json
+    body: "{{ _body | combine({proxmox_vm_os_disk_device: proxmox_vm_storage ~ ':' ~ (proxmox_vm_os_disk_size | int)}) }}"
+    status_code: [200, 400, 403, 500]
+  vars:
+    _body:
+      vmid: "{{ proxmox_vm_id | int }}"
+      name: "{{ proxmox_vm_name }}"
+      ostype: l26
+      bios: ovmf
+      machine: "{{ proxmox_vm_pxe_machine }}"
+      efidisk0: "{{ proxmox_vm_pxe_efidisk }}"
+      rng0: source=/dev/urandom
+      scsihw: virtio-scsi-pci
+      net0: >-
+        virtio={{ proxmox_vm_mac }},bridge={{ proxmox_vm_bridge }}{{
+        ',tag=' ~ proxmox_vm_vlan_tag if proxmox_vm_vlan_tag | int > 0 else '' }}
+      boot: "order={{ proxmox_vm_os_disk_device }};net0"
+      cores: "{{ proxmox_vm_cores | int }}"
+      memory: "{{ proxmox_vm_memory | int }}"
+      agent: enabled=1
+      onboot: "{{ 1 if proxmox_vm_onboot | bool else 0 }}"
+  register: proxmox_vm_pxe_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+
+- name: Check Proxmox accepted the create
+  ansible.builtin.assert:
+    that: proxmox_vm_pxe_create.status == 200
+    fail_msg: >-
+      Proxmox refused to create {{ proxmox_vm_name }} (HTTP
+      {{ proxmox_vm_pxe_create.status }}): {{ proxmox_vm_pxe_create.json.message | default('') }}
+      {{ proxmox_vm_pxe_create.json.errors | default({}) }}
+    quiet: true
+
+# The create is a task; the VM exists once it ends.
+- name: Wait for the create to finish
+  ansible.builtin.uri:
+    url: "{{ proxmox_vm_api_url }}/nodes/{{ proxmox_vm_node }}/tasks/{{ proxmox_vm_pxe_create.json.data | urlencode }}/status"
+    headers:
+      Authorization: "{{ proxmox_vm_api_auth }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+  register: proxmox_vm_pxe_task
+  until: proxmox_vm_pxe_task.json.data.status == 'stopped'
+  retries: 30
+  delay: 2
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Check the create succeeded
+  ansible.builtin.assert:
+    that: proxmox_vm_pxe_task.json.data.exitstatus == 'OK'
+    fail_msg: "Creating {{ proxmox_vm_name }} failed: {{ proxmox_vm_pxe_task.json.data.exitstatus }}"
+    quiet: true
