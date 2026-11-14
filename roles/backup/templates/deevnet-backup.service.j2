@@ -1,8 +1,9 @@
 # {{ ansible_managed }}
 [Unit]
 Description=Deevnet backup to the attached drive (CHG-0039)
-# Ordering only: the script waits for both to answer, and fails if they do not.
-After={{ backup_db_container }}.service {{ backup_state_container }}.service network-online.target
+# Ordering only: the script fails if the database or the state store does not
+# answer. The state store is on another host (CHG-0068).
+After={{ backup_db_container }}.service network-online.target
 
 [Service]
 Type=oneshot

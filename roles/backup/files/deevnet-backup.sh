@@ -133,11 +133,12 @@ podman exec "$BACKUP_DB_CONTAINER" \
 DB_VERSION=$(podman exec "$BACKUP_DB_CONTAINER" pg_dump --version)
 
 # --- The state bucket ----------------------------------------------------------
-# A one-shot container from the store's own image, for its client. Labelling is
-# off rather than relabeled: the CA directory belongs to the running store, and
-# relabelling it for this container would take it away from that one.
-S3_IMAGE=$(podman container inspect "$BACKUP_S3_CONTAINER" --format '{{.ImageName}}') \
-  || die "the state store container $BACKUP_S3_CONTAINER does not exist"
+# A one-shot container from the store's image, for its client (mc), reaching the
+# store by name over TLS (CHG-0068). Labelling is off rather than relabeled: the
+# CA directory is the host's own trust anchors, and relabelling it for this
+# container would take it away from the host.
+S3_IMAGE="$BACKUP_S3_IMAGE"
+podman image exists "$S3_IMAGE" || die "the state store client image $S3_IMAGE is not loaded"
 export BACKUP_S3_URL BACKUP_S3_BUCKET
 podman run --rm --pull=never --network host --security-opt label=disable \
   --env-file "$BACKUP_S3_ENV_FILE" \

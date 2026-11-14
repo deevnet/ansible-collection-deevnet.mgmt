@@ -57,17 +57,27 @@ backup_db_name: deevnet_api
 backup_db_user: deevnet_api
 
 # The state bucket: its current objects, read over S3 with the store's own
-# client, in a one-shot container from the image the store is running. Not the
-# store's data directory, so a restore does not depend on the store being the
-# same software or version. Earlier object versions are not carried; the dated
+# client (mc), in a one-shot container from backup_state_image. Not the store's
+# data directory, so a restore does not depend on the store being the same
+# software or version. Earlier object versions are not carried; the dated
 # archives are the history.
-backup_state_container: minio
-backup_state_env_file: "/etc/deevnet/env/{{ backup_state_container }}.env"
-backup_state_url: "{{ 'https' if minio_tls_enabled | default(false) | bool else 'http' }}://127.0.0.1:9000"
+#
+# The store is on another host (the object storage VM since CHG-0068), so it
+# is reached by its name over TLS, verified against the site root, with the
+# store's own administrative pair: a restore writes into the bucket, so a
+# read-only key would not do. Required: the image holding mc, and the URL.
+backup_state_image: ""
+backup_state_url: ""
 backup_state_bucket: tf-state
-# Mounted read-only where the store's own environment says its trust anchor is.
-backup_state_ca_dir: /srv/minio/certs/CAs
+backup_state_access_key: "{{ vault_minio_root_user | default('') }}"
+backup_state_secret_key: "{{ vault_minio_root_password | default('') }}"
+# Root-only, written by this role. Holds the pair above and the trust anchor's
+# path inside the container.
+backup_state_env_file: /etc/deevnet/env/deevnet-backup-state.env
+# The OS trust anchors site_trust installs, mounted read-only into the client.
+backup_state_ca_dir: /etc/pki/ca-trust/source/anchors
 backup_state_ca_mount: /certs/CAs
+backup_state_ca_name: "{{ site_root_ca_name | default('deevnet-root-ca.pem') }}"
 
 # --- Paths on the host ---------------------------------------------------------
 backup_script: /usr/local/sbin/deevnet-backup

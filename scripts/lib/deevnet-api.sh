@@ -6,6 +6,8 @@
 
 API_URL="${DEEVNET_API_ENDPOINT:-https://api.mobile.deevnet.net}"
 API_HOST="${DEEVNET_API_HOST:-a_autoprov@dv02prv001v01.mobile.deevnet.net}"
+# The state store's host: the object storage VM since CHG-0068.
+STATE_HOST="${DEEVNET_STATE_HOST:-a_autoprov@dv02obj001v01.mobile.deevnet.net}"
 DOWNLOADS="${DEEVNET_DOWNLOADS:-https://downloads.mobile.deevnet.net}"
 # The Deevnet Root CA (ADR-0031), under the name a tenant keeps it as too.
 SITE_CA_URL="${DEEVNET_SITE_CA_URL:-$DOWNLOADS/deevnet-root-ca.pem}"

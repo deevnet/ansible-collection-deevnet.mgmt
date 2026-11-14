@@ -34,6 +34,9 @@ minio_loopback_only: "{{ minio_listen_address is match('127[.]') }}"
 # The bucket every stack's state lives in. One bucket, prefixed per consumer,
 # so a single policy shape covers both the fabric and every tenant.
 minio_state_bucket: tf-state
+# Off for an instance that holds no Terraform state: the tenant bucket store
+# beside the state store on the object storage VM (ADR-0026 §3, CHG-0068).
+minio_state_bucket_enabled: true
 
 # Root credentials come from the vault, like every other credential here. They
 # are the administrative pair used to create buckets and per-tenant users; they

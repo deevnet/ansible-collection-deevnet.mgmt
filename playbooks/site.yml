@@ -35,6 +35,20 @@
     - role: data_disk
       when: mgmt_vm.data_disk is defined
 
+  # Further disks, each mounted by the same role after the data disk
+  # (proxmox_vm_extra_disks). The object store keeps Terraform state on one
+  # of its own (ADR-0026 §3).
+  tasks:
+    - name: Mount the extra disks
+      ansible.builtin.include_role:
+        name: data_disk
+      vars:
+        data_disk: "{{ item }}"
+      loop: "{{ mgmt_vm.extra_disks | default([]) }}"
+      loop_control:
+        label: "{{ item.mount }} ({{ item.serial }})"
+      when: mgmt_vm.hypervisor is defined
+
 # Every management-plane VM trusts the site root at the OS level (ADR-0030 §7),
 # before any service on it dials another. The role is deevnet.builder's, so the
 # Builder, the hypervisors and these VMs install it the same way.
@@ -68,6 +82,27 @@
   tags: [tenant-state]
   roles:
     - minio
+
+# Tenants' own buckets (ADR-0026 §3), in a second instance of the same store on
+# the object storage VM, on a different disk from the state. Silo's bucket
+# quota is enforced from its scanner's usage figures, about a minute behind
+# (CHG-0068), so a tenant can overrun it for that long; on its own disk, that
+# overrun can never reach Terraform state. The same role, with the instance's
+# own name, ports and data directory from group_vars/tenant_buckets.
+- name: Configure the tenant bucket store
+  hosts: tenant_buckets
+  become: true
+  tags: [tenant-buckets]
+  roles:
+    - role: minio
+      vars:
+        minio_container_name: "{{ tenant_buckets_container_name }}"
+        minio_data_root: "{{ tenant_buckets_data_root }}"
+        minio_api_port: "{{ tenant_buckets_api_port }}"
+        minio_console_port: "{{ tenant_buckets_console_port }}"
+        minio_state_bucket_enabled: false
+        # Its admin user for the API comes with tenant buckets (CHG-0069).
+        minio_api_admin_secret: ""
 
 # The Deevnet API and its database (ADR-0012), in the provisioning VM.
 - name: Configure the Deevnet API

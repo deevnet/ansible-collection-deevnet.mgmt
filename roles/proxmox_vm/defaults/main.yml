@@ -99,6 +99,21 @@ proxmox_vm_os_disk_size: "{{ mgmt_vm.os_disk_size | default(0) }}"
 # the VM" here means "outlives the OS disk", not "outlives the VMID".
 proxmox_vm_data_disk: "{{ mgmt_vm.data_disk | default({}) }}"
 
+# Further data disks, each with its own serial, for a host whose data must sit
+# on separate disks - the object store, whose Terraform state may not share a
+# disk with tenants' buckets (ADR-0026 §3, CHG-0068). Same shape as data_disk,
+# plus a serial and a filesystem label of their own (an XFS label is at most 12
+# characters):
+#
+#   mgmt_vm:
+#     extra_disks:
+#       - { device: scsi2, size: 5, storage: local-lvm-big-thin,
+#           serial: deevnet-state, label: dvnt-state, mount: /srv/state }
+#
+# The data_disk role mounts each one after the data disk, so a mount beneath
+# the data disk's is fine.
+proxmox_vm_extra_disks: "{{ mgmt_vm.extra_disks | default([]) }}"
+
 # USB devices on the hypervisor passed through to the VM - a backup drive, say.
 # Each is a PVE resource mapping this role creates, then a usbN entry on the VM:
 #
