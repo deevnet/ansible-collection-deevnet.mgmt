@@ -207,6 +207,18 @@
   roles:
     - metrics_store
 
+# Tenant alerting (ADR-0023 §5, CHG-0071): a vmalert per tenant, Alertmanager
+# and ntfy, reading what the log store's writer renders. After the log store,
+# whose role makes alerting's directories and installs that writer; before the
+# service proxy, which fronts ntfy. Only where the log store runs alerting.
+- name: Configure tenant alerting
+  hosts: observability_store
+  become: true
+  tags: [alerting]
+  roles:
+    - role: alerting
+      when: victorialogs_alerting | default(false) | bool
+
 # Tenant dashboards (ADR-0024, CHG-0024): Grafana beside the log store. The
 # server only; each tenant's organisation is the Deevnet API's to create.
 - name: Configure the dashboard server

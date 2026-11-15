@@ -1,0 +1,236 @@
+---
+# Tenant alerting (ADR-0023 §5, CHG-0071). Run after the log store role: the
+# directories and Alertmanager's ntfy password are that role's, created when
+# victorialogs_alerting is on, and the writer it installs renders the files
+# every service here reads.
+
+- name: Refuse to put alerting on the OS disk
+  ansible.builtin.assert:
+    that: >-
+      ansible_facts.mounts | selectattr('mount', 'equalto', '/srv') | list | length == 1
+    fail_msg: >-
+      /srv is not a mountpoint on {{ inventory_hostname }}. Alerting's state
+      belongs on the data disk.
+    quiet: true
+
+- name: Refuse to run without the public ntfy address
+  ansible.builtin.assert:
+    that: alerting_ntfy_base_url is match('https://')
+    fail_msg: >-
+      alerting_ntfy_base_url is not set. It is the address phones dial
+      through the service proxy, and ntfy puts it in what it sends them.
+    quiet: true
+
+- name: Read what the log store role made
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ alerting_vmalert_dir }}"
+    - "{{ alerting_alertmanager_dir }}/ntfy-publisher.pw"
+  register: alerting_prereqs
+  become: true
+
+- name: Refuse to start before the log store role has run with alerting on
+  ansible.builtin.assert:
+    that: alerting_prereqs.results | map(attribute='stat.exists') | min
+    fail_msg: >-
+      {{ alerting_prereqs.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}
+      missing. Set victorialogs_alerting and run site.yml --tags log-store
+      first: that role makes alerting's directories and Alertmanager's ntfy
+      password, and installs the writer that renders every file here.
+    quiet: true
+
+- name: Create the services' data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ alerting_alertmanager_data_dir }}"
+    - "{{ alerting_ntfy_data_dir }}"
+  become: true
+
+# --- vmalert: a binary, one process per tenant -------------------------------
+# Taken from the image the artifact server mirrors, so there is one source for
+# it and the version is the tag. The writer runs it too, as -dryRun, to check a
+# tenant's rules before they are kept.
+- name: Read the installed vmalert's version
+  ansible.builtin.command:
+    argv: ["{{ alerting_vmalert_binary }}", -version]
+  register: alerting_vmalert_installed
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Install vmalert {{ alerting_vmalert_version }}
+  when: alerting_vmalert_version not in (alerting_vmalert_installed.stdout | default(''))
+  become: true
+  block:
+    - name: Create the image directory
+      ansible.builtin.file:
+        path: /var/lib/deevnet/images
+        state: directory
+        mode: "0700"
+
+    - name: Push the vmalert image
+      ansible.builtin.copy:
+        src: "/srv/deevnet-http/container-images/{{ alerting_vmalert_tarball }}"
+        dest: "/var/lib/deevnet/images/{{ alerting_vmalert_tarball | basename }}"
+        mode: "0600"
+
+    - name: Load the vmalert image
+      ansible.builtin.command:
+        argv: [podman, load, -q, -i, "/var/lib/deevnet/images/{{ alerting_vmalert_tarball | basename }}"]
+      changed_when: true
+
+    - name: Copy vmalert out of its image
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          c=$(podman create {{ alerting_vmalert_image | quote }})
+          trap 'podman rm -f "$c" >/dev/null' EXIT
+          podman cp "$c:/vmalert-prod" {{ (alerting_vmalert_binary ~ '.new') | quote }}
+          chmod 0755 {{ (alerting_vmalert_binary ~ '.new') | quote }}
+          mv {{ (alerting_vmalert_binary ~ '.new') | quote }} {{ alerting_vmalert_binary | quote }}
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Remove the pushed vmalert image
+      ansible.builtin.file:
+        path: "/var/lib/deevnet/images/{{ alerting_vmalert_tarball | basename }}"
+        state: absent
+
+- name: Create the vmalert user
+  ansible.builtin.user:
+    name: vmalert
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+    home: /nonexistent
+    # Reads each tenant's rules and read token, which the writer owns.
+    groups: "{{ alerting_writer_group }}"
+    append: true
+  become: true
+
+- name: Install each tenant's vmalert unit
+  ansible.builtin.template:
+    src: vmalert@.service.j2
+    dest: /etc/systemd/system/vmalert@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+  become: true
+
+# --- Alertmanager -------------------------------------------------------------
+# Root in its container: it reads the writer's configuration and the
+# publisher password, both root:writer 0640, and nothing else of the host.
+- name: Run Alertmanager
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: alertmanager
+    podman_service_description: "Alertmanager, routing each tenant's alerts to its ntfy topic (ADR-0023)"
+    podman_service_image: "{{ alerting_alertmanager_image }}"
+    podman_service_tarball: "{{ alerting_alertmanager_tarball }}"
+    podman_service_network: host
+    podman_service_create_args: [--user, "0:0"]
+    podman_service_volumes:
+      - "{{ alerting_alertmanager_dir }}:/etc/alertmanager:ro,z"
+      - "{{ alerting_alertmanager_data_dir }}:/alertmanager:Z"
+    podman_service_command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address={{ alerting_alertmanager_listen }}"
+      # One Alertmanager: no cluster, so no gossip listener.
+      - "--cluster.listen-address="
+    # No podman_service_firewall_ports: loopback only.
+
+# --- ntfy ---------------------------------------------------------------------
+# Everything but its users comes from the environment; the users are the
+# writer's server.yml, which ntfy reads when it starts.
+- name: Run ntfy
+  ansible.builtin.include_role:
+    name: deevnet.mgmt.podman_service
+  vars:
+    podman_service_name: ntfy
+    podman_service_description: "ntfy, tenants' alert notifications for phones on site (ADR-0023)"
+    podman_service_image: "{{ alerting_ntfy_image }}"
+    podman_service_tarball: "{{ alerting_ntfy_tarball }}"
+    podman_service_network: host
+    podman_service_volumes:
+      - "{{ alerting_ntfy_dir }}:/etc/ntfy:ro,z"
+      - "{{ alerting_ntfy_data_dir }}:/var/lib/ntfy:Z"
+    podman_service_env:
+      NTFY_BASE_URL: "{{ alerting_ntfy_base_url }}"
+      NTFY_LISTEN_HTTP: "{{ alerting_ntfy_listen }}"
+      # Behind the service proxy: without it every phone is rate-limited as
+      # one visitor (CHG-0071, Step 1).
+      NTFY_BEHIND_PROXY: "true"
+      NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_CACHE_DURATION: "{{ alerting_ntfy_cache_duration }}"
+      NTFY_ENABLE_SIGNUP: "false"
+      # No NTFY_UPSTREAM_BASE_URL: nothing goes to ntfy.sh (CHG-0071).
+    podman_service_command: [serve, --config, /etc/ntfy/server.yml]
+    # No podman_service_firewall_ports: loopback only, behind the proxy.
+
+# --- The sync: the writer's files to running services -------------------------
+- name: Install the sync script
+  ansible.builtin.template:
+    src: deevnet-alerting-sync.j2
+    dest: /usr/local/sbin/deevnet-alerting-sync
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Install the sync units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - deevnet-alerting-sync.path
+    - deevnet-alerting-sync.service
+  notify: Reload systemd
+  become: true
+
+- name: Reload systemd for the new units
+  ansible.builtin.meta: flush_handlers
+
+- name: Watch the writer's stamp
+  ansible.builtin.systemd:
+    name: deevnet-alerting-sync.path
+    state: started
+    enabled: true
+  become: true
+
+# Whatever the writer rendered before this run - a rebuilt host, a tenant added
+# while a service was down - is brought in line now.
+- name: Bring every tenant's vmalert in line with the writer's files
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/deevnet-alerting-sync]
+  changed_when: false
+  become: true
+
+- name: Wait for Alertmanager to report ready
+  ansible.builtin.uri:
+    url: "http://{{ alerting_alertmanager_listen }}/-/ready"
+  register: alerting_am_ready
+  until: alerting_am_ready.status == 200
+  retries: 20
+  delay: 3
+
+- name: Wait for ntfy to report healthy
+  ansible.builtin.uri:
+    url: "http://{{ alerting_ntfy_listen }}/v1/health"
+  register: alerting_ntfy_health
+  until: alerting_ntfy_health.status == 200
+  retries: 20
+  delay: 3

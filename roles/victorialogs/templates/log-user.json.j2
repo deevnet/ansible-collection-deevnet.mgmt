@@ -8,5 +8,18 @@
   "store_url": "http://{{ victorialogs_http_listen }}",
   "purge_timeout_seconds": {{ victorialogs_writer_purge_timeout }}{% if victorialogs_metrics_delete_url | length > 0 %},
   "metrics_delete_url": "{{ victorialogs_metrics_delete_url }}",
-  "metrics_delete_key_file": "{{ victorialogs_metrics_delete_key_file }}"{% endif %}
+  "metrics_delete_key_file": "{{ victorialogs_metrics_delete_key_file }}"{% endif %}{% if victorialogs_alerting | bool %},
+  "alerting": {
+    "alerts_dir": "{{ victorialogs_alerting_alerts_dir }}",
+    "vmalert_dir": "{{ victorialogs_alerting_vmalert_dir }}",
+    "vmalert_binary": "{{ victorialogs_alerting_vmalert_binary }}",
+    "vmalert_port_base": {{ victorialogs_alerting_vmalert_port_base | int }},
+    "alertmanager_file": "{{ victorialogs_alerting_alertmanager_dir }}/alertmanager.yml",
+    "alertmanager_reload_url": "{{ victorialogs_alerting_alertmanager_reload_url }}",
+    "ntfy_url": "{{ victorialogs_alerting_ntfy_url }}",
+    "ntfy_config_file": "{{ victorialogs_alerting_ntfy_dir }}/server.yml",
+    "publisher_password_file": "{{ victorialogs_alerting_publisher_password_file }}",
+    "publisher_password_path": "/etc/alertmanager/{{ victorialogs_alerting_publisher_password_file | basename }}",
+    "changed_file": "{{ victorialogs_alerting_vmalert_dir }}/.changed"
+  }{% endif %}
 }

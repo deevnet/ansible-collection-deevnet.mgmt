@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Start, reload and stop tenants' vmalert, and restart ntfy, from the writer's files (CHG-0071)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/deevnet-alerting-sync

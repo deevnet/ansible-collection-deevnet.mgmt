@@ -1,0 +1,11 @@
+---
+dependencies: []
+galaxy_info:
+  role_name: alerting
+  description: Tenant alerting - a vmalert per tenant, Alertmanager and ntfy, from the log store writer's files (ADR-0023 §5)
+  author: deevnet
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Fedora
+      versions: [all]

@@ -7,7 +7,7 @@
 
 # Built and staged by the deevnet-provisioning-api repository's `make stage`. Bump the
 # version here when a new one is staged.
-deevnet_api_version: "v0.24.0"
+deevnet_api_version: "v0.25.0"
 deevnet_api_image: "localhost/deevnet-api:{{ deevnet_api_version }}"
 deevnet_api_tarball: "deevnet-api/deevnet-api-{{ deevnet_api_version }}.tar"
 deevnet_api_container_name: deevnet-api
@@ -226,6 +226,15 @@ deevnet_api_metrics_endpoint: >-
   {{ ('https://metrics.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
      if ((groups['observability_store'] | default([])) | length > 0
          and (hostvars[groups['observability_store'] | first].victorialogs_metrics_select | default('')) | length > 0)
+     else '' }}
+
+# Tenant alerting (ADR-0023 §5, CHG-0071): the ntfy server tenants' phones
+# subscribe to, behind the same proxy. Empty unless the store host's log store
+# role runs alerting, which is when the writer carries it.
+deevnet_api_notify_endpoint: >-
+  {{ ('https://ntfy.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain)
+     if ((groups['observability_store'] | default([])) | length > 0
+         and (hostvars[groups['observability_store'] | first].victorialogs_alerting | default(false)) | bool)
      else '' }}
 
 # Pinned at deploy time from the store itself, for the same reasons as the

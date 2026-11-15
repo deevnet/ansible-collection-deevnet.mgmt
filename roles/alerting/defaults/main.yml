@@ -1,0 +1,49 @@
+---
+# Tenant alerting (ADR-0023 §5, CHG-0071), on the observability store.
+#
+# The log store's writer (deevnet-log-user) renders every file here from what
+# the Deevnet API sends it: each tenant's vmalert directory, Alertmanager's
+# configuration and ntfy's users. This role runs the services that read them,
+# and a root path unit that starts, reloads and stops each tenant's vmalert
+# when the writer touches its stamp file. Run it after the log store role,
+# which creates the directories and the publisher password.
+
+# The same paths as the log store role's victorialogs_alerting_* (this role
+# runs in a play of its own, which does not load that role's defaults): keep
+# the two equal.
+alerting_root: /srv/alerting
+alerting_vmalert_dir: "{{ alerting_root }}/vmalert"
+alerting_alertmanager_dir: "{{ alerting_root }}/alertmanager"
+alerting_alertmanager_data_dir: "{{ alerting_root }}/alertmanager-data"
+alerting_ntfy_dir: "{{ alerting_root }}/ntfy"
+alerting_ntfy_data_dir: "{{ alerting_root }}/ntfy-data"
+alerting_writer_group: deevnet-logwriter
+
+# Versions (CHG-0071, Step 1). vmalert is the metrics store's release; it runs
+# as a binary taken from its image, one process per tenant.
+alerting_vmalert_version: v1.156.0
+alerting_vmalert_image: "docker.io/victoriametrics/vmalert:{{ alerting_vmalert_version }}"
+alerting_vmalert_tarball: "vmalert/vmalert-{{ alerting_vmalert_version }}.tar"
+alerting_vmalert_binary: /usr/local/bin/vmalert
+alerting_alertmanager_version: v0.35.0
+alerting_alertmanager_image: "quay.io/prometheus/alertmanager:{{ alerting_alertmanager_version }}"
+alerting_alertmanager_tarball: "alertmanager/alertmanager-{{ alerting_alertmanager_version }}.tar"
+alerting_ntfy_version: v2.38.0
+alerting_ntfy_image: "docker.io/binwiederhier/ntfy:{{ alerting_ntfy_version }}"
+alerting_ntfy_tarball: "ntfy/ntfy-{{ alerting_ntfy_version }}.tar"
+
+# Loopback listeners. The writer's config names the same two (the log store
+# role's victorialogs_alerting_*_url); only ntfy is behind the service proxy.
+alerting_alertmanager_listen: 127.0.0.1:9093
+alerting_ntfy_listen: 127.0.0.1:2586
+# What each tenant's vmalert queries: the log store's vmauth, as the tenant.
+alerting_vmauth_url: http://127.0.0.1:8427
+
+# ntfy's public address, as phones dial it through the service proxy. Set in
+# inventory; iOS needs it to match its Default Server exactly (CHG-0071 Step 1).
+alerting_ntfy_base_url: ""
+# How long ntfy keeps a message for a phone that was away (CHG-0071).
+alerting_ntfy_cache_duration: 12h
+
+# Each tenant's vmalert's caches. Five to eight MB each in CHG-0071 Step 2.
+alerting_vmalert_memory: 64MiB

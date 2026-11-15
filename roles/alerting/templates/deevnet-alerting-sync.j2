@@ -1,0 +1,56 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# Brings the running services in line with the log store writer's files
+# (CHG-0071). Run as root by deevnet-alerting-sync.path whenever the writer
+# touches its stamp file, and by Ansible after each run.
+#
+# - A tenant directory with rules: its vmalert runs. A changed token or port
+#   restarts it; otherwise it is reloaded, which keeps its alert state.
+# - A running vmalert with no directory: stopped and disabled.
+# - ntfy's users changed: ntfy restarts, which is how it reads declared users.
+set -euo pipefail
+
+dir={{ alerting_vmalert_dir }}
+state=/run/deevnet-alerting
+mkdir -p "$state"
+
+declare -A want=()
+for d in "$dir"/*/; do
+  t=$(basename "$d")
+  [[ $t =~ ^[a-z][a-z0-9]{0,7}$ ]] || continue
+  [[ -f $d/rules.yml && -f $d/token && -f $d/vmalert.env ]] || continue
+  want[$t]=1
+  unit="vmalert@$t.service"
+  sum=$(cat "$d/token" "$d/vmalert.env" | sha256sum | cut -d' ' -f1)
+  if systemctl is-active --quiet "$unit"; then
+    if [[ $sum != "$(cat "$state/$t.sum" 2>/dev/null || true)" ]]; then
+      systemctl restart "$unit"
+    else
+      systemctl reload "$unit"
+    fi
+  else
+    systemctl enable --now "$unit"
+  fi
+  echo "$sum" > "$state/$t.sum"
+done
+
+while read -r unit _; do
+  [[ -n $unit ]] || continue
+  t=${unit#vmalert@}; t=${t%.service}
+  if [[ -z ${want[$t]:-} ]]; then
+    systemctl disable --now "$unit"
+    rm -f "$state/$t.sum"
+  fi
+done < <(systemctl list-units --all --plain --no-legend 'vmalert@*.service')
+
+users={{ alerting_ntfy_dir }}/server.yml
+if [[ -f $users ]]; then
+  sum=$(sha256sum "$users" | cut -d' ' -f1)
+  if [[ $sum != "$(cat "$state/ntfy.sum" 2>/dev/null || true)" ]]; then
+    if systemctl is-active --quiet ntfy.service; then
+      systemctl restart ntfy.service
+    fi
+    echo "$sum" > "$state/ntfy.sum"
+  fi
+fi
