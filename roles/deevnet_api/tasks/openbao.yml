@@ -440,6 +440,12 @@
       {{ deevnet_api_tenant_env | combine({'DEEVNET_METRICS_ENDPOINT': deevnet_api_metrics_endpoint}) }}
   when: deevnet_api_log_writer_addr | length > 0 and deevnet_api_metrics_endpoint | length > 0
 
+- name: Add tenant alerting when this site has it
+  ansible.builtin.set_fact:
+    deevnet_api_tenant_env: >-
+      {{ deevnet_api_tenant_env | combine({'DEEVNET_NOTIFY_ENDPOINT': deevnet_api_notify_endpoint}) }}
+  when: deevnet_api_log_writer_addr | length > 0 and deevnet_api_notify_endpoint | length > 0
+
 - name: Add the Tenant Service CA when this site has one
   # No credential of its own: the API signs with the AppRole it already holds,
   # on the one path the openbao role's policy gives it.

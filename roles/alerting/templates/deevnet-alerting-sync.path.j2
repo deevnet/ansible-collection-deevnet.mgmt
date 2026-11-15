@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Watch the log store writer's alerting stamp (CHG-0071)
+
+[Path]
+PathChanged={{ alerting_vmalert_dir }}/.changed
+Unit=deevnet-alerting-sync.service
+
+[Install]
+WantedBy=multi-user.target

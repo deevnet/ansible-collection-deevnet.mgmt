@@ -139,7 +139,7 @@ victorialogs_writer_purge_timeout: 120
 victorialogs_writer_binary_store: /srv/deevnet-http/binaries/deevnet-log-user
 # Pinned to the file -latest pointed at when pinned; staging a new one does not
 # change what is deployed until this does.
-victorialogs_writer_binary: deevnet-log-user-v0.24.0
+victorialogs_writer_binary: deevnet-log-user-v0.25.0
 
 # The API's public key, and the address it may use it from. Empty means the
 # capability does not exist: nothing can ask this host to write a user.
@@ -171,3 +171,30 @@ victorialogs_metrics_select: ""
 # one. vmauth routes no tenant to /delete/.
 victorialogs_metrics_delete_url: "{{ victorialogs_metrics_select }}"
 victorialogs_metrics_delete_key_file: "{{ victorialogs_etc_dir }}/metrics-delete.key"
+
+# --- Tenant alerting, carried by the same writer (ADR-0023 §5, CHG-0071) ---------
+# On, and the writer's config gains its alerting block: it keeps each tenant's
+# alert rules and ntfy login, and renders vmalert's, Alertmanager's and ntfy's
+# files from them. The alerting role runs the services that read those files;
+# run it after this one. Off, and the writer refuses an alerts request - every
+# site before CHG-0071.
+#
+# The writer must be v0.25.0 or later before this is on.
+victorialogs_alerting: false
+
+# Everything alerting keeps, on the data disk. The alerting role names the same
+# paths in its own defaults (it runs in a play of its own, which does not load
+# these): keep the two equal.
+victorialogs_alerting_root: /srv/alerting
+victorialogs_alerting_alerts_dir: "{{ victorialogs_alerting_root }}/alerts.d"
+victorialogs_alerting_vmalert_dir: "{{ victorialogs_alerting_root }}/vmalert"
+victorialogs_alerting_alertmanager_dir: "{{ victorialogs_alerting_root }}/alertmanager"
+victorialogs_alerting_ntfy_dir: "{{ victorialogs_alerting_root }}/ntfy"
+# Alertmanager's ntfy password. GENERATED ON THIS HOST, once, like the metrics
+# delete key: only Alertmanager and the writer (which hashes it for ntfy) use
+# it, and it never leaves the host.
+victorialogs_alerting_publisher_password_file: "{{ victorialogs_alerting_alertmanager_dir }}/ntfy-publisher.pw"
+victorialogs_alerting_vmalert_binary: /usr/local/bin/vmalert
+victorialogs_alerting_vmalert_port_base: 20000
+victorialogs_alerting_alertmanager_reload_url: "http://127.0.0.1:9093/-/reload"
+victorialogs_alerting_ntfy_url: "http://127.0.0.1:2586"

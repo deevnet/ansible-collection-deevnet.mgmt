@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+# One tenant's vmalert (ADR-0023 §5, CHG-0071). Started, reloaded and stopped
+# by deevnet-alerting-sync from the writer's files; never by hand.
+[Unit]
+Description=vmalert for tenant %i
+After=network-online.target alertmanager.service
+Wants=network-online.target
+ConditionPathExists={{ alerting_vmalert_dir }}/%i/rules.yml
+
+[Service]
+# Its own user, in the writer's group: it reads the tenant's rules and read
+# token, and nothing of the substrate's.
+User=vmalert
+Group=vmalert
+SupplementaryGroups={{ alerting_writer_group }}
+EnvironmentFile={{ alerting_vmalert_dir }}/%i/vmalert.env
+# The tenant label is set here, from the instance name. A rule cannot set it:
+# the API and the writer refuse one that tries (CHG-0071, Step 1, finding 1).
+# No -remoteWrite.url, so a recording rule is refused: alerts only.
+ExecStart={{ alerting_vmalert_binary }} \
+  -httpListenAddr=127.0.0.1:${VMALERT_PORT} \
+  -datasource.url={{ alerting_vmauth_url }} \
+  -datasource.bearerTokenFile={{ alerting_vmalert_dir }}/%i/token \
+  -rule={{ alerting_vmalert_dir }}/%i/rules.yml \
+  -notifier.url=http://{{ alerting_alertmanager_listen }} \
+  -external.label=tenant=%i \
+  -memory.allowedBytes={{ alerting_vmalert_memory }}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadOnlyPaths={{ alerting_vmalert_dir }}/%i
+
+[Install]
+WantedBy=multi-user.target

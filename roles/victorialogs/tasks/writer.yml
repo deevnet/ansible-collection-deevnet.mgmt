@@ -120,6 +120,44 @@
   when: victorialogs_metrics_delete_url | length == 0
   become: true
 
+# Tenant alerting's files (CHG-0071). The writer owns what it renders; root
+# owns the root, so the writer can create nothing else there.
+- name: Create alerting's directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ victorialogs_writer_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ victorialogs_alerting_root }}", owner: root, mode: "0755" }
+    # Each tenant's state, with its ntfy hash: the writer's alone.
+    - { path: "{{ victorialogs_alerting_alerts_dir }}", owner: "{{ victorialogs_writer_user }}", mode: "0700" }
+    # Each tenant's vmalert directory, read by the vmalert user, a member of
+    # the writer's group.
+    - { path: "{{ victorialogs_alerting_vmalert_dir }}", owner: "{{ victorialogs_writer_user }}", mode: "0750" }
+    - { path: "{{ victorialogs_alerting_alertmanager_dir }}", owner: "{{ victorialogs_writer_user }}", mode: "0750" }
+    - { path: "{{ victorialogs_alerting_ntfy_dir }}", owner: "{{ victorialogs_writer_user }}", mode: "0750" }
+  when: victorialogs_alerting | bool
+  become: true
+
+- name: Generate Alertmanager's ntfy password
+  ansible.builtin.shell:
+    cmd: umask 077 && openssl rand -hex 24 > {{ victorialogs_alerting_publisher_password_file | quote }}
+    creates: "{{ victorialogs_alerting_publisher_password_file }}"
+  when: victorialogs_alerting | bool
+  no_log: true
+  become: true
+
+- name: Restrict Alertmanager's ntfy password to root and the writer
+  ansible.builtin.file:
+    path: "{{ victorialogs_alerting_publisher_password_file }}"
+    owner: root
+    group: "{{ victorialogs_writer_user }}"
+    mode: "0640"
+  when: victorialogs_alerting | bool
+  become: true
+
 - name: Write the writer's configuration
   ansible.builtin.template:
     src: log-user.json.j2
