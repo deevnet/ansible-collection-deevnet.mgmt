@@ -13,18 +13,20 @@ ConditionPathExists={{ alerting_vmalert_dir }}/%i/rules.yml
 User=vmalert
 Group=vmalert
 SupplementaryGroups={{ alerting_writer_group }}
-EnvironmentFile={{ alerting_vmalert_dir }}/%i/vmalert.env
 # The tenant label is set here, from the instance name. A rule cannot set it:
 # the API and the writer refuse one that tries (CHG-0071, Step 1, finding 1).
 # No -remoteWrite.url, so a recording rule is refused: alerts only.
-ExecStart={{ alerting_vmalert_binary }} \
-  -httpListenAddr=127.0.0.1:${VMALERT_PORT} \
+# The port comes from the writer's vmalert.env, sourced by the shell as the
+# service user. Not EnvironmentFile=: systemd reads that itself, as init_t,
+# and SELinux denies init_t the writer's files under /srv (var_t).
+ExecStart=/bin/sh -c 'set -a; . {{ alerting_vmalert_dir }}/%i/vmalert.env; exec {{ alerting_vmalert_binary }} \
+  -httpListenAddr=127.0.0.1:$${VMALERT_PORT} \
   -datasource.url={{ alerting_vmauth_url }} \
   -datasource.bearerTokenFile={{ alerting_vmalert_dir }}/%i/token \
   -rule={{ alerting_vmalert_dir }}/%i/rules.yml \
   -notifier.url=http://{{ alerting_alertmanager_listen }} \
   -external.label=tenant=%i \
-  -memory.allowedBytes={{ alerting_vmalert_memory }}
+  -memory.allowedBytes={{ alerting_vmalert_memory }}'
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10

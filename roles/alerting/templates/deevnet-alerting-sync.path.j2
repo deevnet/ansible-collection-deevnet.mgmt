@@ -3,7 +3,11 @@
 Description=Watch the log store writer's alerting stamp (CHG-0071)
 
 [Path]
-PathChanged={{ alerting_vmalert_dir }}/.changed
+# The directory, not the stamp file in it: the writer replaces the stamp by
+# rename, and a watch on the file is lost with the inode it replaced, so the
+# second change was never seen (CHG-0071, Step 7). The directory sees every
+# rename into it, and every tenant directory added or removed.
+PathChanged={{ alerting_vmalert_dir }}
 Unit=deevnet-alerting-sync.service
 
 [Install]
