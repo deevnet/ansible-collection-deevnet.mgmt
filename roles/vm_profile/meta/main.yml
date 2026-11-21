@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: vm_profile
+  description: Check every VM on every hypervisor against the VM hardware profile (ADR-0046)
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []
