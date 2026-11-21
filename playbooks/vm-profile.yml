@@ -1,0 +1,20 @@
+---
+# Check every VM on every hypervisor against the VM hardware profile (ADR-0046).
+#
+# Usage:
+#   ansible-playbook playbooks/vm-profile.yml                       # fails on drift
+#   ansible-playbook playbooks/vm-profile.yml -e vm_profile_fail_on_drift=false
+#
+# Reads only. A VM that differs is reported as drift, each difference named;
+# moving it is a change record, never this playbook.
+
+- name: Check VMs against the hardware profile
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # As vm-identity.yml: group_vars/all derives ansible_host from
+    # env.interfaces, which the control node has no entry for.
+    ansible_host: 127.0.0.1
+    ansible_connection: local
+  roles:
+    - vm_profile
