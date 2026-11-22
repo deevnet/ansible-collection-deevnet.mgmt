@@ -1,0 +1,11 @@
+---
+# Check every VM on every hypervisor against the VM hardware profile (ADR-0046).
+# The profile is inventory's `deevnet_vm_profile`; a VM that may differ declares
+# `vm_profile_exceptions` (the keys it differs in, and `reason`) in its host_vars.
+# It reads only: it never changes a VM.
+
+# Every hypervisor is surveyed, as vm_identity does.
+vm_profile_hypervisor_group: hypervisors
+
+# Fail the run when any VM drifts, so `make vm-profile` exits non-zero.
+vm_profile_fail_on_drift: true

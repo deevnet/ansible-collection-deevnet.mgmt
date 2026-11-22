@@ -1,0 +1,89 @@
+---
+# Runs once on the control node. Reads each hypervisor's VMs and their
+# configuration through the Proxmox API, never inside a guest, so every VM is
+# checked the same way whatever runs in it (ADR-0046 §4).
+
+- name: Require a profile and hypervisors to check
+  ansible.builtin.assert:
+    that:
+      - deevnet_vm_profile is defined
+      - _hypervisors | length > 0
+    fail_msg: >-
+      Nothing to check against: deevnet_vm_profile is not in inventory, or the
+      group '{{ vm_profile_hypervisor_group }}' is empty.
+    quiet: true
+  vars:
+    _hypervisors: "{{ groups[vm_profile_hypervisor_group] | default([]) }}"
+
+- name: Read every VM and its configuration on every hypervisor
+  community.general.proxmox_vm_info:
+    api_host: "{{ hostvars[item].ansible_host }}"
+    api_user: "{{ hostvars[item].proxmox_token_id.split('!')[0] }}"
+    api_token_id: "{{ hostvars[item].proxmox_token_id.split('!')[1] }}"
+    api_token_secret: "{{ hostvars[item].proxmox_token_secret }}"
+    validate_certs: "{{ site_verify_proxmox | default(false) }}"
+    type: qemu
+    config: current
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  no_log: true
+  ignore_errors: true
+  loop: "{{ groups[vm_profile_hypervisor_group] }}"
+  register: _vmp_survey
+
+# A partial answer would call the substrate compliant when part of it was never
+# read.
+- name: Require every hypervisor to answer
+  ansible.builtin.assert:
+    that:
+      - _unanswered | length == 0
+    fail_msg: >-
+      {{ _unanswered | join(', ') }} did not answer. A check that read only part
+      of the substrate cannot say it complies.
+    quiet: true
+  vars:
+    _answered: >-
+      {{ groups[vm_profile_hypervisor_group] | zip(_vmp_survey.results)
+         | selectattr('1.proxmox_vms', 'defined') | map(attribute='0') | list }}
+    _unanswered: "{{ groups[vm_profile_hypervisor_group] | difference(_answered) }}"
+
+- name: Compare each VM with the profile
+  ansible.builtin.set_fact:
+    vm_profile_results: >-
+      {{ _vmp_survey.results | map(attribute='proxmox_vms') | flatten
+         | deevnet.mgmt.vm_profile_check(deevnet_vm_profile, _exceptions) }}
+  vars:
+    # A VM's inventory name is its Proxmox name; only VMs Deevnet declares can
+    # declare an exception. Tenant workloads and templates are held to the
+    # profile itself.
+    _exceptions: >-
+      {% set out = {} %}{% for h in groups['all'] %}{% if hostvars[h].vm_profile_exceptions is defined %}{% set _ = out.update({h: hostvars[h].vm_profile_exceptions}) %}{% endif %}{% endfor %}{{ out }}
+
+- name: Report each VM
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.node }} {{ item.vmid }} {{ item.name }}{{ ' (template)' if item.template else '' }}:
+      {{ item.result | upper }}{{ (' - ' ~ item.reason) if item.reason else '' }}{{
+         (': ' ~ (item.diffs | join('; '))) if item.diffs else '' }}
+  loop: "{{ vm_profile_results }}"
+  loop_control:
+    label: "{{ item.vmid }}"
+
+- name: Sum up
+  ansible.builtin.debug:
+    msg: >-
+      {{ vm_profile_results | length }} VMs:
+      {{ vm_profile_results | selectattr('result', 'equalto', 'compliant') | list | length }} compliant,
+      {{ vm_profile_results | selectattr('result', 'equalto', 'exception') | list | length }} declared exception,
+      {{ vm_profile_results | selectattr('result', 'equalto', 'drift') | list | length }} drift.
+
+- name: Fail on drift
+  ansible.builtin.fail:
+    msg: >-
+      {{ vm_profile_results | selectattr('result', 'equalto', 'drift') | list | length }}
+      VM(s) differ from the profile (ADR-0046). The check changes nothing; moving
+      a VM is a change record.
+  when:
+    - vm_profile_fail_on_drift | bool
+    - vm_profile_results | selectattr('result', 'equalto', 'drift') | list | length > 0

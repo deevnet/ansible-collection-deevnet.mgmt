@@ -1,5 +1,5 @@
 .PHONY: help default deps deps-force build check install-dev install-user rebuild apply list \
-        vm-identity vm-identity-assign admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reissue-state-secret reconcile \
+        vm-identity vm-identity-assign vm-profile admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reissue-state-secret reconcile \
         backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive \
         bao-status bao-open bao-close bao-seal-migrate bao-rotate-shares \
         publish clean-deps clean-project deep-clean all
@@ -54,6 +54,9 @@ help:
 "" \
 "  vm-identity-assign" \
 "      vm-identity + allocate identity for management VMs that have none" \
+"" \
+"  vm-profile" \
+"      Check every VM on every hypervisor against the hardware profile (ADR-0046); fails on drift" \
 "" \
 "  admit NAME=<name> [MAC=AA-BB-CC-00-11-22]" \
 "      Admit a tenant name: writes the handover details to ~/<name>-admission.txt (0600)" \
@@ -182,6 +185,12 @@ vm-identity: install-dev
 vm-identity-assign: install-dev
 	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
 	  ansible-playbook playbooks/vm-identity.yml -e vm_identity_assign=true
+
+# Read-only: every VM on every hypervisor against inventory's deevnet_vm_profile
+# (ADR-0046). Exits non-zero on drift; moving a VM is a change record.
+vm-profile: install-dev
+	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook playbooks/vm-profile.yml
 
 # ---------- Inspection ----------
 # Tenant admission (runbook: Tenant Admission). The operator token is read
