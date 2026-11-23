@@ -145,7 +145,7 @@
           kind: switch
           table: network-edge
           status: "{{ 'unreachable' if (_discovery_out.unreachable | default(false))
-                      else ('ok' if (_discovery_out.stdout | default('')) is search('Firmware Version')
+                      else ('ok' if (_discovery_out.stdout | default('')) is search('(Software|Firmware) Version')
                       else 'failed: ' ~ (_discovery_out.msg | default('no output'))) }}"
           stdout: "{{ '### system_info\n' ~ (_discovery_out.stdout | default('')) }}"
 

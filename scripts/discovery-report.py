@@ -278,7 +278,8 @@ def parse_linux(o, table, os_item, image_items):
 
 def parse_switch(o):
     k = kv_lines(o.get("system_info"), "-")
-    fw = k.get("Firmware Version", "")
+    # SG2218 1.20.24 prints "Software Version"; older firmware said "Firmware Version".
+    fw = k.get("Software Version") or k.get("Firmware Version", "")
     model = k.get("Hardware Version", "")
     return [("network-edge", "TP-Link SG2218 firmware", fw, model)] if fw else []
 
