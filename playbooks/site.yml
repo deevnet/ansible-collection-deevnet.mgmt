@@ -59,6 +59,16 @@
   roles:
     - deevnet.builder.site_trust
 
+# The read-only account the update watcher on the Builder logs in to (Patch
+# Management v2). deevnet.builder's, as on the Builder VMs and the hypervisors;
+# its key comes from the watcher, so run deevnet.builder's make update-watch first.
+- name: The update watcher's check
+  hosts: management_plane
+  become: true
+  tags: [update_check]
+  roles:
+    - deevnet.builder.update_check
+
 # Substrate secrets (ADR-0016), in the identity VM. First among the services:
 # the API reads its credentials, keys and certificate from it.
 - name: Configure OpenBao

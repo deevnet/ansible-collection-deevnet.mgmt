@@ -277,11 +277,14 @@
       register: _discovery_catalog_stat
       failed_when: not _discovery_catalog_stat.stat.exists
 
+    # setgid: deevnet.builder's update_watch role gives the directory the
+    # update watcher's group, and each report inherits it, so the watcher reads
+    # the router's version from the newest one.
     - name: The report directory exists
       ansible.builtin.file:
         path: "{{ discovery_dir }}"
         state: directory
-        mode: "0750"
+        mode: "2750"
 
     - name: Gather what every system said
       ansible.builtin.set_fact:
