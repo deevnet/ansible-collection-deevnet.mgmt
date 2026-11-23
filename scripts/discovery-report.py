@@ -197,9 +197,14 @@ def parse_router(o):
     ver = product.get("product_version") or product.get("CORE_VERSION") or ""
     items.append(("core-router", "OPNsense", ver, product.get("product_name", "")))
     pkgs = {p.get("name"): p for p in (info.get("package") or []) if isinstance(p, dict) and installed(p)}
-    for name, label in (("base", "FreeBSD base"),):
-        if name in pkgs:
-            items.append(("core-router", label, pkgs[name].get("version", ""), ""))
+    # The "base" package is OPNsense's own base set, versioned like OPNsense. The
+    # FreeBSD release it is built on shows only in the package mirror's ABI,
+    # e.g. https://pkg.opnsense.org/FreeBSD:15:amd64/26.7.
+    m = re.search(r"FreeBSD:(\d+):", str(product.get("product_mirror", "")))
+    if m:
+        base = pkgs.get("base", {}).get("version", "")
+        items.append(("core-router", "FreeBSD base", m.group(1),
+                      f"base set {base}" if base else ""))
     for name, label in (("kea", "Kea DHCPv4"), ("unbound", "Unbound")):
         if name in pkgs:
             items.append(("core-router-services", label, pkgs[name].get("version", ""), ""))
