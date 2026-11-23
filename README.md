@@ -118,6 +118,7 @@ deevnet.mgmt/
 | `rebuild` | deps + install-dev |
 | `publish` | deps + install-user |
 | `apply` | install-dev + run site.yml |
+| `discover` | What every substrate system runs, against the Software Catalog and the pins: a dated report in `/srv/discovery` (read-only on every target) |
 | `list` | Show installed collections |
 | `clean-*` | Various cleanup targets |
 

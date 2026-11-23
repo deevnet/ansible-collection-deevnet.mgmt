@@ -1,0 +1,328 @@
+---
+# Discovery: what is actually running, in one dated report (Patch Management v1).
+#
+# Reads every substrate system the Builder can reach, with the credentials
+# automation already holds, and compares what it finds with the Software Catalog
+# (deevnet-docs data/software_catalog.yaml) and each running container with the
+# image the automation pins. The operator updates the catalog from the report,
+# or opens a change for the drift.
+#
+# Read-only, everywhere: every remote task is a read, nothing is restarted,
+# installed or written on a target. The only files written are the report's,
+# on the Builder, under discovery_dir:
+#   YYYY-MM-DD-raw.json   what each system said, as it said it
+#   YYYY-MM-DD.json       the comparison, for whatever reads it next
+#   YYYY-MM-DD.md         the comparison, to read
+#
+# A system that does not answer is reported as such, never skipped silently.
+#
+# Needs the vault (the router's API key, the switch's CLI login, the Omada Open
+# API client), and
+# deevnet.net installed at the user level for the switch's CLI plugin.
+#
+# API markers (ADR-0009). On a controller upgrade:  grep -rn "omada-api:"
+#
+# Usage:
+#   make discover
+#   ansible-playbook playbooks/discover.yml
+
+- name: Discovery | core router
+  hosts: dv02cor002p01
+  gather_facts: false
+  tasks:
+    # Through the router's API, from the Builder, as every opnsense_* role in
+    # deevnet.net reaches it: automation has no SSH login there.
+    # opnsense-api: documented GET core/firmware/info (docs.opnsense.org, Core API,
+    # Firmware); its response fields are not documented, so the report reads
+    # them defensively and the raw answer is kept in the -raw.json.
+    - name: Read the OPNsense release and the packages and plugins installed
+      ansible.builtin.uri:
+        url: "{{ opnsense_api_url }}/core/firmware/info"
+        method: GET
+        user: "{{ opnsense_api_key }}"
+        password: "{{ opnsense_api_secret }}"
+        force_basic_auth: true
+        validate_certs: "{{ opnsense_validate_certs }}"
+        return_content: true
+      delegate_to: localhost
+      failed_when: false
+      register: _discovery_out
+
+    - name: Keep what the router said
+      ansible.builtin.set_fact:
+        discovery_raw:
+          kind: router
+          table: core-router
+          status: "{{ 'ok' if (_discovery_out.status | default(0)) == 200 and (_discovery_out.json | default({})) is mapping
+                      else 'failed: HTTP ' ~ (_discovery_out.status | default('none')) ~ ' ' ~ (_discovery_out.msg | default('')) }}"
+          outputs:
+            info: "{{ _discovery_out.json | default({}) }}"
+
+- name: Discovery | hypervisors
+  hosts: hypervisors
+  gather_facts: false
+  tasks:
+    - name: Read Proxmox VE's packages, Debian, the kernel, the BIOS and FRR
+      ansible.builtin.shell: |
+        echo '### pveversion'; pveversion -v
+        echo '### debian'; cat /etc/debian_version
+        echo '### kernel'; uname -r
+        echo '### bios'; dmidecode -s bios-version 2>/dev/null
+        echo '### frr'; dpkg-query -W -f='${Version}\n' frr 2>/dev/null
+        exit 0
+      become: true
+      changed_when: false
+      failed_when: false
+      ignore_unreachable: true
+      register: _discovery_out
+
+    - name: Keep what the hypervisor said
+      ansible.builtin.set_fact:
+        discovery_raw:
+          kind: hypervisor
+          table: "{{ 'tenant-hypervisor' if 'tenant_hypervisors' in group_names else 'management-hypervisor' }}"
+          status: "{{ 'unreachable' if (_discovery_out.unreachable | default(false))
+                      else ('ok' if (_discovery_out.stdout | default('')) is search('pve-manager')
+                      else 'failed: ' ~ (_discovery_out.msg | default(_discovery_out.stderr | default('no output')))) }}"
+          stdout: "{{ _discovery_out.stdout | default('') }}"
+
+# The Pi lab is not read: its Pis take whatever card is in them that day, so
+# there is no expected OS to compare with (the owner's exemption, 2026-11-23).
+- name: Discovery | service VMs and the Builder
+  hosts: management_plane:builder
+  gather_facts: false
+  tasks:
+    # The image of each running container is read from the container, not from
+    # its unit file: what runs, not what was meant to.
+    - name: Read the OS, the kernel, Podman and every running container's image
+      ansible.builtin.shell: |
+        echo '### facts'
+        . /etc/os-release
+        echo "os_name=$NAME"
+        echo "os_version=$VERSION_ID"
+        echo "os_codename=$VERSION_CODENAME"
+        echo "kernel=$(uname -r)"
+        [ -f /etc/rpi-issue ] && echo "rpi_issue=$(head -n1 /etc/rpi-issue)"
+        command -v podman >/dev/null 2>&1 && echo "podman=$(podman --version)"
+        echo "systemd=$(systemctl --version 2>/dev/null | head -n1)"
+        echo "bios=$(dmidecode -s bios-version 2>/dev/null)"
+        echo '### containers'
+        if command -v podman >/dev/null 2>&1; then podman ps --format json; else echo '[]'; fi
+        exit 0
+      become: true
+      changed_when: false
+      failed_when: false
+      ignore_unreachable: true
+      register: _discovery_out
+
+    - name: Keep what the host said
+      ansible.builtin.set_fact:
+        discovery_raw:
+          kind: linux
+          table: "{{ 'builder' if 'builder' in group_names else 'service-vms' }}"
+          # The catalog row the OS is recorded under.
+          os_item: "{{ 'Fedora Workstation' if 'oob_management' in group_names else 'Fedora Server' }}"
+          status: "{{ 'unreachable' if (_discovery_out.unreachable | default(false))
+                      else ('ok' if (_discovery_out.stdout | default('')) is search('os_name=')
+                      else 'failed: ' ~ (_discovery_out.msg | default(_discovery_out.stderr | default('no output')))) }}"
+          stdout: "{{ _discovery_out.stdout | default('') }}"
+
+- name: Discovery | access switch
+  hosts: switches
+  gather_facts: false
+  tasks:
+    # Not adopted by the controller (CHG-0009 is on hold), so read on its CLI.
+    - name: Read the switch's firmware
+      ansible.netcommon.cli_command:
+        command: show system-info
+      failed_when: false
+      ignore_unreachable: true
+      register: _discovery_out
+
+    - name: Keep what the switch said
+      ansible.builtin.set_fact:
+        discovery_raw:
+          kind: switch
+          table: network-edge
+          status: "{{ 'unreachable' if (_discovery_out.unreachable | default(false))
+                      else ('ok' if (_discovery_out.stdout | default('')) is search('Firmware Version')
+                      else 'failed: ' ~ (_discovery_out.msg | default('no output'))) }}"
+          stdout: "{{ '### system_info\n' ~ (_discovery_out.stdout | default('')) }}"
+
+- name: Discovery | Omada controller and the devices it manages
+  hosts: network_controllers
+  gather_facts: false
+  vars:
+    omada_url: "https://localhost:8043"
+  tasks:
+    - name: Read the controller identity and version
+      # omada-api: UNDOCUMENTED /api/info tested-on 6.3.0.45
+      ansible.builtin.uri:
+        url: "{{ omada_url }}/api/info"
+        validate_certs: "{{ site_verify_omada | default(false) }}"
+      failed_when: false
+      ignore_unreachable: true
+      register: _discovery_info
+
+    - name: Read the managed devices' firmware
+      when: (_discovery_info.json.result.omadacId | default('')) | length > 0
+      block:
+        - name: Get an access token with the client credentials
+          # omada-api: documented authorize/token (TP-Link Open API guide; not in the served spec) spec 6.3.0.45
+          ansible.builtin.uri:
+            url: "{{ omada_url }}/openapi/authorize/token?grant_type=client_credentials"
+            method: POST
+            body_format: json
+            body:
+              omadacId: "{{ _discovery_info.json.result.omadacId }}"
+              client_id: "{{ vault_omada_openapi_client_id }}"
+              client_secret: "{{ vault_omada_openapi_client_secret }}"
+            validate_certs: "{{ site_verify_omada | default(false) }}"
+          register: _discovery_token
+          failed_when: _discovery_token.json.errorCode | default(-1) != 0
+          no_log: true
+
+        - name: Set the API base and header
+          ansible.builtin.set_fact:
+            _discovery_api: "{{ omada_url }}/openapi/v1/{{ _discovery_info.json.result.omadacId }}"
+            _discovery_hdr:
+              Authorization: "AccessToken={{ _discovery_token.json.result.accessToken }}"
+          no_log: true
+
+        - name: List sites
+          # omada-api: documented getSiteList spec 6.3.0.45
+          ansible.builtin.uri:
+            url: "{{ _discovery_api }}/sites?page=1&pageSize=100"
+            headers: "{{ _discovery_hdr }}"
+            validate_certs: "{{ site_verify_omada | default(false) }}"
+          register: _discovery_sites
+          failed_when: _discovery_sites.json.errorCode | default(-1) != 0
+
+        - name: List each site's devices
+          # omada-api: documented getSiteDeviceList spec 6.3.0.45
+          ansible.builtin.uri:
+            url: "{{ _discovery_api }}/sites/{{ item.siteId }}/devices?page=1&pageSize=100"
+            headers: "{{ _discovery_hdr }}"
+            validate_certs: "{{ site_verify_omada | default(false) }}"
+          loop: "{{ _discovery_sites.json.result.data }}"
+          loop_control:
+            label: "{{ item.name | default(item.siteId) }}"
+          register: _discovery_devices
+          failed_when: _discovery_devices.json.errorCode | default(-1) != 0
+      rescue:
+        - name: Note that the devices could not be read
+          ansible.builtin.set_fact:
+            _discovery_device_error: "{{ ansible_failed_result.msg | default('device list not read') }}"
+
+    - name: Keep what the controller said
+      ansible.builtin.set_fact:
+        discovery_omada:
+          kind: omada
+          table: network-edge
+          status: "{{ 'unreachable' if (_discovery_info.unreachable | default(false))
+                      else ('ok' if (_discovery_info.json.result.controllerVer | default('')) | length > 0
+                      else 'failed: ' ~ (_discovery_info.msg | default('no answer from /api/info'))) }}"
+          device_error: "{{ _discovery_device_error | default('') }}"
+          outputs:
+            controller:
+              controllerVer: "{{ _discovery_info.json.result.controllerVer | default('') }}"
+            devices: "{{ (_discovery_devices.results | default([]))
+                         | map(attribute='json') | map(attribute='result') | map(attribute='data')
+                         | flatten | list }}"
+
+- name: Discovery | the report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The inventory's group_vars/all derives ansible_host from env.interfaces,
+    # which localhost doesn't have.
+    ansible_host: 127.0.0.1
+    discovery_dir: /srv/discovery
+    discovery_date: "{{ now().strftime('%Y-%m-%d') }}"
+    discovery_catalog: "{{ playbook_dir }}/../../deevnet-docs/data/software_catalog.yaml"
+    discovery_targets: "{{ (groups['all'] | intersect(['dv02cor002p01']))
+                           + groups['hypervisors'] + groups['management_plane']
+                           + groups['builder'] + groups['switches'] }}"
+    # A running image's last path element, to its catalog row's name.
+    discovery_image_items:
+      openbao: OpenBao
+      pdns-auth-49: PowerDNS Authoritative
+      deevnet-api: Deevnet API
+      postgres: PostgreSQL
+      minio: Silo
+      silo: Silo
+      omada-controller: Omada Software Controller
+      deevnet-vernemq: VerneMQ
+      deevnet-log-bridge: MQTT log bridge
+      victoria-logs: VictoriaLogs
+      vmauth: vmauth
+      vmstorage: VictoriaMetrics cluster
+      vminsert: VictoriaMetrics cluster
+      vmselect: VictoriaMetrics cluster
+      vmalert: vmalert
+      alertmanager: Alertmanager
+      ntfy: ntfy
+      grafana: Grafana OSS
+      nginx: nginx
+    # An Omada device model, to its catalog row's name.
+    discovery_omada_models:
+      EAP650-Outdoor: TP-Link EAP650-Outdoor firmware
+      SG2218: TP-Link SG2218 firmware
+  tasks:
+    - name: The catalog is where the report expects it
+      ansible.builtin.stat:
+        path: "{{ discovery_catalog }}"
+      register: _discovery_catalog_stat
+      failed_when: not _discovery_catalog_stat.stat.exists
+
+    - name: The report directory exists
+      ansible.builtin.file:
+        path: "{{ discovery_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Gather what every system said
+      ansible.builtin.set_fact:
+        _discovery_hosts: "{{ _discovery_hosts | default({}) | combine({item: hostvars[item].discovery_raw
+                              | default({'kind': 'none', 'status': 'not run: the host left the play'})}) }}"
+      loop: "{{ discovery_targets | unique }}"
+
+    - name: Add what each controller said
+      ansible.builtin.set_fact:
+        _discovery_hosts: "{{ _discovery_hosts | combine({item ~ ' (Omada)': hostvars[item].discovery_omada
+                              | default({'kind': 'none', 'status': 'not run: the host left the play'})}) }}"
+      loop: "{{ groups['network_controllers'] }}"
+
+    - name: Write what was said, as it was said
+      ansible.builtin.copy:
+        dest: "{{ discovery_dir }}/{{ discovery_date }}-raw.json"
+        content: "{{ {'date': discovery_date, 'hosts': _discovery_hosts,
+                      'image_items': discovery_image_items,
+                      'omada_models': discovery_omada_models} | to_nice_json }}"
+        mode: "0640"
+
+    - name: Compare it with the catalog and the pins
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -I
+          - "{{ playbook_dir }}/../scripts/discovery-report.py"
+          - --observed
+          - "{{ discovery_dir }}/{{ discovery_date }}-raw.json"
+          - --catalog
+          - "{{ discovery_catalog }}"
+          - --inventory
+          - "{{ ansible_inventory_sources[0] }}"
+          - --roles
+          - "{{ playbook_dir }}/../roles"
+          - --markdown
+          - "{{ discovery_dir }}/{{ discovery_date }}.md"
+          - --json
+          - "{{ discovery_dir }}/{{ discovery_date }}.json"
+      changed_when: true
+      register: _discovery_report
+
+    - name: Where the report is
+      ansible.builtin.debug:
+        msg: "{{ _discovery_report.stdout }}"
