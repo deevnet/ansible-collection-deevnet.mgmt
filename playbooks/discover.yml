@@ -86,8 +86,10 @@
                       else 'failed: ' ~ (_discovery_out.msg | default(_discovery_out.stderr | default('no output')))) }}"
           stdout: "{{ _discovery_out.stdout | default('') }}"
 
-- name: Discovery | service VMs, the Builder and the Pi lab
-  hosts: management_plane:builder:pis
+# The Pi lab is not read: its Pis take whatever card is in them that day, so
+# there is no expected OS to compare with (the owner's exemption, 2026-11-23).
+- name: Discovery | service VMs and the Builder
+  hosts: management_plane:builder
   gather_facts: false
   tasks:
     # The image of each running container is read from the container, not from
@@ -117,11 +119,9 @@
       ansible.builtin.set_fact:
         discovery_raw:
           kind: linux
-          table: "{{ 'raspberry-pi' if 'pis' in group_names
-                     else ('builder' if 'builder' in group_names else 'service-vms') }}"
-          # The catalog row the OS is recorded under; a Pi's is its own OS's name.
-          os_item: "{{ '' if 'pis' in group_names
-                       else ('Fedora Workstation' if 'oob_management' in group_names else 'Fedora Server') }}"
+          table: "{{ 'builder' if 'builder' in group_names else 'service-vms' }}"
+          # The catalog row the OS is recorded under.
+          os_item: "{{ 'Fedora Workstation' if 'oob_management' in group_names else 'Fedora Server' }}"
           status: "{{ 'unreachable' if (_discovery_out.unreachable | default(false))
                       else ('ok' if (_discovery_out.stdout | default('')) is search('os_name=')
                       else 'failed: ' ~ (_discovery_out.msg | default(_discovery_out.stderr | default('no output')))) }}"
@@ -243,7 +243,7 @@
     discovery_catalog: "{{ playbook_dir }}/../../deevnet-docs/data/software_catalog.yaml"
     discovery_targets: "{{ (groups['all'] | intersect(['dv02cor002p01']))
                            + groups['hypervisors'] + groups['management_plane']
-                           + groups['builder'] + groups['pis'] + groups['switches'] }}"
+                           + groups['builder'] + groups['switches'] }}"
     # A running image's last path element, to its catalog row's name.
     discovery_image_items:
       openbao: OpenBao
