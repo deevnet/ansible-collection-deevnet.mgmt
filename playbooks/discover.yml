@@ -252,6 +252,7 @@
       postgres: PostgreSQL
       minio: Silo
       silo: Silo
+      deevnet-silo: Silo
       omada-controller: Omada Software Controller
       deevnet-vernemq: VerneMQ
       deevnet-log-bridge: MQTT log bridge
