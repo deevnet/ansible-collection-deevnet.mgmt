@@ -182,23 +182,35 @@ def kv_lines(text, sep="="):
     return out
 
 
+def installed(entry):
+    v = entry.get("installed", "1")
+    return str(v).lower() in ("1", "true", "yes")
+
+
 def parse_router(o):
+    """core/firmware/info: the product, then the packages and plugins installed.
+
+    Its fields are not documented, so each one is looked for, never assumed."""
+    info = o.get("info") or {}
     items = []
-    lines = (o.get("versions") or "").splitlines()
-    for line in lines:
-        f = line.split()
-        if not f:
-            continue
-        if f[0] == "OPNsense" and len(f) > 1:
-            items.append(("core-router", "OPNsense", f[1], " ".join(f[2:])))
-        elif f[0] == "base" and len(f) > 1:
-            items.append(("core-router", "FreeBSD base", f[1], ""))
-        elif f[0] == "kea" and len(f) > 1:
-            items.append(("core-router-services", "Kea DHCPv4", f[1], ""))
-        elif f[0] == "unbound" and len(f) > 1:
-            items.append(("core-router-services", "Unbound", f[1], ""))
-        elif f[0].startswith("os-") and len(f) > 1:
-            items.append(("core-router-plugins", f[0], f[1], ""))
+    product = info.get("product") or {}
+    ver = product.get("product_version") or product.get("CORE_VERSION") or ""
+    items.append(("core-router", "OPNsense", ver, product.get("product_name", "")))
+    pkgs = {p.get("name"): p for p in (info.get("package") or []) if isinstance(p, dict) and installed(p)}
+    for name, label in (("base", "FreeBSD base"),):
+        if name in pkgs:
+            items.append(("core-router", label, pkgs[name].get("version", ""), ""))
+    for name, label in (("kea", "Kea DHCPv4"), ("unbound", "Unbound")):
+        if name in pkgs:
+            items.append(("core-router-services", label, pkgs[name].get("version", ""), ""))
+    plugins = [p for p in (info.get("plugin") or []) if isinstance(p, dict) and installed(p)]
+    plugins += [p for n, p in pkgs.items() if str(n).startswith("os-")]
+    seen = set()
+    for p in plugins:
+        n = p.get("name", "")
+        if n.startswith("os-") and n not in seen:
+            seen.add(n)
+            items.append(("core-router-plugins", n, p.get("version", ""), ""))
     return items
 
 

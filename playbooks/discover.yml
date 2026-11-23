@@ -16,7 +16,8 @@
 #
 # A system that does not answer is reported as such, never skipped silently.
 #
-# Needs the vault (the switch's CLI login, the Omada Open API client), and
+# Needs the vault (the router's API key, the switch's CLI login, the Omada Open
+# API client), and
 # deevnet.net installed at the user level for the switch's CLI plugin.
 #
 # API markers (ADR-0009). On a controller upgrade:  grep -rn "omada-api:"
@@ -29,17 +30,22 @@
   hosts: dv02cor002p01
   gather_facts: false
   tasks:
-    - name: Read the OPNsense release, the FreeBSD base and the packages in use
-      ansible.builtin.shell: |
-        echo '### versions'
-        opnsense-version
-        echo "base $(freebsd-version -u)"
-        pkg query '%n %v' kea unbound 2>/dev/null
-        pkg query -g '%n %v' 'os-*' 2>/dev/null
-        exit 0
-      changed_when: false
+    # Through the router's API, from the Builder, as every opnsense_* role in
+    # deevnet.net reaches it: automation has no SSH login there.
+    # opnsense-api: documented GET core/firmware/info (docs.opnsense.org, Core API,
+    # Firmware); its response fields are not documented, so the report reads
+    # them defensively and the raw answer is kept in the -raw.json.
+    - name: Read the OPNsense release and the packages and plugins installed
+      ansible.builtin.uri:
+        url: "{{ opnsense_api_url }}/core/firmware/info"
+        method: GET
+        user: "{{ opnsense_api_key }}"
+        password: "{{ opnsense_api_secret }}"
+        force_basic_auth: true
+        validate_certs: "{{ opnsense_validate_certs }}"
+        return_content: true
+      delegate_to: localhost
       failed_when: false
-      ignore_unreachable: true
       register: _discovery_out
 
     - name: Keep what the router said
@@ -47,10 +53,10 @@
         discovery_raw:
           kind: router
           table: core-router
-          status: "{{ 'unreachable' if (_discovery_out.unreachable | default(false))
-                      else ('ok' if (_discovery_out.stdout | default('')) is search('OPNsense')
-                      else 'failed: ' ~ (_discovery_out.msg | default(_discovery_out.stderr | default('no output')))) }}"
-          stdout: "{{ _discovery_out.stdout | default('') }}"
+          status: "{{ 'ok' if (_discovery_out.status | default(0)) == 200 and (_discovery_out.json | default({})) is mapping
+                      else 'failed: HTTP ' ~ (_discovery_out.status | default('none')) ~ ' ' ~ (_discovery_out.msg | default('')) }}"
+          outputs:
+            info: "{{ _discovery_out.json | default({}) }}"
 
 - name: Discovery | hypervisors
   hosts: hypervisors
@@ -226,8 +232,12 @@
 
 - name: Discovery | the report
   hosts: localhost
+  connection: local
   gather_facts: false
   vars:
+    # The inventory's group_vars/all derives ansible_host from env.interfaces,
+    # which localhost doesn't have.
+    ansible_host: 127.0.0.1
     discovery_dir: /srv/discovery
     discovery_date: "{{ now().strftime('%Y-%m-%d') }}"
     discovery_catalog: "{{ playbook_dir }}/../../deevnet-docs/data/software_catalog.yaml"
