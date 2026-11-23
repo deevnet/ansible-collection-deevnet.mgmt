@@ -1,6 +1,6 @@
 .PHONY: help default deps deps-force build check install-dev install-user rebuild apply list \
         vm-identity vm-identity-assign vm-profile admit unadmit remove-tenant purge-tenant-state rotate-wifi-key reissue-state-secret reconcile \
-        backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive \
+        backup-status backup-now backup-dry-run backup-verify backup-restore backup-drive discover \
         bao-status bao-open bao-close bao-seal-migrate bao-rotate-shares \
         publish clean-deps clean-project deep-clean all
 
@@ -111,6 +111,10 @@ help:
 "" \
 "  purge-tenant-state NAME=<name>" \
 "      Remove Terraform state an API older than v0.20.0 left behind, every version" \
+"" \
+"  discover" \
+"      Read what every substrate system runs and compare it with the Software Catalog and the pins:" \
+"      writes /srv/discovery/<date>.md (read-only on every target; needs deevnet.net at the user level)" \
 "" \
 "  list" \
 "      Show installed collections in project and user paths" \
@@ -276,6 +280,12 @@ remove-tenant:
 
 purge-tenant-state:
 	@./scripts/tenant-removal.sh purge-state "$(NAME)"
+
+# Discovery (Patch Management v1): what runs, against the catalog and the pins.
+# Read-only on every target; the report is written on the Builder.
+discover: install-dev
+	@ANSIBLE_COLLECTIONS_PATH="$(PROJECT_COLLECTIONS_PATH):$(USER_COLLECTIONS_PATH)" \
+	  ansible-playbook playbooks/discover.yml
 
 list:
 	@echo "== Project collections ($(PROJECT_COLLECTIONS_PATH)) =="
