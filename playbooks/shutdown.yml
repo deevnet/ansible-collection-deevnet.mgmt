@@ -10,7 +10,10 @@
 #
 #   1. guests        every qemu VM on both hypervisors
 #   2. hypervisors   dv02hyp001p01, dv02hyp002p02
-#   3. pis           the `pis` group
+#
+# The Pi lab is not part of it: shutdown-pis.yml powers off the `pis` group on its
+# own. Nothing here depends on the Pis or they on the hypervisors, so either can
+# run first; both before the Builder and the core router.
 #
 # The rest is the operator's, by hand, once this has finished (runbook:
 # Lifecycle > Shutdown and Power-On):
@@ -65,7 +68,7 @@
         that:
           - confirm_shutdown | default('') == 'yes'
         fail_msg: >-
-          This powers off every VM, both hypervisors and the pis. Re-run with
+          This powers off every VM and both hypervisors. Re-run with
           -e confirm_shutdown=yes if that is what you want.
         success_msg: "Confirmed. Shutting down the substrate."
 
@@ -233,29 +236,6 @@
       delegate_to: localhost
       become: false
 
-- name: Stage 3 - power off the pis
-  hosts: pis
-  gather_facts: false
-  become: true
-  tasks:
-    - name: Issue poweroff
-      ansible.builtin.command:
-        cmd: /sbin/shutdown -h now "substrate shutdown"
-      async: 1
-      poll: 0
-      changed_when: true
-      failed_when: false
-      ignore_unreachable: true
-
-    - name: Wait for {{ inventory_hostname }} to stop answering
-      ansible.builtin.wait_for:
-        host: "{{ ansible_host }}"
-        port: 22
-        state: stopped
-        timeout: 300
-      delegate_to: localhost
-      become: false
-
 - name: Hand over to the operator
   hosts: dv00bld001p01
   gather_facts: false
@@ -265,7 +245,8 @@
     - name: Say what is left
       ansible.builtin.debug:
         msg:
-          - "Every VM, both hypervisors and the Pis are down."
+          - "Every VM and both hypervisors are down."
+          - "If the Pi lab is on: ansible-playbook playbooks/shutdown-pis.yml -e confirm_shutdown=yes"
           - "Next, by hand: on the Builder, sudo shutdown -h now."
           - "Then halt the core router from its web interface."
           - "The access switch, AP and edge router need no shutdown: cut their power."

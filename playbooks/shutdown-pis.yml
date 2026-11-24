@@ -1,0 +1,63 @@
+---
+# Power off the Pi lab: every host in the `pis` group.
+#
+# Usage, from the Builder:
+#   cd ansible-collection-deevnet.mgmt
+#   ansible-playbook playbooks/shutdown-pis.yml -e confirm_shutdown=yes
+#   ansible-playbook playbooks/shutdown-pis.yml -e confirm_shutdown=yes --limit dv02rpi004p01
+#
+# Separate from shutdown.yml, which stops at the hypervisors: the Pis are
+# bare-metal and depend on nothing the hypervisors run, so they are shut down
+# when the operator chooses, alone or as part of a full shutdown (runbook:
+# Lifecycle > Shutdown and Power-On). In a full shutdown, run it before the
+# Builder and the core router go down, while the Pis can still be reached.
+#
+# A Pi that is already off, or not answering, is skipped rather than failed.
+# Powering one back on is its power supply.
+
+- name: Confirm intent
+  # The control node itself, not `localhost`: group_vars/all derives ansible_host
+  # from env.interfaces, which the implicit localhost does not have (see
+  # shutdown.yml).
+  hosts: dv00bld001p01
+  gather_facts: false
+  connection: local
+  become: false
+  # A failed assert on this host alone would not stop the next play, which
+  # targets other hosts; this makes it abort the playbook.
+  any_errors_fatal: true
+  tasks:
+    - name: Require an explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - confirm_shutdown | default('') == 'yes'
+        fail_msg: >-
+          This powers off the Pi lab ({{ groups['pis'] | default([]) | join(', ') }}).
+          Re-run with -e confirm_shutdown=yes if that is what you want.
+        success_msg: "Confirmed. Shutting down the Pi lab."
+
+- name: Power off the Pis
+  hosts: pis
+  gather_facts: false
+  become: true
+  tasks:
+    # async/poll:0 because the Pi stops answering mid-command: the SSH session
+    # dies with it, and a synchronous task would report that as a failure.
+    # ignore_unreachable covers a Pi that is already off.
+    - name: Issue poweroff
+      ansible.builtin.command:
+        cmd: /sbin/shutdown -h now "Pi lab shutdown"
+      async: 1
+      poll: 0
+      changed_when: true
+      failed_when: false
+      ignore_unreachable: true
+
+    - name: Wait for {{ inventory_hostname }} to stop answering
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        state: stopped
+        timeout: 300
+      delegate_to: localhost
+      become: false
