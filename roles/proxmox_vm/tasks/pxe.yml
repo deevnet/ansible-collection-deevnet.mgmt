@@ -14,7 +14,7 @@
       - proxmox_vm_static_ip | length == 0
     fail_msg: >-
       A pxe VM needs mgmt_vm.os_disk_size (GiB; the builder-node kickstart needs
-      about 88), and installs on its DHCP reservation, so it takes no static_ip.
+      about 128 since /home is 60G), and installs on its DHCP reservation, so it takes no static_ip.
 
 # no_log on the calls because they carry the token; what Proxmox answered is
 # asserted after each, so a refusal says why.
