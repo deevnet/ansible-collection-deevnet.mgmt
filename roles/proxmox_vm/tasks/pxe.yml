@@ -35,6 +35,7 @@
       ostype: l26
       bios: ovmf
       machine: "{{ proxmox_vm_pxe_machine }}"
+      cpu: "{{ proxmox_vm_pxe_cpu }}"
       efidisk0: "{{ proxmox_vm_pxe_efidisk }}"
       rng0: source=/dev/urandom
       scsihw: virtio-scsi-pci
