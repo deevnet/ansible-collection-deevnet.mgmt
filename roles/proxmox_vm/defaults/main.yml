@@ -249,3 +249,9 @@ proxmox_vm_boot_timeout: "{{ mgmt_vm.boot_timeout | default(3600 if proxmox_vm_s
 # off: the Builder's grubx64.efi is built by grub2-mkimage and is not signed.
 proxmox_vm_pxe_efidisk: "{{ proxmox_vm_storage }}:1,efitype=4m,pre-enrolled-keys=0"
 proxmox_vm_pxe_machine: q35
+
+# The pxe VM's CPU model. A clone inherits `host` from the template; a VM created
+# through the API with no cpu gets Proxmox's default, kvm64, which lacks SSE4.2
+# and AVX - and the Claude Code installer's runtime (Bun) refuses to start
+# without SSE4.2 (CHG-0091). `host` matches the clones.
+proxmox_vm_pxe_cpu: "{{ mgmt_vm.cpu | default('host') }}"
