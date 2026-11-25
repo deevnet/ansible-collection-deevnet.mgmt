@@ -18,7 +18,7 @@
 #
 #   mgmt_vm:
 #     source: pxe
-#     os_disk_size: 100           # required for pxe; the builder-node kickstart needs ~88
+#     os_disk_size: 160           # required for pxe; the builder-node kickstart needs ~128
 #
 # The boot order is disk first, then the network. A blank disk does not boot, so
 # the firmware falls through to PXE and installs; once installed, the disk boots
