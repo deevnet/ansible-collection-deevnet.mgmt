@@ -297,6 +297,30 @@
   become: false
   register: proxmox_vm_readback
 
+# ADR-0046: a VM this run made is checked against the profile before its first
+# start, by the comparison `make vm-profile` uses, so a builder that set the
+# profile wrongly stops here rather than starting a VM off it. After the data
+# and extra disks, which the read-back includes. An existing VM is reported by
+# `make vm-profile`, not failed here: moving one is a change record.
+- name: Assert {{ proxmox_vm_name }} is on the VM hardware profile
+  vars:
+    _vmp: >-
+      {{ proxmox_vm_readback.proxmox_vms | default([]) | selectattr('config', 'defined') | list
+         | deevnet.mgmt.vm_profile_check(deevnet_vm_profile,
+             {proxmox_vm_name: vm_profile_exceptions | default({})})
+         | first | default({}) }}
+  ansible.builtin.assert:
+    that:
+      - _vmp.result | default('') in ['compliant', 'exception']
+    fail_msg: >-
+      {{ proxmox_vm_name }} (vmid {{ proxmox_vm_id }}) was made off the VM hardware
+      profile (ADR-0046): {{ (_vmp.diffs | default(['no configuration read back'])) | join('; ') }}.
+      It has not been started.
+    success_msg: >-
+      {{ proxmox_vm_name }} is on the profile{{ (' with its declared exception: ' ~ _vmp.reason)
+         if _vmp.result | default('') == 'exception' else '' }}.
+  when: not proxmox_vm_exists
+
 - name: Assert net0 carries the declared MAC
   vars:
     # PVE returns the MAC upper-cased inside the net0 string
