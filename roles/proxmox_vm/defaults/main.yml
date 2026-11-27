@@ -255,3 +255,17 @@ proxmox_vm_pxe_machine: q35
 # and AVX - and the Claude Code installer's runtime (Bun) refuses to start
 # without SSE4.2 (CHG-0091). `host` matches the clones.
 proxmox_vm_pxe_cpu: "{{ mgmt_vm.cpu | default('host') }}"
+
+# The VM hardware profile (ADR-0046): inventory's deevnet_vm_profile, its only
+# source. Set on every VM this role creates, by clone or for a network install,
+# and on every disk it attaches. An existing VM's hardware is never changed here:
+# a running VM would hold the change pending until some later restart, and moving
+# a VM is a change record (`make vm-profile` reports the drift).
+proxmox_vm_profile: "{{ deevnet_vm_profile | default({}) }}"
+proxmox_vm_scsihw: "{{ proxmox_vm_profile.scsihw | default('') }}"
+proxmox_vm_disk_iothread: "{{ (proxmox_vm_profile.disk | default({})).iothread | default('') | string == '1' }}"
+proxmox_vm_disk_discard: "{{ (proxmox_vm_profile.disk | default({})).discard | default('ignore') }}"
+proxmox_vm_disk_cache: "{{ (proxmox_vm_profile.disk | default({})).cache | default('') }}"
+# The same options as a drive string's suffix, for a disk made in one API call.
+proxmox_vm_disk_option_string: >-
+  iothread={{ 1 if proxmox_vm_disk_iothread | bool else 0 }},discard={{ proxmox_vm_disk_discard }},cache={{ proxmox_vm_disk_cache }}

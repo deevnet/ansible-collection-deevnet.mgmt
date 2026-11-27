@@ -89,6 +89,12 @@ deevnet_api_mac_namespace: "{{ deevnet_mac_namespace | default('') }}"
 # deploying this: with no match, a workload create fails rather than falling
 # back to the substrate one.
 deevnet_api_template_prefix: "fedora-tenant-"
+# The VM hardware profile (ADR-0046) a new workload is put on before its first
+# start: inventory's deevnet_vm_profile, its only source. Read by the API from
+# 0.29.0; an older one ignores them.
+deevnet_api_tenant_scsihw: "{{ deevnet_vm_profile.scsihw }}"
+deevnet_api_tenant_disk_options: >-
+  {% for k, v in deevnet_vm_profile.disk.items() %}{{ k }}={{ v }}{{ '' if loop.last else ',' }}{% endfor %}
 deevnet_api_tenant_storage: local-lvm
 deevnet_api_tenant_disk: scsi0
 # The account a tenant's ssh_keys land on, and which the API reports as the
