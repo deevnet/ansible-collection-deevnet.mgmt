@@ -224,6 +224,8 @@
       DEEVNET_TEMPLATE_PREFIX: "{{ deevnet_api_template_prefix }}"
       DEEVNET_TENANT_STORAGE: "{{ deevnet_api_tenant_storage }}"
       DEEVNET_TENANT_DISK: "{{ deevnet_api_tenant_disk }}"
+      DEEVNET_TENANT_SCSIHW: "{{ deevnet_api_tenant_scsihw }}"
+      DEEVNET_TENANT_DISK_OPTIONS: "{{ deevnet_api_tenant_disk_options }}"
       DEEVNET_TENANT_CIUSER: "{{ deevnet_api_tenant_ciuser }}"
       POWERDNS_API_URL: "{{ deevnet_api_powerdns_url }}"
       OPNSENSE_API_URL: "{{ deevnet_api_opnsense_url }}"
