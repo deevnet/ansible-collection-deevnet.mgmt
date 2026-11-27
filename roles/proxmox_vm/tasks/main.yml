@@ -18,6 +18,16 @@
       record both key off that MAC).
     success_msg: "VM specification present for {{ inventory_hostname }}."
 
+- name: Assert inventory declares the VM hardware profile
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_scsihw | length > 0
+      - proxmox_vm_disk_cache | length > 0
+    fail_msg: >-
+      No deevnet_vm_profile in inventory (group_vars/all/vm_profile.yml, ADR-0046).
+      Every VM is made on the profile, so there is nothing to make it with.
+    success_msg: "Profile: {{ proxmox_vm_scsihw }}, {{ proxmox_vm_disk_option_string }}."
+
 - name: Look up VMs on {{ proxmox_vm_node }}
   community.general.proxmox_vm_info:
     api_host: "{{ proxmox_vm_api_host }}"
@@ -88,6 +98,39 @@
     storage: "{{ proxmox_vm_storage }}"
     full: true
     timeout: "{{ proxmox_vm_boot_timeout }}"
+    state: present
+  delegate_to: localhost
+  become: false
+  when:
+    - proxmox_vm_source == 'clone'
+    - not proxmox_vm_exists
+
+# A clone inherits the template's controller and disk options; a template built
+# before ADR-0046 is on LSI. Set before the first start, as root on the
+# hypervisor like the boot order, only on the VM just cloned.
+- name: Put {{ proxmox_vm_name }}'s disk controller on the profile
+  ansible.builtin.command:
+    argv: [qm, set, "{{ proxmox_vm_id }}", --scsihw, "{{ proxmox_vm_scsihw }}"]
+  delegate_to: "{{ proxmox_vm_hypervisor }}"
+  become: true
+  when:
+    - proxmox_vm_source == 'clone'
+    - not proxmox_vm_exists
+
+- name: Put {{ proxmox_vm_name }}'s OS disk options on the profile
+  community.general.proxmox_disk:
+    api_host: "{{ proxmox_vm_api_host }}"
+    api_user: "{{ proxmox_vm_api_token_id.split('!')[0] }}"
+    api_token_id: "{{ proxmox_vm_api_token_id.split('!')[1] }}"
+    api_token_secret: "{{ proxmox_vm_api_token_secret }}"
+    validate_certs: "{{ proxmox_vm_api_validate_certs }}"
+    vmid: "{{ proxmox_vm_id }}"
+    disk: "{{ proxmox_vm_os_disk_device }}"
+    # disabled: options on the disk the clone has, never a new disk.
+    create: disabled
+    iothread: "{{ proxmox_vm_disk_iothread | bool }}"
+    discard: "{{ proxmox_vm_disk_discard }}"
+    cache: "{{ proxmox_vm_disk_cache }}"
     state: present
   delegate_to: localhost
   become: false
@@ -195,6 +238,9 @@
     storage: "{{ proxmox_vm_data_disk.storage }}"
     size: "{{ proxmox_vm_data_disk.size }}"
     serial: "{{ proxmox_vm_data_disk_serial }}"
+    iothread: "{{ proxmox_vm_disk_iothread | bool }}"
+    discard: "{{ proxmox_vm_disk_discard }}"
+    cache: "{{ proxmox_vm_disk_cache }}"
     create: regular
     backup: false
     state: present
@@ -214,6 +260,9 @@
     storage: "{{ item.storage }}"
     size: "{{ item.size }}"
     serial: "{{ item.serial }}"
+    iothread: "{{ proxmox_vm_disk_iothread | bool }}"
+    discard: "{{ proxmox_vm_disk_discard }}"
+    cache: "{{ proxmox_vm_disk_cache }}"
     # create-if-absent, as for the data disk above. Never `forced`.
     create: regular
     backup: false
