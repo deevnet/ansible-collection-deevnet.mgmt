@@ -164,17 +164,6 @@
   delay: 2
   until: openbao_seal_status.status is defined and openbao_seal_status.status == 200
 
-# The pin every client of OpenBao reads (*_openbao_ca_local in the inventory,
-# scripts/pve-creds) is the Deevnet Root CA itself, kept at the path those
-# clients have always used.
-- name: Put the listener's trust anchor where OpenBao's clients pin it
-  ansible.builtin.copy:
-    src: "{{ site_root_ca_file }}"
-    dest: "{{ openbao_ca_local_path }}"
-    mode: "0644"
-  delegate_to: localhost
-  become: false
-
 - name: Initialise OpenBao on first run
   ansible.builtin.import_tasks: init.yml
   when: not openbao_seal_status.json.initialized
