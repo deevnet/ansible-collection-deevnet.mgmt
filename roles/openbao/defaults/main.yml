@@ -64,10 +64,9 @@ openbao_seal_key: "{{ vault_openbao_seal_key | default('') }}"
 openbao_seal_key_id: "{{ vault_openbao_seal_key_id | default('seal-1') }}"
 
 # The listener's certificate comes from the Substrate CA (tasks/tls.yml), and
-# clients trust the Deevnet Root CA beside it. The pin fetched to the control
-# node for OpenBao's clients is that root, at its historical path.
+# clients trust the Deevnet Root CA beside it. Clients on the control node pin
+# the root from inventory (site_root_ca_file), nothing copied locally.
 openbao_tls_ca: "{{ openbao_tls_dir }}/{{ site_root_ca_name }}"
-openbao_ca_local_path: "{{ playbook_dir }}/../.openbao/{{ inventory_hostname }}-listener.pem"
 
 # First initialisation writes the recovery key, the root token and Ansible's
 # AppRole credentials here, on the control node, root-readable only. Move them

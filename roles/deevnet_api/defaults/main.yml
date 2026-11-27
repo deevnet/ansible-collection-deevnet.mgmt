@@ -290,8 +290,8 @@ deevnet_api_tenant_secrets_addr: >-
   {{ ('https://bao.' ~ deevnet_substrate ~ '.' ~ deevnet_root_domain ~ ':8200')
      if deevnet_api_tenant_secrets_namespace | length > 0 else '' }}
 
-# OpenBao (ADR-0016). The address the API and this role use, and the pin the
-# openbao role put on the control node (the Deevnet Root CA).
+# OpenBao (ADR-0016). The address the API and this role use, and the anchor its
+# listener is checked against: the Deevnet Root CA (site_root_ca_file).
 deevnet_api_openbao_addr: ""
 deevnet_api_openbao_ca_local: ""
 # Ansible's AppRole, from the vault, which writes the KV secret.
